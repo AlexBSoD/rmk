@@ -144,73 +144,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
     let mut peripheral = stack.peripheral();
     let runner = stack.runner();
 
-    // First, read central address from storage
-    let mut central_addr = crate::storage::read_peer_address(0)
-        .await
-        .filter(|a| a.is_valid)
-        .map(|a| a.address);
-
-    let peri_task = async {
-        let server = BleSplitPeripheralServer::new_default("rmk").unwrap();
-        loop {
-            update_status(|c| *c = ConnectionStatus::new());
-            publish_event(CentralConnectedEvent { connected: false });
-            match split_peripheral_advertise(id, central_addr, &mut peripheral, &server).await {
-                Ok(conn) => {
-                    info!("Connected to the central");
-                    publish_event(CentralConnectedEvent { connected: true });
-                    let mut peripheral = SplitPeripheral::new(BleSplitPeripheralDriver::new(&server, &conn));
-                    let new_addr = conn.raw().peer_address().addr.into_inner();
-                    if central_addr != Some(new_addr) {
-                        info!("Saving central address to storage");
-                        if crate::storage::write_peer_address(PeerAddress {
-                            peer_id: 0,
-                            is_valid: true,
-                            address: new_addr,
-                        })
-                        .await
-                        {
-                            central_addr = Some(new_addr);
-                        }
-                    }
-                    peripheral.run().await;
-                    info!("Disconnected from the central");
-                }
-                Err(BleHostError::BleHost(Error::Timeout)) => {
-                    // Timeout, wait new keys to continue
-                    error!("Connect to central timeout");
-                    let mut sub = KeyboardEvent::subscriber();
-                    sub.clear();
-                    let _ = sub.next_message_pure().await;
-                    continue;
-                }
-                Err(e) => {
-                    #[cfg(feature = "defmt")]
-                    let e = defmt::Debug2Format(&e);
-                    error!("Advertise error: {:?}", e);
-                    Timer::after_millis(500).await;
-                    continue;
-                }
-            };
-        }
-    };
-
-    join(ble_task(runner), peri_task).await;
-}
-
-pub async fn initialize_common_nrf_ble_split_peripheral_and_run<
-    'b,
-    's: 'b,
-    C: Controller + ControllerCmdAsync<LeSetPhy>,
->(
-    id: usize,
-    stack: &'b Stack<'s, C, DefaultPacketPool>,
-) {
-    publish_event(CentralConnectedEvent { connected: false });
-
-    let mut peripheral = stack.peripheral();
-    let runner = stack.runner();
-
+    // Read the previously validated split central address from storage.
     let mut central_saved = false;
     let mut central_addr = crate::storage::read_peer_address(0)
         .await
@@ -225,20 +159,28 @@ pub async fn initialize_common_nrf_ble_split_peripheral_and_run<
         loop {
             update_status(|c| *c = ConnectionStatus::new());
             publish_event(CentralConnectedEvent { connected: false });
-            match common_split_peripheral_advertise(id, central_addr, &mut peripheral, &server).await {
+            match split_peripheral_advertise(id, central_addr, &mut peripheral, &server).await {
                 Ok(conn) => {
-                    info!("Connected to the common split central");
-                    publish_event(CentralConnectedEvent { connected: true });
+                    info!("Connected to the split central");
                     let new_addr = conn.raw().peer_address().addr.into_inner();
                     if central_saved && Some(new_addr) != central_addr {
-                        warn!("Rejecting non-paired common split central address");
+                        warn!("Rejecting non-paired split central address");
                         drop(conn);
                         Timer::after_millis(500).await;
                         continue;
                     }
-                    let mut peripheral = SplitPeripheral::new(BleSplitPeripheralDriver::new(&server, &conn));
+
+                    let mut split_driver = BleSplitPeripheralDriver::new(&server, &conn);
+                    if !validate_split_central(&mut split_driver).await {
+                        warn!("Rejecting split central after product validation");
+                        drop(conn);
+                        Timer::after_millis(500).await;
+                        continue;
+                    }
+
+                    publish_event(CentralConnectedEvent { connected: true });
                     if !central_saved {
-                        info!("Saving common split central address to storage");
+                        info!("Saving validated split central address to storage");
                         if crate::storage::write_peer_address(PeerAddress {
                             peer_id: 0,
                             is_valid: true,
@@ -250,11 +192,13 @@ pub async fn initialize_common_nrf_ble_split_peripheral_and_run<
                             central_addr = Some(new_addr);
                         }
                     }
+                    let mut peripheral = SplitPeripheral::new(split_driver);
                     peripheral.run().await;
-                    info!("Disconnected from the common split central");
+                    info!("Disconnected from the split central");
                 }
                 Err(BleHostError::BleHost(Error::Timeout)) => {
-                    error!("Connect to common split central timeout");
+                    // Timeout, wait new keys to continue
+                    error!("Connect to split central timeout");
                     let mut sub = KeyboardEvent::subscriber();
                     sub.clear();
                     let _ = sub.next_message_pure().await;
@@ -263,7 +207,7 @@ pub async fn initialize_common_nrf_ble_split_peripheral_and_run<
                 Err(e) => {
                     #[cfg(feature = "defmt")]
                     let e = defmt::Debug2Format(&e);
-                    error!("Common split advertise error: {:?}", e);
+                    error!("Split advertise error: {:?}", e);
                     Timer::after_millis(500).await;
                     continue;
                 }
@@ -274,6 +218,35 @@ pub async fn initialize_common_nrf_ble_split_peripheral_and_run<
     join(ble_task(runner), peri_task).await;
 }
 
+async fn validate_split_central<T: SplitReader + SplitWriter>(driver: &mut T) -> bool {
+    match with_timeout(Duration::from_millis(1500), driver.read()).await {
+        Ok(Ok(SplitMessage::ProductId(product_id))) if product_id == crate::SPLIT_PRODUCT_ID => driver
+            .write(&SplitMessage::ProductId(crate::SPLIT_PRODUCT_ID))
+            .await
+            .is_ok(),
+        Ok(Ok(SplitMessage::ProductId(product_id))) => {
+            warn!(
+                "Split central product id mismatch: got {}, expected {}",
+                product_id,
+                crate::SPLIT_PRODUCT_ID
+            );
+            false
+        }
+        Ok(Ok(message)) => {
+            warn!("Unexpected pre-handshake split message: {:?}", message);
+            false
+        }
+        Ok(Err(e)) => {
+            warn!("Split central product check read failed: {:?}", e);
+            false
+        }
+        Err(_) => {
+            warn!("Split central product check timeout");
+            false
+        }
+    }
+}
+
 /// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.
 async fn split_peripheral_advertise<'a, 'b, C: Controller>(
     id: usize,
@@ -282,71 +255,37 @@ async fn split_peripheral_advertise<'a, 'b, C: Controller>(
     server: &'b BleSplitPeripheralServer<'_>,
 ) -> Result<GattConnection<'a, 'b, DefaultPacketPool>, BleHostError<C::Error>> {
     let mut advertiser_data = [0; 31];
-    let advertisement = get_peri_advertiser::<C>(id, central_addr, &mut advertiser_data)?;
-
-    let advertiser = peripheral
-        .advertise(&AdvertisementParameters::default(), advertisement)
-        .await?;
-
-    match with_timeout(Duration::from_secs(10), advertiser.accept()).await {
-        Ok(conn_res) => {
-            let conn = conn_res?.with_attribute_server(server)?;
-            info!("[adv] connection established");
-            Ok(conn)
-        }
-        Err(_) => {
-            warn!("[adv] Try update central_addr");
-            // Advertise without central addr
-            let advertisement = get_peri_advertiser::<C>(id, None, &mut advertiser_data)?;
-            let advertiser = peripheral
-                .advertise(&AdvertisementParameters::default(), advertisement)
-                .await?;
-            match with_timeout(Duration::from_secs(300), advertiser.accept()).await {
-                Ok(re) => Ok(re?.with_attribute_server(server)?),
-                Err(_e) => Err(BleHostError::BleHost(Error::Timeout)),
-            }
-        }
-    }
-}
-
-async fn common_split_peripheral_advertise<'a, 'b, C: Controller>(
-    id: usize,
-    central_addr: Option<[u8; 6]>,
-    peripheral: &mut Peripheral<'a, C, DefaultPacketPool>,
-    server: &'b BleSplitPeripheralServer<'_>,
-) -> Result<GattConnection<'a, 'b, DefaultPacketPool>, BleHostError<C::Error>> {
-    let mut advertiser_data = [0; 31];
 
     if central_addr.is_some() {
-        let advertisement = get_common_peri_advertiser::<C>(id, central_addr, &mut advertiser_data)?;
+        let advertisement = get_peri_advertiser::<C>(id, central_addr, &mut advertiser_data)?;
         let advertiser = peripheral
             .advertise(&AdvertisementParameters::default(), advertisement)
             .await?;
         match with_timeout(Duration::from_secs(10), advertiser.accept()).await {
             Ok(conn_res) => {
                 let conn = conn_res?.with_attribute_server(server)?;
-                info!("[adv] common directed connection established");
+                info!("[adv] directed split connection established");
                 return Ok(conn);
             }
             Err(_) => {
-                warn!("[adv] common directed central reconnect timeout, falling back to discoverable split adv");
+                warn!("[adv] directed split reconnect timeout, falling back to discoverable advertising");
             }
         }
     }
 
-    let advertisement = get_common_peri_advertiser::<C>(id, None, &mut advertiser_data)?;
+    let advertisement = get_peri_advertiser::<C>(id, None, &mut advertiser_data)?;
     let advertiser = peripheral
         .advertise(&AdvertisementParameters::default(), advertisement)
         .await?;
     match with_timeout(Duration::from_secs(10), advertiser.accept()).await {
         Ok(conn_res) => {
             let conn = conn_res?.with_attribute_server(server)?;
-            info!("[adv] common connection established");
+            info!("[adv] discoverable split connection established");
             Ok(conn)
         }
         Err(_) => {
-            warn!("[adv] common retry discoverable split adv");
-            let advertisement = get_common_peri_advertiser::<C>(id, None, &mut advertiser_data)?;
+            warn!("[adv] retry discoverable split advertising");
+            let advertisement = get_peri_advertiser::<C>(id, None, &mut advertiser_data)?;
             let advertiser = peripheral
                 .advertise(&AdvertisementParameters::default(), advertisement)
                 .await?;
@@ -368,46 +307,7 @@ fn get_peri_advertiser<'a, C: Controller>(
             peer: Address::random(addr),
         },
         None => {
-            info!("No central address provided, so we advertise as undirected");
-            // No central address provided, so we advertise as undirected
-            AdStructure::encode_slice(
-                &[
-                    AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                    AdStructure::CompleteServiceUuids128(&[
-                        // uuid: 4dd5fbaa-18e5-4b07-bf0a-353698659946
-                        [
-                            70u8, 153u8, 101u8, 152u8, 54u8, 53u8, 10u8, 191u8, 7u8, 75u8, 229u8, 24u8, 170u8, 251u8,
-                            213u8, 77u8,
-                        ],
-                    ]),
-                    AdStructure::ManufacturerSpecificData {
-                        company_identifier: 0xe118,
-                        payload: &[id as u8],
-                    },
-                ],
-                &mut advertiser_data[..],
-            )?;
-            trace!("Advertising data: {:?}", advertiser_data);
-            Advertisement::ConnectableScannableUndirected {
-                adv_data: &advertiser_data[..],
-                scan_data: &[],
-            }
-        }
-    };
-    Ok(advertisement)
-}
-
-fn get_common_peri_advertiser<'a, C: Controller>(
-    id: usize,
-    central_addr: Option<[u8; 6]>,
-    advertiser_data: &'a mut [u8; 31],
-) -> Result<Advertisement<'a>, BleHostError<C::Error>> {
-    let advertisement = match central_addr {
-        Some(addr) => Advertisement::ConnectableNonscannableDirected {
-            peer: Address::random(addr),
-        },
-        None => {
-            info!("No common split central address provided, so we advertise as undirected");
+            info!("No split central address provided, advertising as undirected");
             AdStructure::encode_slice(
                 &[
                     AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
@@ -426,7 +326,7 @@ fn get_common_peri_advertiser<'a, C: Controller>(
                 ],
                 &mut advertiser_data[..],
             )?;
-            trace!("Common split advertising data: {:?}", advertiser_data);
+            trace!("Split advertising data: {:?}", advertiser_data);
             Advertisement::ConnectableScannableUndirected {
                 adv_data: &advertiser_data[..],
                 scan_data: &[],

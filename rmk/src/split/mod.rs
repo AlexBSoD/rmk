@@ -57,8 +57,8 @@ pub(crate) enum SplitMessage {
     BatteryRefresh,
     /// Runtime settings packet, from central to peripheral.
     PeripheralSettings([u8; 27]),
-    /// Product id handshake used by the common split backend to reject
-    /// peripherals from a different keyboard model.
+    /// Product id handshake used by the BLE split engine to reject peers from
+    /// a different keyboard model.
     ProductId(u16),
 
     // -----------------------------------------------------------------------

@@ -834,9 +834,6 @@ pub(crate) struct MorseActionPair {
 #[serde(deny_unknown_fields)]
 pub struct SplitConfig {
     pub connection: String,
-    /// Split BLE behavior backend. `common` is for regular split keyboards,
-    /// `qube` keeps the dongle/Qube-oriented split flow.
-    pub backend: Option<String>,
     pub central: SplitBoardConfig,
     pub peripheral: Vec<SplitBoardConfig>,
 }

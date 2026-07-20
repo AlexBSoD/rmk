@@ -65,8 +65,7 @@ Every push builds all devices in parallel via GitHub Actions. UF2 artifacts avai
 Based on [RMK](https://github.com/HaoboGu/rmk) 0.8.2 with nRF52840 BLE support.
 
 The root `rmk`, `rmk-macro`, `rmk-types`, and `rmk-config` crates are the
-source of truth for firmware targets in this repository. K:04 selects one of
-two explicitly named split BLE backends through `[split].backend`:
-
-- `common`: ordinary no-Qube `keyboards/k04` halves.
-- `qube`: `keyboards/k04_qube` dongle/halves connection path.
+source of truth for firmware targets in this repository. K:04 without Qube
+and K:04 with Qube share one BLE split connection engine. Their configuration
+differs only by topology: a central with a local matrix and one peripheral, or
+a matrix-less Qube central with two peripheral halves.

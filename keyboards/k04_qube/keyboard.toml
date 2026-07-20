@@ -38,7 +38,6 @@ modifier.subs = 6
 
 [split]
 connection = "ble"
-backend = "qube"
 
 [split.central]
 rows = 0

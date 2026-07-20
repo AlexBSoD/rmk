@@ -105,7 +105,6 @@ modifier.subs = 6
 
 [split]
 connection = "ble"
-backend = "common"
 
 [split.central]
 rows = 5
