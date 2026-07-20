@@ -7,9 +7,9 @@ use crate::event::BatteryStatusEvent;
 use crate::event::{KeyboardEvent, PointingEvent};
 
 #[cfg(feature = "_ble")]
-pub mod ble;
-#[cfg(feature = "_ble")]
 pub(crate) mod battery;
+#[cfg(feature = "_ble")]
+pub mod ble;
 pub mod central;
 /// Common abstraction layer of split driver
 pub(crate) mod driver;
@@ -55,6 +55,9 @@ pub(crate) enum SplitMessage {
     BatteryRefresh,
     /// Runtime settings packet, from central to peripheral.
     PeripheralSettings([u8; 27]),
+    /// Product id handshake used by the common split backend to reject
+    /// peripherals from a different keyboard model.
+    ProductId(u16),
     /// WPM from central to peripheral
     #[cfg(feature = "display")]
     Wpm(u16),

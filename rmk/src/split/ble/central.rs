@@ -1,9 +1,10 @@
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::Ordering;
 
 use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeSetPhy, LeSetScanParams};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
@@ -27,6 +28,7 @@ pub(crate) static PERIPHERAL_FOUND: Signal<crate::RawMutex, (u8, BdAddr)> = Sign
 static START_SCANNING: Signal<crate::RawMutex, ()> = Signal::new();
 static STOP_SCANNING: Signal<crate::RawMutex, ()> = Signal::new();
 static SCANNING_MUTEX: Mutex<crate::RawMutex, ()> = Mutex::new(());
+static UNCOMMITTED_PEER_CANDIDATES: BlockingMutex<crate::RawMutex, Cell<u32>> = BlockingMutex::new(Cell::new(0));
 
 /// Sleep management signal for BLE Split Central
 ///
@@ -34,6 +36,9 @@ static SCANNING_MUTEX: Mutex<crate::RawMutex, ()> = Mutex::new(());
 /// - `signal(true)`: Indicates central has entered sleep mode
 /// - `signal(false)`: Indicates activity detected, wake up or reset sleep timer
 pub(crate) static CENTRAL_SLEEP: Signal<crate::RawMutex, bool> = Signal::new();
+
+const SPLIT_SERVICE_UUID: [u8; 16] = [70, 153, 101, 152, 54, 53, 10, 191, 7, 75, 229, 24, 170, 251, 213, 77];
+const SPLIT_COMPANY_ID: u16 = 0xe118;
 
 /// Gatt service used in split central to send split message to peripheral
 #[gatt_service(uuid = "4dd5fbaa-18e5-4b07-bf0a-353698659946")]
@@ -49,6 +54,72 @@ struct SplitBleCentralService {
 #[gatt_server]
 struct BleSplitCentralServer {
     service: SplitBleCentralService,
+}
+
+pub async fn scan_common_peripherals<
+    'b,
+    's: 'b,
+    C: Controller
+        + ControllerCmdSync<LeSetScanParams>
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+>(
+    stack: &'b Stack<'s, C, DefaultPacketPool>,
+    addrs: &RefCell<VecView<Option<[u8; 6]>>>,
+) {
+    loop {
+        START_SCANNING.wait().await;
+        let need_scan = !addrs.borrow().iter().all(|a| a.is_some());
+        if need_scan {
+            let scanning_fut = async {
+                loop {
+                    let mut central = stack.central();
+                    wait_for_stack_started().await;
+                    let mut scanner = Scanner::new(&mut central);
+                    let scan_config = ScanConfig {
+                        active: false,
+                        ..Default::default()
+                    };
+                    let _guard = SCANNING_MUTEX.lock().await;
+                    if let Ok(_session) = scanner.scan(&scan_config).await {
+                        info!("Start common split peripheral scan");
+                        STOP_SCANNING.wait().await;
+                        info!("Stop common split peripheral scan");
+                    }
+                }
+            };
+            let update_addrs_fut = async {
+                loop {
+                    let (found_peripheral_id, addr) = PERIPHERAL_FOUND.wait().await;
+                    let scanned_addr = addr.into_inner();
+                    if let Some(Some(stored_addr)) = addrs.borrow_mut().get_mut(found_peripheral_id as usize)
+                        && *stored_addr == scanned_addr
+                    {
+                        continue;
+                    }
+
+                    info!("Scanned new common split peripheral {:?}", scanned_addr);
+                    let mut slot_updated = false;
+                    if let Some(slot) = addrs.borrow_mut().get_mut(found_peripheral_id as usize)
+                        && slot.is_none()
+                    {
+                        *slot = Some(scanned_addr);
+                        slot_updated = true;
+                    }
+
+                    if slot_updated {
+                        mark_uncommitted_peer_candidate(found_peripheral_id as usize);
+                    }
+
+                    if addrs.borrow().iter().all(|a| a.is_some()) {
+                        break;
+                    }
+                }
+            };
+
+            select(scanning_fut, update_addrs_fut).await;
+        }
+    }
 }
 
 pub async fn scan_peripherals<
@@ -137,25 +208,194 @@ pub(crate) struct ScanHandler {}
 impl EventHandler for ScanHandler {
     fn on_adv_reports(&self, mut it: LeAdvReportsIter<'_>) {
         while let Some(Ok(report)) = it.next() {
-            // Check advertisement data
-            if report.data.len() < 25 {
-                continue;
-            }
-            if report.data[4] == 0x07
-                && report.data[5..].starts_with(&[
-                    // uuid: 4dd5fbaa-18e5-4b07-bf0a-353698659946
-                    70u8, 153u8, 101u8, 152u8, 54u8, 53u8, 10u8, 191u8, 7u8, 75u8, 229u8, 24u8, 170u8, 251u8, 213u8,
-                    77u8,
-                ])
-                && report.data[21..25] == [0x04, 0xff, 0x18, 0xe1]
-            {
-                // Uuid and manufacturer specific data check passed
-                let peripheral_id = report.data[25];
+            if let Some(peripheral_id) = common_split_peripheral_id_from_advertisement(report.data).or_else(|| {
+                // Backward-compatible Qube/root advertisement format.
+                if report.data.len() > 25
+                    && report.data[4] == 0x07
+                    && report.data[5..].starts_with(&SPLIT_SERVICE_UUID)
+                    && report.data[21..25] == [0x04, 0xff, 0x18, 0xe1]
+                {
+                    Some(report.data[25])
+                } else {
+                    None
+                }
+            }) {
                 info!("Found split peripheral: id={:?}, addr={:?}", peripheral_id, report.addr);
                 PERIPHERAL_FOUND.signal((peripheral_id, report.addr));
                 break;
             }
         }
+    }
+}
+
+fn common_split_peripheral_id_from_advertisement(data: &[u8]) -> Option<u8> {
+    let mut has_split_service = false;
+    let mut matching_product_peripheral_id = None;
+    let mut offset = 0usize;
+
+    while offset < data.len() {
+        let len = data[offset] as usize;
+        if len == 0 {
+            break;
+        }
+        let end = offset + 1 + len;
+        if end > data.len() || len < 1 {
+            break;
+        }
+
+        let ad_type = data[offset + 1];
+        let payload = &data[offset + 2..end];
+        match ad_type {
+            0x07 if payload == SPLIT_SERVICE_UUID => {
+                has_split_service = true;
+            }
+            0xff if payload.len() >= 5 => {
+                let company_id = u16::from_le_bytes([payload[0], payload[1]]);
+                let product_id = u16::from_le_bytes([payload[2], payload[3]]);
+                if company_id == SPLIT_COMPANY_ID && product_id == crate::SPLIT_PRODUCT_ID {
+                    matching_product_peripheral_id = Some(payload[4]);
+                }
+            }
+            _ => {}
+        }
+
+        offset = end;
+    }
+
+    has_split_service.then_some(matching_product_peripheral_id).flatten()
+}
+
+pub async fn run_common_ble_peripheral_manager<
+    'b,
+    's: 'b,
+    C: Controller
+        + ControllerCmdSync<LeSetScanParams>
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    const ROW: usize,
+    const COL: usize,
+    const ROW_OFFSET: usize,
+    const COL_OFFSET: usize,
+>(
+    peri_id: usize,
+    addrs: &RefCell<VecView<Option<[u8; 6]>>>,
+    stack: &'b Stack<'s, C, DefaultPacketPool>,
+) {
+    trace!("SPLIT_MESSAGE_MAX_SIZE: {}", SPLIT_MESSAGE_MAX_SIZE);
+
+    loop {
+        let address = loop {
+            if let Some(Some(addr)) = addrs.borrow().get(peri_id) {
+                break Address::random(*addr);
+            }
+            if !START_SCANNING.signaled() {
+                START_SCANNING.signal(());
+            }
+            embassy_time::Timer::after_millis(500).await;
+        };
+        info!("Common peripheral peer address: {:?}", address);
+
+        let mut central = stack.central();
+        let config = ConnectConfig {
+            connect_params: defaul_central_conn_param(),
+            scan_config: ScanConfig {
+                filter_accept_list: &[address],
+                ..Default::default()
+            },
+        };
+        wait_for_stack_started().await;
+
+        publish_event(PeripheralConnectedEvent {
+            id: peri_id,
+            connected: false,
+        });
+
+        match with_timeout(Duration::from_secs(5), async {
+            if let Ok(_guard) = SCANNING_MUTEX.try_lock() {
+                info!("Start connecting to common peripheral {}", peri_id);
+                central.connect(&config).await
+            } else {
+                STOP_SCANNING.signal(());
+                let _guard = SCANNING_MUTEX.lock().await;
+                embassy_time::Timer::after_millis(100).await;
+                info!("Start connecting to common peripheral {}", peri_id);
+                central.connect(&config).await
+            }
+        })
+        .await
+        {
+            Ok(Ok(conn)) => {
+                info!("Connected to common peripheral {}", peri_id);
+
+                publish_event(PeripheralConnectedEvent {
+                    id: peri_id,
+                    connected: true,
+                });
+
+                match run_common_central_manager_task::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(
+                    peri_id,
+                    address.addr.into_inner(),
+                    stack,
+                    &conn,
+                )
+                .await
+                {
+                    Ok(true) => clear_uncommitted_peer_candidate(peri_id),
+                    Ok(false) => {
+                        warn!("Common peripheral {} product check failed", peri_id);
+                        drop_uncommitted_peer_candidate(peri_id, addrs);
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "defmt")]
+                        let e = defmt::Debug2Format(&e);
+                        error!("Common BLE central error: {:?}", e);
+                        drop_uncommitted_peer_candidate(peri_id, addrs);
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                #[cfg(feature = "defmt")]
+                let e = defmt::Debug2Format(&e);
+                error!("Connect to common peripheral {} error: {:?}", peri_id, e);
+                drop_uncommitted_peer_candidate(peri_id, addrs);
+            }
+            Err(_) => {
+                warn!("Connect to common peripheral {} timeout", peri_id);
+                drop_uncommitted_peer_candidate(peri_id, addrs);
+            }
+        }
+        embassy_time::Timer::after_millis(500).await;
+    }
+}
+
+fn bit_for_peri(peri_id: usize) -> u32 {
+    1u32 << peri_id.min(31)
+}
+
+fn mark_uncommitted_peer_candidate(peri_id: usize) {
+    let bit = bit_for_peri(peri_id);
+    UNCOMMITTED_PEER_CANDIDATES.lock(|cell| cell.set(cell.get() | bit));
+}
+
+fn clear_uncommitted_peer_candidate(peri_id: usize) {
+    let bit = bit_for_peri(peri_id);
+    UNCOMMITTED_PEER_CANDIDATES.lock(|cell| cell.set(cell.get() & !bit));
+}
+
+fn take_uncommitted_peer_candidate(peri_id: usize) -> bool {
+    let bit = bit_for_peri(peri_id);
+    UNCOMMITTED_PEER_CANDIDATES.lock(|cell| {
+        let current = cell.get();
+        cell.set(current & !bit);
+        current & bit != 0
+    })
+}
+
+fn drop_uncommitted_peer_candidate(peri_id: usize, addrs: &RefCell<VecView<Option<[u8; 6]>>>) {
+    if take_uncommitted_peer_candidate(peri_id)
+        && let Some(addr) = addrs.borrow_mut().get_mut(peri_id)
+    {
+        *addr = None;
     }
 }
 
@@ -265,6 +505,131 @@ fn defaul_central_conn_param() -> RequestedConnParams {
         max_latency: 0,
         supervision_timeout: Duration::from_secs(5),
         ..Default::default()
+    }
+}
+
+async fn run_common_central_manager_task<
+    'b,
+    's: 'b,
+    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    P: PacketPool,
+    const ROW: usize,
+    const COL: usize,
+    const ROW_OFFSET: usize,
+    const COL_OFFSET: usize,
+>(
+    id: usize,
+    peer_address: [u8; 6],
+    stack: &'b Stack<'s, C, P>,
+    conn: &Connection<'b, P>,
+) -> Result<bool, BleHostError<C::Error>> {
+    let client = GattClient::<C, P, 10>::new(stack, conn).await?;
+
+    update_ble_phy(stack, conn).await;
+
+    info!("Updating common split connection parameters for peripheral");
+    update_conn_params(stack, conn, &defaul_central_conn_param()).await;
+
+    match select3(
+        ble_central_task(&client, conn),
+        run_common_peripheral_manager::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(id, peer_address, &client),
+        sleep_manager_task(stack, conn),
+    )
+    .await
+    {
+        Either3::First(e) => e.map(|_| true),
+        Either3::Second(e) => e,
+        Either3::Third(e) => e.map(|_| true),
+    }
+}
+
+async fn run_common_peripheral_manager<
+    'a,
+    C: Controller + ControllerCmdAsync<LeSetPhy>,
+    P: PacketPool,
+    const ROW: usize,
+    const COL: usize,
+    const ROW_OFFSET: usize,
+    const COL_OFFSET: usize,
+>(
+    id: usize,
+    peer_address: [u8; 6],
+    client: &GattClient<'a, C, P, 10>,
+) -> Result<bool, BleHostError<C::Error>> {
+    let services = client.services_by_uuid(&Uuid::new_long(SPLIT_SERVICE_UUID)).await?;
+    info!("Common split services found");
+    if let Some(service) = services.first() {
+        let message_to_central = client
+            .characteristic_by_uuid::<[u8; SPLIT_MESSAGE_MAX_SIZE]>(
+                service,
+                &Uuid::Uuid128([
+                    195u8, 139u8, 18u8, 232u8, 162u8, 55u8, 46u8, 141u8, 194u8, 69u8, 11u8, 189u8, 227u8, 19u8, 99u8,
+                    14u8,
+                ]),
+            )
+            .await?;
+        info!("Common message to central found");
+        let message_to_peripheral = client
+            .characteristic_by_uuid::<[u8; SPLIT_MESSAGE_MAX_SIZE]>(
+                service,
+                &Uuid::Uuid128([
+                    156u8, 59u8, 28u8, 61u8, 42u8, 58u8, 151u8, 160u8, 56u8, 77u8, 228u8, 202u8, 251u8, 20u8, 53u8,
+                    75u8,
+                ]),
+            )
+            .await?;
+        info!("Subscribing common split notifications");
+        let listener = client.subscribe(&message_to_central, false).await?;
+        let mut split_ble_driver = BleSplitCentralDriver::new(listener, message_to_peripheral, client);
+        if !validate_split_product(&mut split_ble_driver).await {
+            return Ok(false);
+        }
+
+        #[cfg(feature = "storage")]
+        FLASH_CHANNEL
+            .send(FlashOperationMessage::PeerAddress(PeerAddress::new(
+                id as u8,
+                true,
+                peer_address,
+            )))
+            .await;
+
+        let peripheral_manager = PeripheralManager::<ROW, COL, ROW_OFFSET, COL_OFFSET, _>::new(split_ble_driver, id);
+        peripheral_manager.run().await;
+        info!("Common peripheral manager stopped");
+        return Ok(true);
+    };
+    Ok(false)
+}
+
+async fn validate_split_product<T: SplitReader + SplitWriter>(driver: &mut T) -> bool {
+    if let Err(e) = driver.write(&SplitMessage::ProductId(crate::SPLIT_PRODUCT_ID)).await {
+        warn!("Common split product check write failed: {:?}", e);
+        return false;
+    }
+
+    match with_timeout(Duration::from_millis(1500), driver.read()).await {
+        Ok(Ok(SplitMessage::ProductId(product_id))) if product_id == crate::SPLIT_PRODUCT_ID => true,
+        Ok(Ok(SplitMessage::ProductId(product_id))) => {
+            warn!(
+                "Common split product id mismatch: got {}, expected {}",
+                product_id,
+                crate::SPLIT_PRODUCT_ID
+            );
+            false
+        }
+        Ok(Ok(message)) => {
+            warn!("Unexpected common split product check response: {:?}", message);
+            false
+        }
+        Ok(Err(e)) => {
+            warn!("Common split product check read failed: {:?}", e);
+            false
+        }
+        Err(_) => {
+            warn!("Common split product check timeout");
+            false
+        }
     }
 }
 

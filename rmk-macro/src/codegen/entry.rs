@@ -1,7 +1,7 @@
 use darling::FromMeta;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use rmk_config::resolved::hardware::{BoardConfig, CommunicationConfig};
+use rmk_config::resolved::hardware::{BoardConfig, CommunicationConfig, SplitConfig};
 use rmk_config::resolved::{Behavior, Hardware, Host};
 use syn::{ItemFn, ItemMod};
 
@@ -124,6 +124,13 @@ pub(crate) fn rmk_entry_select(
                 tasks.push(t.clone());
             }
             if split_config.connection == "ble" {
+                let backend = split_backend(split_config);
+                if backend != "common" && backend != "qube" {
+                    panic!(
+                        "Invalid split backend: {}, only \"common\" and \"qube\" are supported",
+                        backend
+                    );
+                }
                 if !processors.is_empty() {
                     tasks.push(processors_task);
                 };
@@ -132,16 +139,33 @@ pub(crate) fn rmk_entry_select(
                     let col = p.cols;
                     let row_offset = p.row_offset;
                     let col_offset = p.col_offset;
-                    tasks.push(quote! {
-                        ::rmk::split::central::run_peripheral_manager::<#row, #col, #row_offset, #col_offset, _>(
-                            #idx,
-                            &peripheral_addrs,
-                            &stack,
-                        )
-                    });
+                    let peripheral_manager = if backend == "common" {
+                        quote! {
+                            ::rmk::split::ble::central::run_common_ble_peripheral_manager::<_, #row, #col, #row_offset, #col_offset>(
+                                #idx,
+                                &peripheral_addrs,
+                                &stack,
+                            )
+                        }
+                    } else {
+                        quote! {
+                            ::rmk::split::central::run_peripheral_manager::<#row, #col, #row_offset, #col_offset, _>(
+                                #idx,
+                                &peripheral_addrs,
+                                &stack,
+                            )
+                        }
+                    };
+                    tasks.push(peripheral_manager);
                 });
-                let scan_task = quote! {
-                    ::rmk::split::ble::central::scan_peripherals(&stack, &peripheral_addrs)
+                let scan_task = if backend == "common" {
+                    quote! {
+                        ::rmk::split::ble::central::scan_common_peripherals(&stack, &peripheral_addrs)
+                    }
+                } else {
+                    quote! {
+                        ::rmk::split::ble::central::scan_peripherals(&stack, &peripheral_addrs)
+                    }
                 };
                 tasks.push(scan_task);
                 let joined = join_all_tasks(tasks);
@@ -208,6 +232,10 @@ pub(crate) fn rmk_entry_select(
         use ::rmk::core_traits::Runnable;
         #entry
     }
+}
+
+fn split_backend(split_config: &SplitConfig) -> &str {
+    split_config.backend.as_deref().unwrap_or("qube")
 }
 
 #[allow(clippy::too_many_arguments)]

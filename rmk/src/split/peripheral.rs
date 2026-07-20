@@ -57,6 +57,16 @@ pub async fn run_rmk_split_peripheral<
     crate::split::ble::peripheral::initialize_nrf_ble_split_peripheral_and_run(id, stack).await;
 }
 
+#[cfg(feature = "_ble")]
+pub async fn run_common_rmk_split_peripheral<'b, 's, C: Controller + ControllerCmdAsync<LeSetPhy>>(
+    id: usize,
+    stack: &'b Stack<'s, C, DefaultPacketPool>,
+) where
+    's: 'b,
+{
+    crate::split::ble::peripheral::initialize_common_nrf_ble_split_peripheral_and_run(id, stack).await;
+}
+
 /// The split peripheral instance.
 pub(crate) struct SplitPeripheral<S: SplitWriter + SplitReader> {
     split_driver: S,
@@ -127,6 +137,12 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                         }
                         SplitMessage::PeripheralSettings(settings) => {
                             publish_event(crate::event::PeripheralSettingsEvent(settings));
+                        }
+                        SplitMessage::ProductId(_) => {
+                            self.split_driver
+                                .write(&SplitMessage::ProductId(crate::SPLIT_PRODUCT_ID))
+                                .await
+                                .ok();
                         }
                         #[cfg(feature = "display")]
                         SplitMessage::Wpm(wpm) => {

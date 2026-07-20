@@ -31,6 +31,7 @@ fn default_sub_count() -> usize {
 
 /// Compile-time constants emitted as `pub const` items by `rmk-types/build.rs`.
 pub struct BuildConstants {
+    pub product_id: u16,
     pub combo_max_num: usize,
     pub combo_max_length: usize,
     pub fork_max_num: usize,
@@ -159,6 +160,7 @@ impl crate::KeyboardTomlConfig {
         }
 
         Ok(BuildConstants {
+            product_id: self.keyboard.clone().unwrap_or_default().product_id,
             combo_max_num: rmk.combo_max_num,
             combo_max_length: rmk.combo_max_length,
             fork_max_num: rmk.fork_max_num,

@@ -451,7 +451,7 @@ pub(crate) fn expand_keymap_and_storage(
         quote! {
             #initialize_positional_config
             #keymap_data_init
-            let (keymap, mut storage) = ::rmk::initialize_keymap_and_storage(
+            let (keymap, mut storage) = ::rmk::initialize_keymap_and_storage_with_vial(
                 &mut keymap_data,
                 flash,
                 &rmk_config.storage_config,

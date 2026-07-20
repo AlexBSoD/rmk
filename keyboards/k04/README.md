@@ -2,15 +2,15 @@
 
 No-Qube split BLE firmware for the ordinary K:04 halves.
 
-This target intentionally uses the local K:04 common stack:
+This target uses the root RMK crates with the `common` split BLE backend:
 
-- `common/rmk-common-k04`
-- `common/rmk-macro-common-k04`
-- `common/rmk-types-common-k04`
+```toml
+[split]
+connection = "ble"
+backend = "common"
+```
 
-Keep this separate from `keyboards/k04_qube`: the common path is for ordinary
-halves, while the Qube path stays on the root RMK crates because its dongle
-connection flow is different and works there.
+Keep this backend separate from `keyboards/k04_qube`, which uses `backend = "qube"` for the dongle connection flow.
 
 ## Build
 

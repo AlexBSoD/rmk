@@ -563,11 +563,27 @@ fn expand_split_peripheral_entry(
     };
 
     if split_config.connection == "ble" {
-        let peripheral_run = quote! {
-            ::rmk::split::peripheral::run_rmk_split_peripheral(
-                #id,
-                &stack,
-            )
+        let backend = split_backend(split_config);
+        if backend != "common" && backend != "qube" {
+            panic!(
+                "Invalid split backend: {}, only \"common\" and \"qube\" are supported",
+                backend
+            );
+        }
+        let peripheral_run = if backend == "common" {
+            quote! {
+                ::rmk::split::peripheral::run_common_rmk_split_peripheral(
+                    #id,
+                    &stack,
+                )
+            }
+        } else {
+            quote! {
+                ::rmk::split::peripheral::run_rmk_split_peripheral(
+                    #id,
+                    &stack,
+                )
+            }
         };
         // Build task list: device, processor (if any), peripheral, registered_processors, dfu
         let mut tasks = vec![device_task];
@@ -626,6 +642,10 @@ fn expand_split_peripheral_entry(
     } else {
         panic!("Invalid split connection type: {}", split_config.connection);
     }
+}
+
+fn split_backend(split_config: &SplitConfig) -> &str {
+    split_config.backend.as_deref().unwrap_or("qube")
 }
 
 /// Returns (device initializations, device_names, processor_names)

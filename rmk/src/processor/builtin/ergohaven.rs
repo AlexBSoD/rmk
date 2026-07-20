@@ -14,7 +14,6 @@ use crate::NUM_BLE_PROFILE;
 use crate::ble::profile::BleProfileAction;
 use crate::channel::BLE_PROFILE_CHANNEL;
 use crate::event::{ActionEvent, KeyboardEvent};
-
 #[cfg(feature = "split")]
 use crate::event::{ClearPeerEvent, PeripheralBatteryRefreshEvent, publish_event};
 
@@ -45,6 +44,12 @@ const CLEAR_PEER_HOLD: Duration = Duration::from_secs(5);
 pub struct ErgohavenUserKeys {
     clear_peer_deadline: Option<Instant>,
     clear_peer_key: Option<KeyboardEvent>,
+}
+
+impl Default for ErgohavenUserKeys {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ErgohavenUserKeys {
