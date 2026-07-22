@@ -12,7 +12,15 @@ command -v cargo-nextest >/dev/null 2>&1 || {
 # `<workspace>/.config/nextest.toml` lookup would miss our shared config at
 # repo root. Pass it explicitly.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-nx=(nextest run --config-file "$repo_root/.config/nextest.toml")
+host_target="$(rustc -vV | sed -n 's/^host: //p')"
+if [[ -z "$host_target" ]]; then
+    echo "Unable to determine the Rust host target"
+    exit 1
+fi
+
+# The repository-wide .cargo/config.toml targets nRF52840 firmware by
+# default. Unit tests require std, so always run this matrix on the host.
+nx=(nextest run --target "$host_target" --config-file "$repo_root/.config/nextest.toml")
 
 # rmk-types: default-features run + host-feature run (the latter enables
 # rmk_protocol/bulk/_ble/split, which is required to compile the wire-format
@@ -38,5 +46,5 @@ cargo "${nx[@]}" --manifest-path rmk/Cargo.toml --no-default-features
 
 # Doctests: nextest doesn't run them. rmk/ has `doctest = false` so only
 # rmk-types needs a --doc pass.
-cargo test --manifest-path rmk-types/Cargo.toml --doc
-cargo test --manifest-path rmk-types/Cargo.toml --features host --doc
+cargo test --target "$host_target" --manifest-path rmk-types/Cargo.toml --doc
+cargo test --target "$host_target" --manifest-path rmk-types/Cargo.toml --features host --doc
