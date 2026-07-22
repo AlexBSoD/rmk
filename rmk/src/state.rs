@@ -23,6 +23,12 @@ pub(crate) fn current_connection_status() -> ConnectionStatus {
     CONNECTION_STATUS.lock(|c| c.get())
 }
 
+/// Re-publish the current status for user-visible actions that do not mutate
+/// it, such as selecting the already-active BLE profile.
+pub(crate) fn notify_connection_status() {
+    publish_event(ConnectionStatusChangeEvent(current_connection_status()));
+}
+
 pub(crate) fn current_usb_state() -> UsbState {
     CONNECTION_STATUS.lock(|c| c.get().usb)
 }

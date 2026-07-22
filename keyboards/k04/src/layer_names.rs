@@ -2,7 +2,7 @@ use core::str;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use rmk::config::{VialDeviceSettings, VialDeviceSettingsData};
-use rmk::event::{publish_event, PeripheralSettingsEvent};
+use rmk::event::{PeripheralSettingsEvent, publish_event};
 
 pub const LAYER_NAME_COUNT: usize = 16;
 pub const LAYER_NAME_MAX: usize = 12;
@@ -400,6 +400,18 @@ fn module_set_setting(qsid: u16, data: &[u8]) -> bool {
 
 pub fn publish_module_settings() {
     publish_event(PeripheralSettingsEvent(module_settings_sync_packet()));
+    publish_event(PeripheralSettingsEvent(module_profile_settings_sync_packet()));
+}
+
+fn module_profile_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
+    let mut data = [0u8; MODULE_SETTINGS_SYNC_LEN];
+    data[0] = MODULE_SETTINGS_VERSION | 0x80;
+    let mut profile = 0u8;
+    while profile < 5 {
+        data[1 + usize::from(profile)] = module_bt_profile_color_index(profile);
+        profile += 1;
+    }
+    data
 }
 
 fn module_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {

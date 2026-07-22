@@ -249,6 +249,7 @@ where
     pub(crate) async fn switch_profile(&mut self, profile: u8) -> bool {
         let current = current_profile();
         if profile == current {
+            crate::state::notify_connection_status();
             return false;
         }
 
