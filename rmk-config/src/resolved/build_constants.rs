@@ -313,4 +313,24 @@ mod tests {
         let toml = "[event.action]\nchannel_size = 16\npubs = 1\nsubs = 1\n\n[[behavior.auto_mouse_layer]]\ntarget_layer = 1\ndeactivate_on_key = true\n";
         assert!(parse(toml).build_constants(&[]).is_ok());
     }
+
+    #[test]
+    fn split_reserves_peripheral_manager_settings_subscribers() {
+        let base = parse("").build_constants(&[]).unwrap();
+        let split = parse("").build_constants(&["split"]).unwrap();
+        let base_subs = base
+            .events
+            .iter()
+            .find(|event| event.name == "peripheral_settings")
+            .unwrap()
+            .subs;
+        let split_subs = split
+            .events
+            .iter()
+            .find(|event| event.name == "peripheral_settings")
+            .unwrap()
+            .subs;
+
+        assert_eq!(split_subs, base_subs + 2);
+    }
 }

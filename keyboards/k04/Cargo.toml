@@ -17,7 +17,7 @@ usb_debug_force_ble = ["usb_debug"]
 
 [dependencies]
 rmk = { path = "../../rmk", default-features = false, features = [
-    "usb_log",
+    "defmt",
     "storage",
     "vial",
     "nrf52840_ble",

@@ -162,16 +162,18 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
                 }
             };
 
-            // Give state updates priority even when a peripheral streams pointing
-            // reports, while still waking periodically for passthrough DFU work.
-            let read_or_timer = select(self.transceiver.read(), embassy_time::Timer::after_millis(5));
-            match select(next_event_to_peri, read_or_timer).await {
-                Either::First(msg) => {
-                    if self.send(&msg).await.is_err() {
-                        return;
-                    }
-                }
-                Either::Second(Either::First(read_result)) => match read_result {
+            // Keep transport reads ahead of outbound state updates so key and
+            // pointing notifications cannot be starved by a ready subscriber.
+            // Only wake periodically when split DFU needs polling.
+            let passthrough_wakeup = async {
+                #[cfg(feature = "dfu_split")]
+                embassy_time::Timer::after_millis(5).await;
+                #[cfg(not(feature = "dfu_split"))]
+                core::future::pending::<()>().await;
+            };
+            let event_or_timer = select(next_event_to_peri, passthrough_wakeup);
+            match select(self.transceiver.read(), event_or_timer).await {
+                Either::First(read_result) => match read_result {
                     #[cfg(feature = "dfu_split")]
                     Ok(SplitMessage::FirmwareHashResponse(hash)) => {
                         self.handle_proactive_hash(hash).await;
@@ -179,6 +181,11 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
                     Ok(split_message) => self.process_peripheral_message(split_message).await,
                     Err(e) => error!("Peripheral message read error: {:?}", e),
                 },
+                Either::Second(Either::First(msg)) => {
+                    if self.send(&msg).await.is_err() {
+                        return;
+                    }
+                }
                 Either::Second(Either::Second(())) => {}
             }
         }

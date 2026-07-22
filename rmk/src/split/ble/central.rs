@@ -292,6 +292,10 @@ pub(crate) async fn run_ble_peripheral_manager<
             connect_params: defaul_central_conn_param(),
             scan_config: ScanConfig {
                 filter_accept_list: &[address],
+                // Match the effective 62.5 ms initiating scan used by the
+                // last working bt-hci 0.6 firmware.
+                interval: Duration::from_micros(62_500),
+                window: Duration::from_micros(62_500),
                 ..Default::default()
             },
         };

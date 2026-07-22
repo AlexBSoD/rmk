@@ -63,6 +63,9 @@ events = [
     { name = "led_indicator" },
     # split/driver.rs: LayerChangeEvent::subscriber()
     { name = "layer_change" },
+    # split/driver.rs: PeripheralSettingsEvent::subscriber()
+    # Covers up to 2 peripherals; for 3+ peripherals override subs in keyboard.toml
+    { name = "peripheral_settings", count = 2 },
     # split/driver.rs: ConnectionStatusChangeEvent::subscriber()
     # Covers up to 2 peripherals; for 3+ peripherals override subs in keyboard.toml
     { name = "connection_status_change", count = 2 },
