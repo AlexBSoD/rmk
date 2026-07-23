@@ -8,12 +8,44 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.keyboard }} firmware
+    name: Build ${{ matrix.output_name }} firmware
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        keyboard: [k03, k04, imperial44, op36, velvet, velvet_ui]
+        include:
+          - keyboard: k03
+            output_name: k03
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+          - keyboard: k04
+            output_name: k04_series_k04
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+          - keyboard: k04
+            output_name: k04_series_mini
+            keyboard_toml: keyboard_mini.toml
+            vial_json: vial_mini.json
+          - keyboard: k04
+            output_name: k04_series_micro
+            keyboard_toml: keyboard_micro.toml
+            vial_json: vial_micro.json
+          - keyboard: imperial44
+            output_name: imperial44
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+          - keyboard: op36
+            output_name: op36
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+          - keyboard: velvet
+            output_name: velvet
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+          - keyboard: velvet_ui
+            output_name: velvet_ui
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
 
     steps:
       - name: Checkout
@@ -35,7 +67,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ matrix.keyboard }}-${{ hashFiles('keyboards/${{ matrix.keyboard }}/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.output_name }}-${{ hashFiles(format('keyboards/{0}/Cargo.lock', matrix.keyboard)) }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.keyboard }}-
             ${{ runner.os }}-cargo-
@@ -62,14 +94,18 @@ jobs:
         working-directory: keyboards/${{ matrix.keyboard }}
         env:
           BINDGEN_EXTRA_CLANG_ARGS: "--sysroot=/usr/lib/arm-none-eabi --target=arm-none-eabi -I/usr/lib/arm-none-eabi/include -I/usr/lib/gcc/arm-none-eabi/13.2.1/include"
+          KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
+          VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
         run: cargo build --release --bin central
 
       - name: Build Peripheral
         working-directory: keyboards/${{ matrix.keyboard }}
         env:
           BINDGEN_EXTRA_CLANG_ARGS: "--sysroot=/usr/lib/arm-none-eabi --target=arm-none-eabi -I/usr/lib/arm-none-eabi/include -I/usr/lib/gcc/arm-none-eabi/13.2.1/include"
+          KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
+          VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
         run: cargo build --release --bin peripheral
 
       - name: Convert to UF2
@@ -79,21 +115,21 @@ jobs:
             target/thumbv7em-none-eabihf/release/central left.bin
           python3 ../../uf2conv.py left.bin \
             --base 0x26000 --family 0xADA52840 \
-            --output ${{ matrix.keyboard }}_left.uf2
+            --output ${{ matrix.output_name }}_left.uf2
 
           arm-none-eabi-objcopy -O binary \
             target/thumbv7em-none-eabihf/release/peripheral right.bin
           python3 ../../uf2conv.py right.bin \
             --base 0x26000 --family 0xADA52840 \
-            --output ${{ matrix.keyboard }}_right.uf2
+            --output ${{ matrix.output_name }}_right.uf2
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.keyboard }}
+          name: ${{ matrix.output_name }}
           path: |
-            keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard }}_left.uf2
-            keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard }}_right.uf2
+            keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}_left.uf2
+            keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}_right.uf2
           retention-days: 30
 
   build-trackball:

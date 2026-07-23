@@ -1,8 +1,9 @@
+# K:04 Series — Micro profile.
 [keyboard]
 name = "Ergohaven K:04 Micro"
 product_name = "K:04 Micro"
 vendor_id = 0xE126
-product_id = 0x0073
+product_id = 0x0076
 manufacturer = "Ergohaven"
 chip = "nrf52840"
 
@@ -16,6 +17,12 @@ unlock_keys = [[0, 4], [0, 3]]
 action.channel_size = 16
 action.subs = 2
 keyboard.subs = 4
+peripheral_battery.pubs = 2
+peripheral_battery.subs = 4
+layer_change.channel_size = 4
+layer_change.subs = 6
+modifier.channel_size = 8
+modifier.subs = 6
 
 [layout]
 rows = 8
@@ -101,6 +108,7 @@ col_offset = 0
 # ble_addr removed — RMK manages addresses from storage automatically
 
 [split.central.matrix]
+matrix_type = "normal"
 # K04 schematic, with R1/top row omitted.
 # R2..R5 = P0.28, P0.03, P1.10, P1.11
 # C1..C6 = P1.06, P1.04, P1.02, P1.00, P0.22, P0.20
@@ -123,6 +131,7 @@ col_offset = 0
 # ble_addr removed — RMK manages addresses from storage automatically
 
 [split.peripheral.matrix]
+matrix_type = "normal"
 # K04 schematic, with R1/top row omitted.
 # R2..R5 = P0.28, P0.03, P1.10, P1.11
 # C1..C6 = P1.06, P1.04, P1.02, P1.00, P0.22, P0.20
@@ -147,4 +156,6 @@ ble_profiles_num = 5
 
 [storage]
 clear_storage = false
-clear_layout = true
+# Preserve the Vial/Entropy keymap. Use settings_reset once when changing
+# between K:04 Series profiles.
+clear_layout = false

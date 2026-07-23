@@ -1,7 +1,7 @@
-# K:04 Series uses the full 10x6 electrical matrix shared by K:04, Mini, and Micro.
+# K:04 Series — full K:04 profile.
 [keyboard]
-name = "Ergohaven K:04 Series"
-product_name = "K:04 Series"
+name = "Ergohaven K:04"
+product_name = "K:04"
 vendor_id = 0xE126
 product_id = 0x0074
 manufacturer = "Ergohaven"
@@ -10,7 +10,7 @@ chip = "nrf52840"
 [host]
 # Enable Vial support
 vial_enabled = true
-# Shared unlock positions present on K:04, Mini, and Micro.
+# Vial unlock positions for the full K:04 matrix.
 unlock_keys = [[1, 4], [1, 3]]
 
 [layout]
@@ -18,8 +18,7 @@ rows = 10
 cols = 6
 layers = 16
 # matrix_map: maps physical (row,col) positions to logical matrix positions
-# Left half rows 0-4, right half rows 5-9. Mini and Micro leave
-# unpopulated matrix positions electrically open.
+# Left half rows 0-4, right half rows 5-9.
 matrix_map = """
 (0,5) (0,4) (0,3) (0,2) (0,1) (0,0)                    (5,0) (5,1) (5,2) (5,3) (5,4) (5,5)
 (1,5) (1,4) (1,3) (1,2) (1,1) (1,0)                    (6,0) (6,1) (6,2) (6,3) (6,4) (6,5)

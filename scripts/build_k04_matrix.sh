@@ -79,6 +79,19 @@ build_split() {
     run "keyboards/$keyboard" cargo build --release "${bins[@]}"
 }
 
+build_k04_series_profile() {
+    local profile="$1"
+    local keyboard_toml="$2"
+    local vial_json="$3"
+    local bins=(--bin central --bin peripheral --bin hardreset)
+
+    run "keyboards/k04" env \
+        "CARGO_TARGET_DIR=target/$profile" \
+        "KEYBOARD_TOML_PATH=$repo_root/keyboards/k04/$keyboard_toml" \
+        "VIAL_JSON_PATH=$repo_root/keyboards/k04/$vial_json" \
+        cargo build --release "${bins[@]}"
+}
+
 build_qube() {
     local keyboard="$1"
     run "keyboards/$keyboard" env CARGO_TARGET_DIR=target/qube cargo build --release --bin qube --features qube
@@ -87,7 +100,9 @@ build_qube() {
 
 echo "Using BINDGEN_EXTRA_CLANG_ARGS=$BINDGEN_EXTRA_CLANG_ARGS"
 
-build_split k04
+build_k04_series_profile k04 keyboard.toml vial.json
+build_k04_series_profile mini keyboard_mini.toml vial_mini.json
+build_k04_series_profile micro keyboard_micro.toml vial_micro.json
 build_split op36
 build_split k03
 build_split imperial44

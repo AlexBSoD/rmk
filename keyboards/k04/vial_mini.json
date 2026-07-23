@@ -1,7 +1,7 @@
 {
-    "name": "Ergohaven K:04 Micro",
+    "name": "Ergohaven K:04 Mini",
     "vendorId": "0xE126",
-    "productId": "0x0073",
+    "productId": "0x0075",
     "firmware": {
         "version": "0.1.2"
     },
@@ -52,13 +52,7 @@
         { "name": "BT_OUT", "shortName": "BT\nOut", "title": "Use Bluetooth output" },
         { "name": "USB_OUT", "shortName": "USB\nOut", "title": "Use USB output" },
         { "name": "BT_BATTERY", "shortName": "BT\nBattery", "title": "Show battery level on the status LED" },
-        { "name": "BT_CLR_PEER", "shortName": "Peer\nClr", "title": "Clear split peer binding" },
-        { "name": "EH_LALT_LPRN", "shortName": "LAlt_T\n(", "title": "Tap (, hold Left Alt" },
-        { "name": "EH_LCTL_RPRN", "shortName": "LCtl_T\n)", "title": "Tap ), hold Left Ctrl" },
-        { "name": "EH_RCTL_LBRC", "shortName": "RCtl_T\n{", "title": "Tap {, hold Right Ctrl" },
-        { "name": "EH_RALT_RBRC", "shortName": "RAlt_T\n}", "title": "Tap }, hold Right Alt" },
-        { "name": "EH_RGUI_EXLM", "shortName": "RGui_T\n!", "title": "Tap !, hold Right Gui" },
-        { "name": "EH_RGUI_BTCLR", "shortName": "RGui_T\nBT Clr", "title": "Tap BT Clear, hold Right Gui" }
+        { "name": "BT_CLR_PEER", "shortName": "Peer\nClr", "title": "Clear split peer binding" }
     ],
     "settings": [
         {
@@ -157,18 +151,18 @@
             "Hide right encoder module"
         ],
         "keymap": [
-            [{"y": 0.45}, "0,4", {"y": -0.45}, "0,3", {"y": -0.1}, "0,2", {"y": 0.1}, "0,1", "0,0"],
-            [{"y": 0.45}, "1,4", {"y": -0.45}, "1,3", {"y": -0.1}, "1,2", {"y": 0.1}, "1,1", "1,0"],
-            [{"y": 0.45}, "2,4", {"y": -0.45}, "2,3", {"y": -0.1}, "2,2", {"y": 0.1}, "2,1", "2,0"],
-            [{"x": 3.2, "y": 0.3}, "3,3", {"y": 0.2}, "3,2", {"y": 0.2}, "3,1"],
+            [{"y": 0.45}, "0,5", "0,4", {"y": -0.45}, "0,3", {"y": -0.1}, "0,2", {"y": 0.1}, "0,1", "0,0"],
+            [{"y": 0.45}, "1,5", "1,4", {"y": -0.45}, "1,3", {"y": -0.1}, "1,2", {"y": 0.1}, "1,1", "1,0"],
+            [{"y": 0.45}, "2,5", "2,4", {"y": -0.45}, "2,3", {"y": -0.1}, "2,2", {"y": 0.1}, "2,1", "2,0"],
+            [{"x": 2}, "3,5", {"y": -0.1}, "3,4", {"x": 0.2, "y": 0.3}, "3,3", {"y": 0.2}, "3,2", {"y": 0.2}, "3,1"],
 
-            [{"rx": 10.5, "ry": -0.05}, "4,0", "4,1", {"y": -0.1}, "4,2", {"y": 0.1}, "4,3", {"y": 0.45}, "4,4"],
-            [{"y": -0.45}, "5,0", "5,1", {"y": -0.1}, "5,2", {"y": 0.1}, "5,3", {"y": 0.45}, "5,4"],
-            [{"y": -0.45}, "6,0", "6,1", {"y": -0.1}, "6,2", {"y": 0.1}, "6,3", {"y": 0.45}, "6,4"],
-            [{"x": -1.2, "y": 0.15}, "7,1", {"y": -0.2}, "7,2", {"y": -0.2}, "7,3"],
+            [{"rx": 11.5, "ry": -0.05}, "4,0", "4,1", {"y": -0.1}, "4,2", {"y": 0.1}, "4,3", {"y": 0.45}, "4,4", "4,5"],
+            [{"y": -0.45}, "5,0", "5,1", {"y": -0.1}, "5,2", {"y": 0.1}, "5,3", {"y": 0.45}, "5,4", "5,5"],
+            [{"y": -0.45}, "6,0", "6,1", {"y": -0.1}, "6,2", {"y": 0.1}, "6,3", {"y": 0.45}, "6,4", "6,5"],
+            [{"x": -1.2, "y": 0.15}, "7,1", {"y": -0.2}, "7,2", {"y": -0.2}, "7,3", {"x": 0.2, "y": -0.3}, "7,4", {"y": 0.1}, "7,5"],
 
-            [{"rx": 5.5, "ry": 1.95}, "3,0\n\n\n0,0", {"y": -0.5}, "0,1\n\n\n0,0\n\n\n\n\n\ne", {"y": 1.0, "x": -1}, "0,0\n\n\n0,0\n\n\n\n\n\ne"],
-            [{"rx": 9.0, "ry": 1.95}, "7,0\n\n\n1,0", {"y": -0.5, "x": -2}, "1,1\n\n\n1,0\n\n\n\n\n\ne", {"y": 1.0, "x": -1}, "1,0\n\n\n1,0\n\n\n\n\n\ne"]
+            [{"rx": 6.5, "ry": 1.95}, "3,0\n\n\n0,0", {"y": -0.5}, "0,1\n\n\n0,0\n\n\n\n\n\ne", {"y": 1.0, "x": -1}, "0,0\n\n\n0,0\n\n\n\n\n\ne"],
+            [{"rx": 10.0, "ry": 1.95}, "7,0\n\n\n1,0", {"y": -0.5, "x": -2}, "1,1\n\n\n1,0\n\n\n\n\n\ne", {"y": 1.0, "x": -1}, "1,0\n\n\n1,0\n\n\n\n\n\ne"]
         ]
     }
 }
