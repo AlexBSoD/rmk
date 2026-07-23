@@ -287,6 +287,17 @@ impl<'a> KeyboardContext<'a> {
 
     // ── Layout / reset ───────────────────────────────────────────────────
 
+    pub async fn layout_options(&self) -> u32 {
+        #[cfg(feature = "storage")]
+        {
+            crate::storage::read_layout_options().await.unwrap_or(0)
+        }
+        #[cfg(not(feature = "storage"))]
+        {
+            0
+        }
+    }
+
     pub async fn set_layout_options(&self, opts: u32) {
         #[cfg(feature = "storage")]
         FLASH_CHANNEL.send(FlashOperationMessage::LayoutOptions(opts)).await;

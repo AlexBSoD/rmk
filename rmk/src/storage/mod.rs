@@ -2,7 +2,6 @@ use core::fmt::Debug;
 
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_sync::signal::Signal;
-use embassy_time::Duration;
 use embedded_storage::nor_flash::NorFlash;
 use embedded_storage_async::nor_flash::NorFlash as AsyncNorFlash;
 use postcard::experimental::max_size::MaxSize;
@@ -33,6 +32,7 @@ pub(crate) static FLASH_OPERATION_FINISHED: Signal<crate::RawMutex, bool> = Sign
 
 // Request/response over `FLASH_CHANNEL`. One `Signal` per read variant; the
 // storage task fires the matching one once it has the result.
+static LAYOUT_OPTIONS_RESPONSE: Signal<crate::RawMutex, Option<u32>> = Signal::new();
 #[cfg(feature = "_ble")]
 static BOND_INFO_RESPONSE: Signal<crate::RawMutex, Option<ProfileInfo>> = Signal::new();
 #[cfg(all(feature = "_ble", feature = "split"))]
@@ -42,11 +42,14 @@ static CONNECTION_TYPE_RESPONSE: Signal<crate::RawMutex, Option<ConnectionType>>
 #[cfg(feature = "_ble")]
 static ACTIVE_BLE_PROFILE_RESPONSE: Signal<crate::RawMutex, Option<u8>> = Signal::new();
 
-#[cfg(feature = "_ble")]
 async fn request_read<T: Send>(msg: FlashOperationMessage, response: &Signal<crate::RawMutex, T>) -> T {
     response.reset();
     FLASH_CHANNEL.send(msg).await;
     response.wait().await
+}
+
+pub(crate) async fn read_layout_options() -> Option<u32> {
+    request_read(FlashOperationMessage::ReadLayoutOptions, &LAYOUT_OPTIONS_RESPONSE).await
 }
 
 #[cfg(feature = "_ble")]
@@ -154,6 +157,8 @@ pub(crate) enum FlashOperationMessage {
     #[cfg(all(feature = "host", feature = "vial"))]
     // Keyboard-specific Vial settings
     DeviceSettings(config::VialDeviceSettingsData),
+    // Read persisted Vial layout options; storage replies via `LAYOUT_OPTIONS_RESPONSE`.
+    ReadLayoutOptions,
     #[cfg(feature = "_ble")]
     // Read bond info for the given slot; storage task replies via `BOND_INFO_RESPONSE`.
     ReadBleBondInfo(u8),
@@ -505,29 +510,6 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         storage
     }
 
-    pub(crate) async fn read_behavior_config(
-        &mut self,
-        behavior_config: &mut config::BehaviorConfig,
-    ) -> Result<(), ()> {
-        let read_data = self
-            .flash
-            .fetch_item(&mut self.buffer, &StorageKey::BehaviorConfig)
-            .await
-            .map_err(|e| print_storage_error::<F>(e))?;
-
-        if let Some(StorageData::BehaviorConfig(c)) = read_data {
-            behavior_config.morse.prior_idle_time = Duration::from_millis(c.prior_idle_time as u64);
-            behavior_config.morse.default_profile = c.morse_default_profile;
-
-            behavior_config.combo.timeout = Duration::from_millis(c.combo_timeout as u64);
-            behavior_config.one_shot.timeout = Duration::from_millis(c.one_shot_timeout as u64);
-            behavior_config.tap.tap_interval = c.tap_interval;
-            behavior_config.tap.tap_capslock_interval = c.tap_capslock_interval;
-        }
-
-        Ok(())
-    }
-
     #[cfg(all(feature = "host", feature = "vial"))]
     pub(crate) async fn read_device_settings(&mut self) -> Result<Option<config::VialDeviceSettingsData>, ()> {
         match self
@@ -654,13 +636,29 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
     }
 
     async fn check_enable(&mut self) -> bool {
-        if let Some(StorageData::StorageConfig(config)) = self.fetch_data(StorageKey::StorageConfig).await
-            && config.enable
-            && config.build_hash == BUILD_HASH
-        {
-            return true;
+        let Some(StorageData::StorageConfig(mut config)) = self.fetch_data(StorageKey::StorageConfig).await else {
+            return false;
+        };
+        if !config.enable {
+            return false;
         }
-        false
+
+        // A firmware build is not a storage schema version. BUILD_HASH changes
+        // for every compiled artifact, so treating a mismatch as invalid
+        // storage erased the Vial keymap and rewrote every key before runtime
+        // tasks could start. Keep compatible data and only refresh the marker;
+        // malformed records are still handled by the normal read error path.
+        if config.build_hash != BUILD_HASH {
+            config.build_hash = BUILD_HASH;
+            if let Err(e) = self
+                .store_data(StorageKey::StorageConfig, &StorageData::StorageConfig(config))
+                .await
+            {
+                print_storage_error::<F>(e);
+            }
+        }
+
+        true
     }
 
     /// Read all peripheral addresses from flash at startup, returning a `RefCell`
@@ -693,6 +691,14 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
             debug!("Flash operation: {:?}", info);
 
             let write_result: Result<(), SSError<F::Error>> = match info {
+                FlashOperationMessage::ReadLayoutOptions => {
+                    let resp = match self.fetch_data(StorageKey::LayoutConfig).await {
+                        Some(StorageData::LayoutConfig(config)) => Some(config.layout_option),
+                        _ => None,
+                    };
+                    LAYOUT_OPTIONS_RESPONSE.signal(resp);
+                    continue;
+                }
                 #[cfg(feature = "_ble")]
                 FlashOperationMessage::ReadBleBondInfo(slot_num) => {
                     let resp = match self.fetch_data(StorageKey::bond_info(slot_num)).await {
@@ -1033,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn build_hash_mismatch_reinitializes_storage() {
+    fn build_hash_mismatch_preserves_storage_and_updates_marker() {
         block_on(async {
             type Flash = TestFlash<16_384, 4_096, 1>;
 
@@ -1086,8 +1092,8 @@ mod tests {
             assert!(matches!(
                 stored_layout,
                 StorageData::LayoutConfig(LayoutConfig {
-                    default_layer: 0,
-                    layout_option: 0,
+                    default_layer: 7,
+                    layout_option: 42,
                 })
             ));
             assert!(matches!(

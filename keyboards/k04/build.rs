@@ -49,8 +49,8 @@ fn generate_vial_config() {
         .read_to_end(&mut keyboard_def_compressed)
         .unwrap();
 
-    // k04-vial-settings-v0.0.167: reload BT_BATTERY custom keycode label.
-    let keyboard_id: Vec<u8> = vec![0x80, 0x04, 0x28, 0xAB, 0x69, 0x3E, 0x19, 0x60];
+    // Stable K:04 Series identity, shared by the full, Mini, and Micro models.
+    let keyboard_id: Vec<u8> = vec![0x80, 0x04, 0x53, 0x45, 0x52, 0x49, 0x45, 0x53];
     let const_declarations = [
         const_declaration!(pub VIAL_KEYBOARD_DEF = keyboard_def_compressed),
         const_declaration!(pub VIAL_KEYBOARD_ID = keyboard_id),

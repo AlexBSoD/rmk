@@ -2,7 +2,7 @@ use core::str;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use rmk::config::{VialDeviceSettings, VialDeviceSettingsData};
-use rmk::event::{PeripheralSettingsEvent, publish_event};
+use rmk::event::{publish_event, PeripheralSettingsEvent};
 
 pub const LAYER_NAME_COUNT: usize = 16;
 pub const LAYER_NAME_MAX: usize = 12;

@@ -103,8 +103,7 @@ impl<'a> VialService<'a> {
                             BigEndian::write_u32(&mut report.input_data[2..6], value);
                         }
                         ViaKeyboardInfo::LayoutOptions => {
-                            // TODO: retrieve layout option from storage
-                            let layout_option: u32 = 0;
+                            let layout_option = self.ctx.layout_options().await;
                             BigEndian::write_u32(&mut report.input_data[2..6], layout_option);
                         }
                         #[cfg(not(feature = "vial_lock"))]

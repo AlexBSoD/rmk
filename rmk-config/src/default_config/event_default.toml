@@ -7,6 +7,11 @@ channel_size = 2
 pubs = 2
 subs = 1
 
+[event.ble_advertising_mode]
+channel_size = 2
+pubs = 2
+subs = 1
+
 # Input events
 [event.modifier]
 channel_size = 8

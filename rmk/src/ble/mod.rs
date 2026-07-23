@@ -23,7 +23,7 @@ use crate::ble::profile::{ProfileInfo, ProfileManager, UPDATED_CCCD_TABLE, UPDAT
 use crate::channel::{BLE_REPORT_CHANNEL, LED_SIGNAL};
 use crate::config::{BleBatteryConfig, RmkConfig};
 use crate::core_traits::Runnable;
-use crate::event::SubscribableEvent;
+use crate::event::{BleAdvertisingMode, SubscribableEvent};
 use crate::hid::{HidWriterTrait, run_led_reader};
 #[cfg(feature = "split")]
 use crate::split::ble::central::CENTRAL_SLEEP;
@@ -48,6 +48,10 @@ pub(crate) const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + 1;
 
 /// Max number of L2CAP channels
 pub(crate) const L2CAP_CHANNELS_MAX: usize = CONNECTIONS_MAX * 4; // Signal + att + smp + hid
+
+const DIRECTED_RECONNECT_WINDOW_MS: u64 = 1_300;
+const FAST_ADVERTISING_TIMEOUT_SECS: u64 = 30;
+const TOTAL_ADVERTISING_TIMEOUT_SECS: u64 = 300;
 
 /// Build the BLE stack.
 pub async fn build_ble_stack<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(
@@ -161,8 +165,15 @@ where
 
         let connection_loop = async {
             loop {
+                #[cfg(feature = "storage")]
+                let active_bond_info = profile_manager.active_bond_info();
+                #[cfg(feature = "storage")]
+                let active_peer = active_bond_info.as_ref().map(|info| info.info.identity.addr);
+                #[cfg(not(feature = "storage"))]
+                let active_peer = None;
+
                 match select(
-                    advertise(product_name, &mut peripheral, server),
+                    advertise(product_name, &mut peripheral, server, active_peer),
                     profile_manager.update_profile(),
                 )
                 .await
@@ -170,8 +181,6 @@ where
                     Either::First(Ok(conn)) => {
                         // Do NOT emit BleState::Connected here. gatt_events_task emits
                         // Connected when it sees GattConnectionEvent::Encrypted.
-                        #[cfg(feature = "storage")]
-                        let active_bond_info = profile_manager.active_bond_info();
                         if let Either::Second(_) = select(
                             run_ble_keyboard(
                                 server,
@@ -530,6 +539,7 @@ async fn advertise<'a, 'b, C: Controller>(
     name: &'a str,
     peripheral: &mut Peripheral<'a, C, DefaultPacketPool>,
     server: &'b Server<'_>,
+    active_peer: Option<Address>,
 ) -> Result<GattConnection<'a, 'b, DefaultPacketPool>, BleHostError<C::Error>> {
     // Wait for 10ms to ensure the USB is checked
     embassy_time::Timer::after_millis(10).await;
@@ -547,20 +557,54 @@ async fn advertise<'a, 'b, C: Controller>(
         &mut advertiser_data[..],
     )?;
 
-    let advertise_config = AdvertisementParameters {
+    let fast_advertise_config = AdvertisementParameters {
         primary_phy: PhyKind::Le2M,
         secondary_phy: PhyKind::Le2M,
         tx_power: TxPower::Plus8dBm,
-        interval_min: Duration::from_millis(200),
-        interval_max: Duration::from_millis(200),
+        interval_min: Duration::from_millis(30),
+        interval_max: Duration::from_millis(30),
         ..Default::default()
     };
+    let slow_advertise_config = AdvertisementParameters {
+        interval_min: Duration::from_millis(200),
+        interval_max: Duration::from_millis(200),
+        ..fast_advertise_config
+    };
 
-    info!("[adv] advertising");
+    crate::state::set_ble_advertising_mode(advertising_mode(active_peer.is_some()));
     set_ble_state(BleState::Advertising);
+
+    if let Some(peer) = active_peer {
+        info!("[adv] directed high duty reconnect");
+        let advertiser = peripheral
+            .advertise(
+                &fast_advertise_config,
+                Advertisement::ConnectableNonscannableDirectedHighDuty { peer },
+            )
+            .await?;
+        match with_timeout(Duration::from_millis(DIRECTED_RECONNECT_WINDOW_MS), advertiser.accept()).await {
+            Ok(Ok(conn)) => {
+                let conn = conn.with_attribute_server(server)?;
+                info!("[adv] directed connection established");
+                if let Err(e) = conn.raw().set_bondable(true) {
+                    error!("Set bondable error: {:?}", e);
+                }
+                return Ok(conn);
+            }
+            Ok(Err(error)) if directed_reconnect_should_fallback(&error) => {
+                info!("[adv] directed reconnect timed out, falling back to undirected advertising");
+            }
+            Err(_) => {
+                info!("[adv] directed reconnect window elapsed, falling back to undirected advertising");
+            }
+            Ok(Err(error)) => return Err(BleHostError::BleHost(error)),
+        }
+    }
+
+    info!("[adv] fast undirected advertising");
     let advertiser = peripheral
         .advertise(
-            &advertise_config,
+            &fast_advertise_config,
             Advertisement::ConnectableScannableUndirected {
                 adv_data: &advertiser_data[..],
                 scan_data: &[],
@@ -568,18 +612,56 @@ async fn advertise<'a, 'b, C: Controller>(
         )
         .await?;
 
-    // Timeout for advertising is 300s
-    match with_timeout(Duration::from_secs(300), advertiser.accept()).await {
+    match with_timeout(Duration::from_secs(FAST_ADVERTISING_TIMEOUT_SECS), advertiser.accept()).await {
         Ok(conn_res) => {
             let conn = conn_res?.with_attribute_server(server)?;
             info!("[adv] connection established");
             if let Err(e) = conn.raw().set_bondable(true) {
                 error!("Set bondable error: {:?}", e);
-            };
+            }
             Ok(conn)
         }
-        Err(_) => Err(BleHostError::BleHost(Error::Timeout)),
+        Err(_) => {
+            info!("[adv] slow undirected advertising");
+            let advertiser = peripheral
+                .advertise(
+                    &slow_advertise_config,
+                    Advertisement::ConnectableScannableUndirected {
+                        adv_data: &advertiser_data[..],
+                        scan_data: &[],
+                    },
+                )
+                .await?;
+            match with_timeout(
+                Duration::from_secs(TOTAL_ADVERTISING_TIMEOUT_SECS - FAST_ADVERTISING_TIMEOUT_SECS),
+                advertiser.accept(),
+            )
+            .await
+            {
+                Ok(conn_res) => {
+                    let conn = conn_res?.with_attribute_server(server)?;
+                    info!("[adv] connection established");
+                    if let Err(e) = conn.raw().set_bondable(true) {
+                        error!("Set bondable error: {:?}", e);
+                    }
+                    Ok(conn)
+                }
+                Err(_) => Err(BleHostError::BleHost(Error::Timeout)),
+            }
+        }
     }
+}
+
+fn advertising_mode(has_active_bond: bool) -> BleAdvertisingMode {
+    if has_active_bond {
+        BleAdvertisingMode::Reconnecting
+    } else {
+        BleAdvertisingMode::Pairing
+    }
+}
+
+fn directed_reconnect_should_fallback(error: &Error) -> bool {
+    matches!(error, Error::Timeout)
 }
 
 pub(crate) async fn set_conn_params<
@@ -787,14 +869,48 @@ mod tests {
     use rmk_types::battery::{BatteryStatus, ChargeState};
     use rmk_types::ble::{BleState, BleStatus};
 
-    use super::{Server, seed_battery_level};
-    use crate::event::{Axis, AxisEvent, AxisValType, KeyboardEvent, PointingEvent, SubscribableEvent, publish_event};
-    use crate::state::{current_ble_status, set_ble_profile, set_ble_state};
+    use trouble_host::Error;
+
+    use super::{Server, advertising_mode, directed_reconnect_should_fallback, seed_battery_level};
+    use crate::event::{
+        Axis, AxisEvent, AxisValType, BleAdvertisingMode, KeyboardEvent, PointingEvent, SubscribableEvent,
+        publish_event,
+    };
+    use crate::state::{
+        current_ble_advertising_mode, current_ble_status, set_ble_advertising_mode, set_ble_profile, set_ble_state,
+    };
     use crate::test_support::test_block_on as block_on;
 
     fn ble_status_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn advertising_without_active_bond_uses_pairing_mode() {
+        assert_eq!(advertising_mode(false), BleAdvertisingMode::Pairing);
+    }
+
+    #[test]
+    fn advertising_with_active_bond_uses_reconnecting_mode() {
+        assert_eq!(advertising_mode(true), BleAdvertisingMode::Reconnecting);
+    }
+
+    #[test]
+    fn directed_reconnect_timeout_falls_back_to_undirected_advertising() {
+        assert!(directed_reconnect_should_fallback(&Error::Timeout));
+        assert!(!directed_reconnect_should_fallback(&Error::Disconnected));
+    }
+
+    #[test]
+    fn advertising_mode_snapshot_tracks_latest_state() {
+        let _guard = ble_status_test_lock().lock().unwrap();
+
+        set_ble_advertising_mode(BleAdvertisingMode::Pairing);
+        assert_eq!(current_ble_advertising_mode(), BleAdvertisingMode::Pairing);
+
+        set_ble_advertising_mode(BleAdvertisingMode::Reconnecting);
+        assert_eq!(current_ble_advertising_mode(), BleAdvertisingMode::Reconnecting);
     }
 
     #[test]

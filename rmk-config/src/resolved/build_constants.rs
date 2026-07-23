@@ -98,6 +98,7 @@ impl crate::KeyboardTomlConfig {
 
         let mut events = event_channels!(
             connection_status_change,
+            ble_advertising_mode,
             modifier,
             keyboard,
             layer_change,
@@ -332,5 +333,25 @@ mod tests {
             .subs;
 
         assert_eq!(split_subs, base_subs + 2);
+    }
+
+    #[test]
+    fn split_ble_reserves_advertising_mode_sync_subscribers() {
+        let base = parse("").build_constants(&[]).unwrap();
+        let split_ble = parse("").build_constants(&["split", "_ble"]).unwrap();
+        let base_subs = base
+            .events
+            .iter()
+            .find(|event| event.name == "ble_advertising_mode")
+            .unwrap()
+            .subs;
+        let split_ble_subs = split_ble
+            .events
+            .iter()
+            .find(|event| event.name == "ble_advertising_mode")
+            .unwrap()
+            .subs;
+
+        assert_eq!(split_ble_subs, base_subs + 2);
     }
 }

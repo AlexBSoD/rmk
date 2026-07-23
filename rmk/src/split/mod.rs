@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde::{Deserializer, Serializer};
 
 #[cfg(feature = "_ble")]
-use crate::event::BatteryStatusEvent;
+use crate::event::{BatteryStatusEvent, BleAdvertisingMode};
 use crate::event::{KeyboardEvent, PointingEvent};
 
 #[cfg(feature = "_ble")]
@@ -60,6 +60,9 @@ pub(crate) enum SplitMessage {
     /// Product id handshake used by the BLE split engine to reject peers from
     /// a different keyboard model.
     ProductId(u16),
+    /// Runtime host-advertising mode, synced from central to peripheral LEDs.
+    #[cfg(feature = "_ble")]
+    BleAdvertisingMode(BleAdvertisingMode),
 
     // -----------------------------------------------------------------------
     // dfu_split — firmware update over split link

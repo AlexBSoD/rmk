@@ -160,10 +160,10 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
             update_status(|c| *c = ConnectionStatus::new());
             publish_event(CentralConnectedEvent { connected: false });
             match split_peripheral_advertise(id, central_addr, &mut peripheral, &server).await {
-                Ok(conn) => {
+                Ok((conn, allow_rebind)) => {
                     info!("Connected to the split central");
                     let new_addr = conn.raw().peer_address().addr.into_inner();
-                    if central_saved && Some(new_addr) != central_addr {
+                    if !split_central_address_allowed(central_addr, new_addr, allow_rebind) {
                         warn!("Rejecting non-paired split central address");
                         drop(conn);
                         Timer::after_millis(500).await;
@@ -179,7 +179,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
                     }
 
                     publish_event(CentralConnectedEvent { connected: true });
-                    if !central_saved {
+                    if !central_saved || central_addr != Some(new_addr) {
                         info!("Saving validated split central address to storage");
                         if crate::storage::write_peer_address(PeerAddress {
                             peer_id: 0,
@@ -247,13 +247,21 @@ async fn validate_split_central<T: SplitReader + SplitWriter>(driver: &mut T) ->
     }
 }
 
+fn split_central_address_allowed(
+    saved_central_addr: Option<[u8; 6]>,
+    new_central_addr: [u8; 6],
+    allow_rebind: bool,
+) -> bool {
+    saved_central_addr.is_none() || saved_central_addr == Some(new_central_addr) || allow_rebind
+}
+
 /// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.
 async fn split_peripheral_advertise<'a, 'b, C: Controller>(
     id: usize,
     central_addr: Option<[u8; 6]>,
     peripheral: &mut Peripheral<'a, C, DefaultPacketPool>,
     server: &'b BleSplitPeripheralServer<'_>,
-) -> Result<GattConnection<'a, 'b, DefaultPacketPool>, BleHostError<C::Error>> {
+) -> Result<(GattConnection<'a, 'b, DefaultPacketPool>, bool), BleHostError<C::Error>> {
     let mut advertiser_data = [0; 31];
 
     if central_addr.is_some() {
@@ -265,7 +273,7 @@ async fn split_peripheral_advertise<'a, 'b, C: Controller>(
             Ok(conn_res) => {
                 let conn = conn_res?.with_attribute_server(server)?;
                 info!("[adv] directed split connection established");
-                return Ok(conn);
+                return Ok((conn, false));
             }
             Err(_) => {
                 warn!("[adv] directed split reconnect timeout, falling back to discoverable advertising");
@@ -281,7 +289,7 @@ async fn split_peripheral_advertise<'a, 'b, C: Controller>(
         Ok(conn_res) => {
             let conn = conn_res?.with_attribute_server(server)?;
             info!("[adv] discoverable split connection established");
-            Ok(conn)
+            Ok((conn, true))
         }
         Err(_) => {
             warn!("[adv] retry discoverable split advertising");
@@ -290,7 +298,7 @@ async fn split_peripheral_advertise<'a, 'b, C: Controller>(
                 .advertise(&AdvertisementParameters::default(), advertisement)
                 .await?;
             match with_timeout(Duration::from_secs(300), advertiser.accept()).await {
-                Ok(re) => Ok(re?.with_attribute_server(server)?),
+                Ok(re) => Ok((re?.with_attribute_server(server)?, true)),
                 Err(_e) => Err(BleHostError::BleHost(Error::Timeout)),
             }
         }
@@ -342,5 +350,28 @@ async fn ble_task<C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(m
         if let Err(e) = runner.run().await {
             panic!("[ble_task] error: {:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_central_address_allowed;
+
+    const OLD_QUBE: [u8; 6] = [1, 2, 3, 4, 5, 6];
+    const NEW_QUBE: [u8; 6] = [7, 8, 9, 10, 11, 12];
+
+    #[test]
+    fn saved_qube_is_accepted_during_directed_reconnect() {
+        assert!(split_central_address_allowed(Some(OLD_QUBE), OLD_QUBE, false));
+    }
+
+    #[test]
+    fn different_qube_is_rejected_during_directed_reconnect() {
+        assert!(!split_central_address_allowed(Some(OLD_QUBE), NEW_QUBE, false));
+    }
+
+    #[test]
+    fn validated_discoverable_connection_can_rebind_qube() {
+        assert!(split_central_address_allowed(Some(OLD_QUBE), NEW_QUBE, true));
     }
 }

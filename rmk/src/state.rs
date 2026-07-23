@@ -7,6 +7,8 @@ use rmk_types::ble::BleStatus;
 use rmk_types::connection::{ConnectionStatus, ConnectionType, UsbState};
 
 use crate::RawMutex;
+#[cfg(feature = "_ble")]
+use crate::event::{BleAdvertisingMode, BleAdvertisingModeEvent};
 use crate::event::{ConnectionStatusChangeEvent, publish_event};
 
 /// Single source of truth for transport state and routing. All writes go
@@ -15,11 +17,19 @@ use crate::event::{ConnectionStatusChangeEvent, publish_event};
 pub(crate) static CONNECTION_STATUS: Mutex<RawMutex, Cell<ConnectionStatus>> =
     Mutex::new(Cell::new(ConnectionStatus::new()));
 
+#[cfg(feature = "_ble")]
+static BLE_ADVERTISING_MODE: Mutex<RawMutex, Cell<BleAdvertisingMode>> =
+    Mutex::new(Cell::new(BleAdvertisingMode::Pairing));
+
 pub(crate) fn active_transport() -> Option<ConnectionType> {
     CONNECTION_STATUS.lock(|c| c.get().decide_active())
 }
 
-pub(crate) fn current_connection_status() -> ConnectionStatus {
+/// Return the authoritative transport state snapshot.
+///
+/// Runtime processors can use this once during startup to recover transitions
+/// published before their event subscriptions were installed.
+pub fn current_connection_status() -> ConnectionStatus {
     CONNECTION_STATUS.lock(|c| c.get())
 }
 
@@ -74,6 +84,22 @@ pub fn set_usb_state(s: UsbState) {
 
 pub(crate) fn set_ble_state(s: BleState) {
     update_status(|c| c.ble.state = s);
+}
+
+#[cfg(feature = "_ble")]
+pub(crate) fn set_ble_advertising_mode(mode: BleAdvertisingMode) {
+    BLE_ADVERTISING_MODE.lock(|current| current.set(mode));
+    publish_event(BleAdvertisingModeEvent(mode));
+}
+
+/// Return the authoritative host-advertising mode snapshot.
+///
+/// This complements [`current_connection_status`] for indicators that need to
+/// distinguish pairing from reconnecting without changing the public BLE wire
+/// format.
+#[cfg(feature = "_ble")]
+pub fn current_ble_advertising_mode() -> BleAdvertisingMode {
+    BLE_ADVERTISING_MODE.lock(|current| current.get())
 }
 
 /// Switching profiles always drops the BLE state back to `Inactive`; the

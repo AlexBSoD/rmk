@@ -397,6 +397,7 @@ macro_rules! define_event_config {
 define_event_config!(
     // Connection events
     connection_status_change,
+    ble_advertising_mode,
     // Input events
     modifier,
     keyboard,

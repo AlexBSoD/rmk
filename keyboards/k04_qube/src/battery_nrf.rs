@@ -6,11 +6,10 @@
 //! re-publishes BatteryStatusEvent every 2s so the split loop can forward.
 
 use embassy_futures::select::select;
-use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::InterruptExt;
 use embassy_nrf::peripherals::{P0_31, SAADC};
 use embassy_nrf::saadc::{self, Input as _, Saadc};
-use embassy_nrf::{bind_interrupts, Peri};
+use embassy_nrf::{bind_interrupts, interrupt, Peri};
 use embassy_time::{with_timeout, Duration, Timer};
 use rmk::core_traits::Runnable;
 use rmk::event::{

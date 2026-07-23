@@ -9,9 +9,8 @@ RMK BLE split firmware for Ergohaven keyboards and trackballs (nRF52840).
 | Keyboard    | Layout         | Encoders | Trackball |
 |-------------|----------------|----------|-----------|
 | K:03        | 5×6 + 5 thumb  | 3+3      | —         |
-| K:04        | 5×6 + 5 thumb  | 1+1      | —         |
+| K:04 Series | K:04 / Mini / Micro | 1+1 | —         |
 | K:04 Qube   | 5×6 + 5 thumb  | 1+1      | Qube dongle + ST7789 |
-| K:04 Micro  | 3×5 + 3 thumb  | 1+1      | —         |
 | Imperial44  | 4×6 + 3 thumb  | 1+1      | —         |
 | OP36        | 3×5 + 3 thumb  | —        | —         |
 | OP36 Qube   | 3×5 + 3 thumb  | —        | Qube dongle + ST7789 |

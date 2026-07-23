@@ -119,6 +119,10 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                             trace!("Received central connection status: {:?}", status);
                             update_status(|c| *c = status);
                         }
+                        #[cfg(feature = "_ble")]
+                        SplitMessage::BleAdvertisingMode(mode) => {
+                            crate::state::set_ble_advertising_mode(mode);
+                        }
                         #[cfg(all(feature = "_ble", feature = "storage"))]
                         SplitMessage::ClearPeer => {
                             // Clear the peer address

@@ -1,7 +1,7 @@
 [package]
 name = "k04"
 version = "0.1.0"
-description = "RMK BLE split firmware for Ergohaven K:04 (nRF52840)"
+description = "RMK BLE split firmware for Ergohaven K:04 Series (nRF52840)"
 homepage = "https://github.com/eh-fws/k04-rmk"
 repository = "https://github.com/eh-fws/k04-rmk"
 edition = "2021"

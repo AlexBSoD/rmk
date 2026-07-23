@@ -76,6 +76,9 @@ events = [
 [[subscriber]]
 features = ["split", "_ble"]
 events = [
+    # split/driver.rs: each PeripheralManager syncs host advertising mode
+    # Covers up to 2 peripherals; for 3+ peripherals override subs in keyboard.toml
+    { name = "ble_advertising_mode", count = 2 },
     # split/ble/peripheral.rs: KeyboardEvent::subscriber() (temporary, on timeout)
     { name = "keyboard" },
     # split/peripheral.rs: ChargingStateEvent::subscriber() (cfg _ble)

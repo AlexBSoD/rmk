@@ -104,6 +104,8 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
         // snapshot is still delivered to us.
         let mut connection_sub = crate::event::ConnectionStatusChangeEvent::subscriber();
         #[cfg(feature = "_ble")]
+        let mut advertising_mode_sub = crate::event::BleAdvertisingModeEvent::subscriber();
+        #[cfg(feature = "_ble")]
         let mut clear_peer_sub = crate::event::ClearPeerEvent::subscriber();
         #[cfg(feature = "_ble")]
         let mut battery_refresh_sub = crate::event::PeripheralBatteryRefreshEvent::subscriber();
@@ -119,6 +121,17 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
         if self
             .send(&SplitMessage::ConnectionStatus(
                 crate::state::current_connection_status(),
+            ))
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        #[cfg(feature = "_ble")]
+        if self
+            .send(&SplitMessage::BleAdvertisingMode(
+                crate::state::current_ble_advertising_mode(),
             ))
             .await
             .is_err()
@@ -143,6 +156,7 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
                     e = layer_sub.next_event().fuse() => SplitMessage::Layer(e.0),
                     e = settings_sub.next_event().fuse() => SplitMessage::PeripheralSettings(e.0),
                     e = connection_sub.next_event().fuse() => SplitMessage::ConnectionStatus(e.0),
+                    with_feature("_ble"): e = advertising_mode_sub.next_event().fuse() => SplitMessage::BleAdvertisingMode(e.0),
                     with_feature("_ble"): _ = clear_peer_sub.next_event().fuse() => {
                         #[cfg(feature = "storage")]
                         {

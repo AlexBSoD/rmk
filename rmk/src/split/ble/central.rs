@@ -216,12 +216,24 @@ fn take_uncommitted_peer_candidate(peri_id: usize) -> bool {
     })
 }
 
-fn drop_uncommitted_peer_candidate(peri_id: usize, addrs: &RefCell<VecView<Option<[u8; 6]>>>) {
-    if take_uncommitted_peer_candidate(peri_id)
-        && let Some(addr) = addrs.borrow_mut().get_mut(peri_id)
-    {
+async fn forget_failed_peer(peri_id: usize, addrs: &RefCell<VecView<Option<[u8; 6]>>>) {
+    take_uncommitted_peer_candidate(peri_id);
+    if let Some(addr) = addrs.borrow_mut().get_mut(peri_id) {
         *addr = None;
     }
+
+    // A stored address can belong to an older Qube/half pairing. Keeping it
+    // after an initiating failure prevents the central from ever scanning for
+    // the currently powered peripheral. Invalidate only after the connection
+    // attempt itself fails; normal disconnects retain the proven address.
+    #[cfg(feature = "storage")]
+    FLASH_CHANNEL
+        .send(FlashOperationMessage::PeerAddress(PeerAddress::new(
+            peri_id as u8,
+            false,
+            [0; 6],
+        )))
+        .await;
 }
 
 async fn commit_peer_candidate(peri_id: usize, peer_address: [u8; 6]) {
@@ -235,22 +247,6 @@ async fn commit_peer_candidate(peri_id: usize, peer_address: [u8; 6]) {
             peri_id as u8,
             true,
             peer_address,
-        )))
-        .await;
-}
-
-async fn reject_split_peer(peri_id: usize, addrs: &RefCell<VecView<Option<[u8; 6]>>>) {
-    take_uncommitted_peer_candidate(peri_id);
-    if let Some(addr) = addrs.borrow_mut().get_mut(peri_id) {
-        *addr = None;
-    }
-
-    #[cfg(feature = "storage")]
-    FLASH_CHANNEL
-        .send(FlashOperationMessage::PeerAddress(PeerAddress::new(
-            peri_id as u8,
-            false,
-            [0; 6],
         )))
         .await;
 }
@@ -324,13 +320,14 @@ pub(crate) async fn run_ble_peripheral_manager<
         {
             Ok(Ok(conn)) => {
                 info!("Connected to peripheral {}", peri_id);
+                let peer_validated = Cell::new(false);
 
                 if let Err(e) = run_central_manager_task::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(
                     peri_id,
                     address.addr.into_inner(),
-                    addrs,
                     stack,
                     &conn,
+                    &peer_validated,
                 )
                 .await
                 {
@@ -338,17 +335,24 @@ pub(crate) async fn run_ble_peripheral_manager<
                     let e = defmt::Debug2Format(&e);
                     error!("BLE central error: {:?}", e);
                 }
-                drop_uncommitted_peer_candidate(peri_id, addrs);
+                if !peer_validated.get() {
+                    warn!("Split peripheral {} disconnected before validation", peri_id);
+                    // A successful HCI connection can still fail during GATT
+                    // discovery or product validation. Treat that exactly like
+                    // an initiating failure so a stale saved address cannot
+                    // trap Qube in an endless reconnect loop.
+                    forget_failed_peer(peri_id, addrs).await;
+                }
             }
             Ok(Err(e)) => {
                 #[cfg(feature = "defmt")]
                 let e = defmt::Debug2Format(&e);
                 error!("Connect to peripheral {} error: {:?}", peri_id, e);
-                drop_uncommitted_peer_candidate(peri_id, addrs);
+                forget_failed_peer(peri_id, addrs).await;
             }
             Err(_) => {
                 warn!("Connect to peripheral {} timeout", peri_id);
-                drop_uncommitted_peer_candidate(peri_id, addrs);
+                forget_failed_peer(peri_id, addrs).await;
             }
         }
         // Reconnect after 500ms
@@ -416,9 +420,9 @@ async fn run_central_manager_task<
 >(
     id: usize,
     peer_address: [u8; 6],
-    addrs: &RefCell<VecView<Option<[u8; 6]>>>,
     stack: &'b Stack<'s, C, P>,
     conn: &Connection<'b, P>,
+    peer_validated: &Cell<bool>,
 ) -> Result<(), BleHostError<C::Error>> {
     let client = GattClient::<C, P, 10>::new(stack, conn).await?;
 
@@ -428,9 +432,9 @@ async fn run_central_manager_task<
     info!("Updating connection parameters for peripheral");
     update_conn_params(stack, conn, &defaul_central_conn_param()).await;
 
-    match select3(
+    let result = match select3(
         ble_central_task(&client, conn),
-        run_peripheral_manager::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(id, peer_address, addrs, &client),
+        run_peripheral_manager::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(id, peer_address, &client, peer_validated),
         sleep_manager_task(stack, conn),
     )
     .await
@@ -438,7 +442,9 @@ async fn run_central_manager_task<
         Either3::First(e) => e,
         Either3::Second(e) => e,
         Either3::Third(e) => e,
-    }
+    };
+
+    result
 }
 
 async fn ble_central_task<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(
@@ -472,8 +478,8 @@ async fn run_peripheral_manager<
 >(
     id: usize,
     peer_address: [u8; 6],
-    addrs: &RefCell<VecView<Option<[u8; 6]>>>,
     client: &GattClient<'a, C, P, 10>,
+    peer_validated: &Cell<bool>,
 ) -> Result<(), BleHostError<C::Error>> {
     let services = client.services_by_uuid(&Uuid::new_long(SPLIT_SERVICE_UUID)).await?;
     info!("Services found");
@@ -504,9 +510,9 @@ async fn run_peripheral_manager<
         let mut split_ble_driver = BleSplitCentralDriver::new(listener, message_to_peripheral, client);
         if !validate_split_product(&mut split_ble_driver).await {
             warn!("Rejecting split peripheral {} after product validation", id);
-            reject_split_peer(id, addrs).await;
             return Ok(());
         }
+        peer_validated.set(true);
         commit_peer_candidate(id, peer_address).await;
         publish_event(PeripheralConnectedEvent { id, connected: true });
 

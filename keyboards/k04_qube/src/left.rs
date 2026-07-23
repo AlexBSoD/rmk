@@ -15,7 +15,7 @@ mod keyboard_peripheral {
         TWISPI1 => ::embassy_nrf::twim::InterruptHandler<::embassy_nrf::peripherals::TWISPI1>;
     );
 
-    #[register_processor(event)]
+    #[register_processor(poll)]
     fn layer_led() -> crate::layer_led::LayerLed {
         let mut config = ::embassy_nrf::pwm::Config::default();
         config.prescaler = ::embassy_nrf::pwm::Prescaler::Div1;

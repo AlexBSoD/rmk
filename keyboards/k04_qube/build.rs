@@ -13,6 +13,7 @@ fn main() {
     println!("cargo:rerun-if-changed=keyboard.toml");
     println!("cargo:rerun-if-changed=memory_halves.x");
     println!("cargo:rerun-if-changed=memory_qube.x");
+    println!("cargo:rerun-if-env-changed=VIAL_JSON_PATH");
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION={FIRMWARE_VERSION}");
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION_BCD={FIRMWARE_VERSION_BCD}");
 
@@ -40,23 +41,43 @@ fn main() {
 fn generate_vial_config() {
     let out_file = Path::new(&env::var_os("OUT_DIR").unwrap()).join("config_generated.rs");
 
-    let p = Path::new("vial.json");
+    let vial_path = env::var_os("VIAL_JSON_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("vial.json"));
+    println!("cargo:rerun-if-changed={}", vial_path.display());
+
     let mut content = String::new();
-    match File::open(p) {
+    match File::open(&vial_path) {
         Ok(mut file) => {
             file.read_to_string(&mut content).expect("Cannot read vial.json");
         }
-        Err(e) => println!("Cannot find vial.json {:?}: {}", p, e),
+        Err(e) => panic!("Cannot find vial.json {:?}: {}", vial_path, e),
     };
 
-    let vial_cfg = json::stringify(json::parse(&content).unwrap());
+    let parsed = json::parse(&content).expect("Cannot parse vial.json");
+    let product_id = parsed["productId"]
+        .as_str()
+        .and_then(|value| value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")))
+        .and_then(|value| u16::from_str_radix(value, 16).ok())
+        .expect("vial.json productId must be a hexadecimal string");
+    let mut vial_cfg = json::stringify(parsed);
+    if !vial_cfg.contains("\"entropy\"") {
+        vial_cfg.insert_str(
+            1,
+            "\"entropy\":{\"liveFeatures\":[\"time\",\"media\"],\"batteryHalves\":true},",
+        );
+    }
     let mut keyboard_def_compressed: Vec<u8> = Vec::new();
     XzEncoder::new(vial_cfg.as_bytes(), 6)
         .read_to_end(&mut keyboard_def_compressed)
         .unwrap();
 
-    // k04-vial-settings-v0.0.167: reload BT_BATTERY custom keycode label.
-    let keyboard_id: Vec<u8> = vec![0x80, 0x04, 0x28, 0xAB, 0x69, 0x3E, 0x19, 0x60];
+    let keyboard_id: Vec<u8> = match product_id {
+        // Keep the established Vial identities for compatibility with saved layouts.
+        0x0071 => vec![0x80, 0x04, 0x28, 0xAB, 0x69, 0x3E, 0x19, 0x60],
+        0x0072 | 0x0073 => vec![0x80, 0x04, 0x2D, 0x7A, 0x91, 0x44, 0x3B, 0x21],
+        _ => panic!("Unsupported K:04 Qube productId: 0x{product_id:04X}"),
+    };
     let const_declarations = [
         const_declaration!(pub VIAL_KEYBOARD_DEF = keyboard_def_compressed),
         const_declaration!(pub VIAL_KEYBOARD_ID = keyboard_id),

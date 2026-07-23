@@ -88,8 +88,6 @@ build_qube() {
 echo "Using BINDGEN_EXTRA_CLANG_ARGS=$BINDGEN_EXTRA_CLANG_ARGS"
 
 build_split k04
-build_split k04_mini
-build_split k04_micro
 build_split op36
 build_split k03
 build_split imperial44

@@ -1,8 +1,9 @@
 use embassy_nrf::pwm::{SequenceConfig, SequencePwm, SingleSequenceMode, SingleSequencer};
 use embassy_time::{Duration, Instant, Timer};
 use rmk::event::{
-    BatteryStatusEvent, CentralConnectedEvent, ConnectionStatusChangeEvent, LayerChangeEvent,
-    PeripheralBatteryRefreshEvent, PeripheralConnectedEvent, PeripheralSettingsEvent,
+    BatteryStatusEvent, BleAdvertisingMode, BleAdvertisingModeEvent, CentralConnectedEvent,
+    ConnectionStatusChangeEvent, LayerChangeEvent, PeripheralBatteryRefreshEvent, PeripheralConnectedEvent,
+    PeripheralSettingsEvent,
 };
 use rmk::macros::processor;
 use rmk::types::battery::{BatteryStatus, ChargeState};
@@ -16,8 +17,9 @@ const LOW_BATTERY_MAX: u8 = 20;
 const CHARGED_BATTERY_MIN: u8 = 100;
 const BATTERY_PULSE_INTERVAL_MS: u64 = 2_000;
 const BATTERY_PULSE_ON_MS: u64 = 120;
-const CONNECTED_PULSE_MS: u64 = 520;
 const INDICATOR_DURATION_MS: u64 = 1_000;
+const STATUS_BLINK_PERIOD_MS: u64 = 360;
+const STATUS_BLINK_ON_MS: u64 = 180;
 const PWM_POLARITY_INVERTED: u16 = 0x8000;
 const PWM_T0H: u16 = PWM_POLARITY_INVERTED | 6;
 const PWM_T1H: u16 = PWM_POLARITY_INVERTED | 13;
@@ -27,9 +29,7 @@ const FRAME_WORDS: usize = LED_COUNT * 24 + RESET_SLOTS;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Overlay {
     Profile(u8),
-    Advertising,
     HostConnected,
-    SplitMissing,
     SplitConnected,
     Battery(u8),
     Charging,
@@ -39,7 +39,6 @@ enum Overlay {
 #[derive(Clone, Copy)]
 struct TimedOverlay {
     kind: Overlay,
-    started: Instant,
     ends: Instant,
 }
 
@@ -47,13 +46,14 @@ struct TimedOverlay {
     subscribe = [
         LayerChangeEvent,
         ConnectionStatusChangeEvent,
+        BleAdvertisingModeEvent,
         PeripheralConnectedEvent,
         CentralConnectedEvent,
         PeripheralSettingsEvent,
         BatteryStatusEvent,
         PeripheralBatteryRefreshEvent
     ],
-    poll_interval = 20
+    poll_interval = 10
 )]
 pub struct LayerLed {
     led: SequencePwm<'static>,
@@ -63,8 +63,10 @@ pub struct LayerLed {
     connection_status: Option<ConnectionStatus>,
     ble_profile: u8,
     ble_state: BleState,
-    deferred_ble_state: Option<BleState>,
+    ble_advertising_mode: BleAdvertisingMode,
+    ble_snapshot_initialized: bool,
     split_connected: bool,
+    indicator_phase_started: Instant,
     overlay: Option<TimedOverlay>,
     latest_battery: Option<u8>,
     battery_charging: bool,
@@ -85,8 +87,10 @@ impl LayerLed {
             connection_status: None,
             ble_profile: 0,
             ble_state: BleState::Inactive,
-            deferred_ble_state: None,
-            split_connected: true,
+            ble_advertising_mode: BleAdvertisingMode::Pairing,
+            ble_snapshot_initialized: false,
+            split_connected: false,
+            indicator_phase_started: now,
             overlay: None,
             latest_battery: None,
             battery_charging: false,
@@ -100,40 +104,38 @@ impl LayerLed {
     async fn on_layer_change_event(&mut self, event: LayerChangeEvent) {
         let now = Instant::now();
         self.current_layer = Some(event.0);
-        // A layer change is direct user feedback and must not remain hidden
-        // behind a stale Bluetooth/split/battery indicator. Periodic battery
-        // indications can start again after their normal interval.
-        self.overlay = None;
-        self.deferred_ble_state = None;
         self.arm_layer_timeout(now);
         self.render(now).await;
     }
 
     async fn on_connection_status_change_event(&mut self, event: ConnectionStatusChangeEvent) {
+        let now = Instant::now();
         let previous = self.connection_status;
         let repeated = previous == Some(event.0);
         let profile_changed = previous.is_some_and(|status| status.ble.profile != event.0.ble.profile);
         let state_changed = previous.is_none_or(|status| status.ble.state != event.0.ble.state);
+        let previous_ble_state = previous.map(|status| status.ble.state);
 
         self.connection_status = Some(event.0);
         self.ble_profile = event.0.ble.profile;
         self.ble_state = event.0.ble.state;
 
+        if state_changed {
+            self.apply_ble_state_transition(previous_ble_state, self.ble_state);
+        }
         if profile_changed || repeated {
-            self.deferred_ble_state = None;
-            self.start_overlay(Overlay::Profile(self.ble_profile), indicator_duration());
-        } else if state_changed {
-            if self
-                .overlay
-                .is_some_and(|overlay| matches!(overlay.kind, Overlay::Profile(_)))
-            {
-                self.deferred_ble_state = Some(self.ble_state);
-            } else {
-                self.start_ble_overlay(self.ble_state);
+            if self.split_connected {
+                self.start_overlay(Overlay::Profile(self.ble_profile), indicator_duration());
             }
         }
 
-        self.render(Instant::now()).await;
+        self.render(now).await;
+    }
+
+    async fn on_ble_advertising_mode_event(&mut self, event: BleAdvertisingModeEvent) {
+        let now = Instant::now();
+        self.ble_advertising_mode = event.0;
+        self.render(now).await;
     }
 
     async fn on_peripheral_connected_event(&mut self, event: PeripheralConnectedEvent) {
@@ -178,6 +180,8 @@ impl LayerLed {
 
     async fn poll(&mut self) {
         let now = Instant::now();
+        self.initialize_ble_snapshot();
+        self.expire_overlay(now);
         let usb_powered = usb_vbus_detected();
         if usb_powered != self.usb_powered {
             self.usb_powered = usb_powered;
@@ -186,19 +190,6 @@ impl LayerLed {
                 self.start_overlay(Overlay::Charging, Duration::from_millis(BATTERY_PULSE_ON_MS));
             } else if self.overlay.is_some_and(|overlay| overlay.kind == Overlay::Charging) {
                 self.overlay = None;
-                self.arm_layer_timeout(now);
-            }
-        }
-
-        if self.overlay.is_some_and(|overlay| now >= overlay.ends) {
-            let expired = self.overlay.take().map(|overlay| overlay.kind);
-            if matches!(expired, Some(Overlay::Profile(_))) {
-                if let Some(state) = self.deferred_ble_state.take() {
-                    self.start_ble_overlay(state);
-                } else {
-                    self.arm_layer_timeout(now);
-                }
-            } else {
                 self.arm_layer_timeout(now);
             }
         }
@@ -221,48 +212,78 @@ impl LayerLed {
         self.render(now).await;
     }
 
-    fn set_split_connected(&mut self, connected: bool) {
-        if self.split_connected == connected {
+    fn initialize_ble_snapshot(&mut self) {
+        if self.ble_snapshot_initialized {
             return;
         }
-        self.split_connected = connected;
-        if connected {
-            self.start_overlay(Overlay::SplitConnected, Duration::from_millis(CONNECTED_PULSE_MS));
-        } else {
-            self.start_overlay(Overlay::SplitMissing, indicator_duration());
-        }
+        self.ble_snapshot_initialized = true;
+        let status = rmk::state::current_connection_status();
+        self.connection_status = Some(status);
+        self.ble_profile = status.ble.profile;
+        self.ble_state = status.ble.state;
+        self.ble_advertising_mode = rmk::state::current_ble_advertising_mode();
     }
 
-    fn start_ble_overlay(&mut self, state: BleState) {
+    fn apply_ble_state_transition(&mut self, previous: Option<BleState>, state: BleState) {
         match state {
-            BleState::Advertising => self.start_overlay(Overlay::Advertising, indicator_duration()),
             BleState::Connected => {
-                self.start_overlay(Overlay::HostConnected, Duration::from_millis(CONNECTED_PULSE_MS));
+                self.start_overlay(Overlay::HostConnected, indicator_duration());
             }
-            BleState::Inactive => {
-                if self
-                    .overlay
-                    .is_some_and(|overlay| matches!(overlay.kind, Overlay::Advertising | Overlay::HostConnected))
-                {
+            BleState::Advertising | BleState::Inactive => {
+                if previous == Some(BleState::Connected) {
                     self.overlay = None;
-                    self.arm_layer_timeout(Instant::now());
                 }
             }
         }
     }
 
+    fn set_split_connected(&mut self, connected: bool) {
+        if self.split_connected == connected {
+            if !connected {
+                self.overlay = None;
+            }
+            return;
+        }
+        let now = Instant::now();
+        self.split_connected = connected;
+        self.indicator_phase_started = now;
+        if connected {
+            self.start_overlay(Overlay::SplitConnected, indicator_duration());
+        } else {
+            self.overlay = None;
+        }
+    }
+
     fn start_overlay(&mut self, kind: Overlay, duration: Duration) {
         let now = Instant::now();
+        self.expire_overlay(now);
+        if !self.split_connected {
+            return;
+        }
+        if let Some(overlay) = self.overlay {
+            if overlay.kind == kind || (is_success_overlay(overlay.kind) && !is_success_overlay(kind)) {
+                return;
+            }
+        }
         self.overlay = Some(TimedOverlay {
             kind,
-            started: now,
             ends: now + duration,
         });
     }
 
+    fn expire_overlay(&mut self, now: Instant) {
+        if self.overlay.is_some_and(|overlay| now >= overlay.ends) {
+            self.overlay = None;
+        }
+    }
+
     fn arm_layer_timeout(&mut self, now: Instant) {
         let timeout = module_settings::led_timeout_sec();
-        self.layer_deadline = (timeout != 0).then(|| now + Duration::from_secs(u64::from(timeout)));
+        // A non-base layer is direct feedback for a held or locked layer and
+        // must stay visible for as long as that layer remains active. The
+        // configurable idle timeout still applies to the base-layer color.
+        self.layer_deadline =
+            (self.current_layer == Some(0) && timeout != 0).then(|| now + Duration::from_secs(u64::from(timeout)));
     }
 
     fn is_charging(&self) -> bool {
@@ -271,16 +292,42 @@ impl LayerLed {
     }
 
     async fn render(&mut self, now: Instant) {
-        let color = self
-            .overlay
-            .map(|overlay| overlay_color(overlay, now))
-            .unwrap_or_else(|| self.layer_color(now));
+        self.expire_overlay(now);
+        let color = self.display_color(now);
 
         if self.current_color == Some(color) {
             return;
         }
         self.current_color = Some(color);
         send_color(&mut self.led, color).await;
+    }
+
+    fn display_color(&self, now: Instant) -> Rgb {
+        if !self.split_connected {
+            let elapsed_ms = now.duration_since(self.indicator_phase_started).as_millis();
+            return split_missing_blink_color(elapsed_ms);
+        }
+
+        if let Some(overlay) = self.overlay.filter(|overlay| now < overlay.ends) {
+            if is_success_overlay(overlay.kind) {
+                return overlay_color(overlay);
+            }
+        }
+
+        if self.ble_state != BleState::Connected {
+            let elapsed_ms = now.duration_since(self.indicator_phase_started).as_millis();
+            return match self.ble_advertising_mode {
+                BleAdvertisingMode::Pairing => pairing_blink_color(elapsed_ms),
+                BleAdvertisingMode::Reconnecting => {
+                    blink_color(color_white(), elapsed_ms, STATUS_BLINK_PERIOD_MS, STATUS_BLINK_ON_MS)
+                }
+            };
+        }
+
+        self.overlay
+            .filter(|overlay| now < overlay.ends)
+            .map(overlay_color)
+            .unwrap_or_else(|| self.layer_color(now))
     }
 
     fn layer_color(&self, now: Instant) -> Rgb {
@@ -295,25 +342,27 @@ fn indicator_duration() -> Duration {
     Duration::from_millis(INDICATOR_DURATION_MS)
 }
 
-fn overlay_color(overlay: TimedOverlay, now: Instant) -> Rgb {
-    let elapsed_ms = now.duration_since(overlay.started).as_millis();
+fn overlay_color(overlay: TimedOverlay) -> Rgb {
     match overlay.kind {
         Overlay::Profile(profile) => color_for_bt_profile(profile),
-        Overlay::Advertising => blink_color(color_blue(), elapsed_ms, 1_000, 500),
-        Overlay::HostConnected => connected_pulse_color(color_green(), elapsed_ms),
-        Overlay::SplitMissing => blink_color(color_yellow(), elapsed_ms, 1_500, 150),
-        Overlay::SplitConnected => connected_pulse_color(color_yellow(), elapsed_ms),
+        Overlay::HostConnected => color_green(),
+        Overlay::SplitConnected => color_green(),
         Overlay::Battery(level) => color_for_battery(level),
         Overlay::Charging => color_green(),
         Overlay::LowBattery => color_red(),
     }
 }
 
-fn connected_pulse_color(color: Rgb, elapsed_ms: u64) -> Rgb {
-    match elapsed_ms {
-        0..=100 | 180..=280 => color,
-        _ => color_off(),
-    }
+fn is_success_overlay(kind: Overlay) -> bool {
+    matches!(kind, Overlay::HostConnected | Overlay::SplitConnected)
+}
+
+fn split_missing_blink_color(elapsed_ms: u64) -> Rgb {
+    blink_color(color_yellow(), elapsed_ms, STATUS_BLINK_PERIOD_MS, STATUS_BLINK_ON_MS)
+}
+
+fn pairing_blink_color(elapsed_ms: u64) -> Rgb {
+    blink_color(color_cyan(), elapsed_ms, STATUS_BLINK_PERIOD_MS, STATUS_BLINK_ON_MS)
 }
 
 fn blink_color(color: Rgb, elapsed_ms: u64, period_ms: u64, on_ms: u64) -> Rgb {
@@ -342,8 +391,8 @@ fn color_for_battery(level: u8) -> Rgb {
     scale_color(color)
 }
 
-fn color_blue() -> Rgb {
-    scale_color(Rgb { r: 0, g: 0, b: 255 })
+fn color_cyan() -> Rgb {
+    scale_color(Rgb { r: 0, g: 180, b: 255 })
 }
 
 fn color_green() -> Rgb {
@@ -356,6 +405,10 @@ fn color_red() -> Rgb {
 
 fn color_yellow() -> Rgb {
     scale_color(Rgb { r: 255, g: 180, b: 0 })
+}
+
+fn color_white() -> Rgb {
+    scale_color(Rgb { r: 255, g: 255, b: 255 })
 }
 
 fn color_off() -> Rgb {
