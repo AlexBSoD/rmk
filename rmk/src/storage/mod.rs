@@ -26,6 +26,9 @@ use crate::config::StorageConfig;
 use crate::split::ble::PeerAddress;
 use crate::{BUILD_HASH, config};
 
+#[cfg(feature = "host")]
+const KEYMAP_STORAGE_SCHEMA_VERSION: u16 = 1;
+
 /// Signal to synchronize the flash operation status, usually used outside of the flash task.
 /// True if the flash operation is finished correctly, false if the flash operation is finished with error.
 pub(crate) static FLASH_OPERATION_FINISHED: Signal<crate::RawMutex, bool> = Signal::new();
@@ -207,6 +210,8 @@ pub(crate) enum StorageKey {
     ActiveBleProfile,
     #[cfg(feature = "_ble")]
     BondInfo(u8),
+    #[cfg(feature = "host")]
+    KeymapSchemaVersion,
 }
 
 impl StorageKey {
@@ -290,6 +295,8 @@ pub(crate) enum StorageData {
     BondInfo(ProfileInfo),
     #[cfg(feature = "_ble")]
     ActiveBleProfile(u8),
+    #[cfg(feature = "host")]
+    KeymapSchemaVersion(u16),
 }
 
 impl<'a> PostcardValue<'a> for StorageData {}
@@ -498,12 +505,23 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                     .await
                     .ok();
             }
-        } else if storage_config.clear_layout {
+        } else {
             #[cfg(feature = "host")]
             {
-                debug!("clear_layout=true; overwriting layout items without erase.");
-                let encoder_map = encoder_map.as_ref().map(|m| &**m);
-                let _ = storage.reset_layout_only(keymap, &encoder_map, behavior_config).await;
+                let schema_is_current = storage.keymap_schema_is_current().await;
+                if storage_config.clear_layout {
+                    debug!("clear_layout=true; overwriting layout items without erase.");
+                    let encoder_map = encoder_map.as_ref().map(|m| &**m);
+                    if let Err(e) = storage.reset_layout_only(keymap, &encoder_map, behavior_config).await {
+                        print_storage_error::<F>(e);
+                    }
+                } else if !schema_is_current {
+                    warn!("Stored keymap schema is incompatible; restoring the factory keymap.");
+                    let encoder_map = encoder_map.as_ref().map(|m| &**m);
+                    if let Err(e) = storage.restore_factory_keymap(keymap, &encoder_map).await {
+                        print_storage_error::<F>(e);
+                    }
+                }
             }
         }
 
@@ -585,6 +603,14 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
             }
         }
 
+        #[cfg(feature = "host")]
+        self.store_data(
+            StorageKey::KeymapSchemaVersion,
+            &StorageData::KeymapSchemaVersion(KEYMAP_STORAGE_SCHEMA_VERSION),
+        )
+        .await
+        .map_err(|e| print_storage_error::<F>(e))?;
+
         Ok(())
     }
 
@@ -606,6 +632,15 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         self.store_data(StorageKey::BehaviorConfig, &StorageData::from(behavior))
             .await?;
 
+        self.restore_factory_keymap(keymap, encoder_map).await
+    }
+
+    #[cfg(feature = "host")]
+    async fn restore_factory_keymap(
+        &mut self,
+        keymap: &[[[KeyAction; COL]; ROW]; NUM_LAYER],
+        encoder_map: &Option<&[[EncoderAction; NUM_ENCODER]; NUM_LAYER]>,
+    ) -> Result<(), SSError<F::Error>> {
         // TODO: Generic reset for vial and other hosts
         for (layer, layer_data) in keymap.iter().enumerate() {
             for (row, row_data) in layer_data.iter().enumerate() {
@@ -632,7 +667,23 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
             }
         }
 
+        // Write the marker last. If restoring the layout is interrupted, the
+        // missing/old marker retries the migration on the next boot.
+        self.store_data(
+            StorageKey::KeymapSchemaVersion,
+            &StorageData::KeymapSchemaVersion(KEYMAP_STORAGE_SCHEMA_VERSION),
+        )
+        .await?;
+
         Ok(())
+    }
+
+    #[cfg(feature = "host")]
+    async fn keymap_schema_is_current(&mut self) -> bool {
+        matches!(
+            self.fetch_data(StorageKey::KeymapSchemaVersion).await,
+            Some(StorageData::KeymapSchemaVersion(KEYMAP_STORAGE_SCHEMA_VERSION))
+        )
     }
 
     async fn check_enable(&mut self) -> bool {
@@ -1027,6 +1078,8 @@ mod tests {
             StorageKey::ActiveBleProfile,
             #[cfg(feature = "_ble")]
             StorageKey::BondInfo(0),
+            #[cfg(feature = "host")]
+            StorageKey::KeymapSchemaVersion,
         ];
 
         let mut buffer = [0u8; 64];
@@ -1068,6 +1121,14 @@ mod tests {
             )
             .await
             .unwrap();
+            #[cfg(feature = "host")]
+            map.store_item(
+                &mut buffer,
+                &StorageKey::KeymapSchemaVersion,
+                &StorageData::KeymapSchemaVersion(KEYMAP_STORAGE_SCHEMA_VERSION),
+            )
+            .await
+            .unwrap();
 
             let (flash, _) = map.destroy();
             #[cfg(feature = "host")]
@@ -1102,6 +1163,88 @@ mod tests {
                     enable: true,
                     build_hash: BUILD_HASH,
                 })
+            ));
+        });
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn missing_keymap_schema_restores_factory_keymap() {
+        block_on(async {
+            use rmk_types::action::{Action, KeyAction};
+            use rmk_types::keycode::HidKeyCode;
+            use rmk_types::modifier::ModifierCombination;
+
+            type Flash = TestFlash<16_384, 4_096, 1>;
+
+            let storage_range = (16_384 - 2 * 4_096) as u32..16_384u32;
+            let mut map =
+                MapStorage::<StorageKey, _, _>::new(Flash::new(), MapConfig::new(storage_range), NoCache::new());
+            let mut buffer = [0u8; 256];
+
+            map.store_item(
+                &mut buffer,
+                &StorageKey::StorageConfig,
+                &StorageData::StorageConfig(LocalStorageConfig {
+                    enable: true,
+                    build_hash: BUILD_HASH,
+                }),
+            )
+            .await
+            .unwrap();
+            map.store_item(
+                &mut buffer,
+                &StorageKey::LayoutConfig,
+                &StorageData::LayoutConfig(LayoutConfig {
+                    default_layer: 7,
+                    layout_option: 42,
+                }),
+            )
+            .await
+            .unwrap();
+
+            // This is how legacy `SHIFTED(Kc2)` data appears after the old
+            // KeyCode-wrapped payload is decoded as the current compact type.
+            let corrupted = KeyAction::Single(Action::KeyWithModifier(
+                HidKeyCode::No,
+                ModifierCombination::from_bits(0x1F),
+            ));
+            map.store_item(
+                &mut buffer,
+                &StorageKey::keymap(0, 0, 0),
+                &StorageData::KeyAction(corrupted),
+            )
+            .await
+            .unwrap();
+
+            let (flash, _) = map.destroy();
+            let factory = KeyAction::Single(Action::KeyWithModifier(HidKeyCode::Kc2, ModifierCombination::LSHIFT));
+            let keymap = [[[factory; 1]; 1]; 1];
+            let encoder_map: Option<&mut [[EncoderAction; 0]; 1]> = None;
+
+            let mut storage = Storage::<Flash, 1, 1, 1, 0>::new(
+                flash,
+                &keymap,
+                &encoder_map,
+                &RuntimeStorageConfig::default(),
+                &RuntimeBehaviorConfig::default(),
+            )
+            .await;
+
+            assert!(matches!(
+                storage.fetch_data(StorageKey::keymap(0, 0, 0)).await,
+                Some(StorageData::KeyAction(action)) if action == factory
+            ));
+            assert!(matches!(
+                storage.fetch_data(StorageKey::LayoutConfig).await,
+                Some(StorageData::LayoutConfig(LayoutConfig {
+                    default_layer: 7,
+                    layout_option: 42,
+                }))
+            ));
+            assert!(matches!(
+                storage.fetch_data(StorageKey::KeymapSchemaVersion).await,
+                Some(StorageData::KeymapSchemaVersion(KEYMAP_STORAGE_SCHEMA_VERSION))
             ));
         });
     }

@@ -660,6 +660,11 @@ mod test {
         )));
         assert_eq!(0x52B1, to_via_keycode(a));
 
+        // SHIFTED(Kc2) -> Left Shift + 2 (@ on the US layout)
+        let shifted_kc2 = KeyAction::Single(Action::KeyWithModifier(HidKeyCode::Kc2, ModifierCombination::LSHIFT));
+        assert_eq!(0x021F, to_via_keycode(shifted_kc2));
+        assert_eq!(shifted_kc2, from_via_keycode(0x021F));
+
         // DF(3)
         let a = KeyAction::Single(Action::DefaultLayer(3));
         assert_eq!(0x5243, to_via_keycode(a));
