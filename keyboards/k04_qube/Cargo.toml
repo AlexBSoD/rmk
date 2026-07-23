@@ -1,7 +1,7 @@
 [package]
 name = "k04_qube"
 version = "0.1.0"
-description = "RMK BLE dongle firmware for Ergohaven K:04 + Qube"
+description = "Shared RMK BLE dongle firmware for Ergohaven K:04 Series + Qube"
 homepage = "https://github.com/ergohaven/rmk"
 repository = "https://github.com/ergohaven/rmk"
 readme = "README.md"
@@ -21,6 +21,7 @@ qube = [
     "dep:embedded-hal-bus",
     "dep:embedded-graphics",
     "dep:rmk-types",
+    "dep:u8g2-fonts",
 ]
 
 [dependencies]
@@ -28,6 +29,7 @@ rmk = { path = "../../rmk", default-features = false, features = [
     "usb_log",
     "storage",
     "vial",
+    "vial_lock",
     "nrf52840_ble",
     "split",
     "async_matrix",
@@ -39,6 +41,7 @@ embedded-hal-bus = { version = "0.3", features = ["async"], optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 lcd-async = { version = "0.1", optional = true }
 rmk-types = { path = "../../rmk-types", optional = true }
+u8g2-fonts = { version = "0.5.2", features = ["embedded_graphics_textstyle"], optional = true }
 heapless = "0.9"
 embassy-futures = "0.1"
 nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = [

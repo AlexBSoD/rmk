@@ -1,6 +1,8 @@
 //! General rotary encoder
 //!
 //! The rotary encoder implementation is adapted from: <https://github.com/leshow/rotary-encoder-hal/blob/master/src/lib.rs>
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use embedded_hal::digital::InputPin;
 #[cfg(feature = "async_matrix")]
 use embedded_hal_async::digital::Wait;
@@ -9,6 +11,29 @@ use rmk_macro::input_device;
 use serde::{Deserialize, Serialize};
 
 use crate::event::KeyboardEvent;
+
+const MAX_DYNAMIC_ENCODERS: usize = 32;
+const MAX_ENCODER_STEPS: u8 = 8;
+static ENCODER_STEPS: [AtomicU8; MAX_DYNAMIC_ENCODERS] = [const { AtomicU8::new(1) }; MAX_DYNAMIC_ENCODERS];
+
+/// Set how many encoder actions are emitted for one physical step.
+///
+/// Returns `false` when `id` exceeds the supported dynamic encoder range.
+pub fn set_encoder_steps(id: u8, steps: u8) -> bool {
+    let Some(value) = ENCODER_STEPS.get(usize::from(id)) else {
+        return false;
+    };
+    value.store(steps.clamp(1, MAX_ENCODER_STEPS), Ordering::Relaxed);
+    true
+}
+
+/// Get how many encoder actions are emitted for one physical step.
+pub fn encoder_steps(id: u8) -> u8 {
+    ENCODER_STEPS
+        .get(usize::from(id))
+        .map(|value| value.load(Ordering::Relaxed))
+        .unwrap_or(1)
+}
 
 /// Holds current/old state and both [`InputPin`](https://docs.rs/embedded-hal/latest/embedded_hal/digital/trait.InputPin.html)
 #[derive(Clone, Debug)]
@@ -27,9 +52,7 @@ pub struct RotaryEncoder<
     phase: P,
     /// The index of the rotary encoder
     id: u8,
-    /// The last action of the rotary encoder.
-    /// When it's not `None`, the rotary encoder needs to emit a release event.
-    last_action: Option<Direction>,
+    step_repeater: EncoderStepRepeater,
     /// Timestamp of the last emitted direction event, used for debounce.
     last_event_time: Option<embassy_time::Instant>,
     /// Minimum interval in milliseconds between emitted direction events.
@@ -48,6 +71,36 @@ pub enum Direction {
     CounterClockwise,
     /// No change
     None,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+struct EncoderStepRepeater {
+    pressed_direction: Option<Direction>,
+    pending_press: Option<Direction>,
+    remaining_repeats: u8,
+}
+
+impl EncoderStepRepeater {
+    fn begin(&mut self, direction: Direction, steps: u8) {
+        self.pressed_direction = Some(direction);
+        self.pending_press = None;
+        self.remaining_repeats = steps.saturating_sub(1);
+    }
+
+    fn next(&mut self) -> Option<(Direction, bool)> {
+        if let Some(direction) = self.pending_press.take() {
+            self.pressed_direction = Some(direction);
+            return Some((direction, true));
+        }
+
+        let direction = self.pressed_direction.take()?;
+        if self.remaining_repeats > 0 {
+            self.remaining_repeats -= 1;
+            self.pending_press = Some(direction);
+        }
+        Some((direction, false))
+    }
 }
 
 /// Allows customizing which Quadrature Phases should be considered movements
@@ -155,7 +208,7 @@ impl<
             state: 0u8,
             phase: DefaultPhase,
             id,
-            last_action: None,
+            step_repeater: EncoderStepRepeater::default(),
             last_event_time: None,
             debounce_ms: 0,
         }
@@ -178,7 +231,7 @@ impl<
             state: 0u8,
             phase: ResolutionPhase::new(resolution, reverse),
             id,
-            last_action: None,
+            step_repeater: EncoderStepRepeater::default(),
             last_event_time: None,
             debounce_ms: 0,
         }
@@ -201,7 +254,7 @@ impl<
             state: 0u8,
             phase,
             id,
-            last_action: None,
+            step_repeater: EncoderStepRepeater::default(),
             last_event_time: None,
             debounce_ms: 0,
         }
@@ -289,10 +342,11 @@ impl<
     /// This method is called by the generated InputDevice implementation.
     async fn read_keyboard_event(&mut self) -> KeyboardEvent {
         // Read until a valid rotary encoder event is detected
-        if let Some(last_action) = self.last_action {
-            embassy_time::Timer::after_millis(5).await;
-            self.last_action = None;
-            return KeyboardEvent::rotary_encoder(self.id, last_action, false);
+        if let Some((direction, pressed)) = self.step_repeater.next() {
+            if !pressed {
+                embassy_time::Timer::after_millis(5).await;
+            }
+            return KeyboardEvent::rotary_encoder(self.id, direction, pressed);
         }
 
         loop {
@@ -305,7 +359,7 @@ impl<
             let direction = self.update();
 
             if direction != Direction::None && self.debounce_check() {
-                self.last_action = Some(direction);
+                self.step_repeater.begin(direction, encoder_steps(self.id));
                 return KeyboardEvent::rotary_encoder(self.id, direction, true);
             }
 
@@ -360,5 +414,29 @@ mod test {
             info!("Item: {:b}, {:?} {:?}", item, d, d2);
             assert_eq!(d, d2);
         }
+    }
+
+    #[test]
+    fn encoder_step_count_is_clamped_and_defaults_to_one() {
+        assert_eq!(encoder_steps(31), 1);
+        assert!(set_encoder_steps(31, 0));
+        assert_eq!(encoder_steps(31), 1);
+        assert!(set_encoder_steps(31, 20));
+        assert_eq!(encoder_steps(31), 8);
+        assert!(!set_encoder_steps(32, 3));
+        assert_eq!(encoder_steps(32), 1);
+    }
+
+    #[test]
+    fn encoder_step_repeater_emits_complete_press_release_pairs() {
+        let mut repeater = EncoderStepRepeater::default();
+        repeater.begin(Direction::Clockwise, 3);
+
+        assert_eq!(repeater.next(), Some((Direction::Clockwise, false)));
+        assert_eq!(repeater.next(), Some((Direction::Clockwise, true)));
+        assert_eq!(repeater.next(), Some((Direction::Clockwise, false)));
+        assert_eq!(repeater.next(), Some((Direction::Clockwise, true)));
+        assert_eq!(repeater.next(), Some((Direction::Clockwise, false)));
+        assert_eq!(repeater.next(), None);
     }
 }

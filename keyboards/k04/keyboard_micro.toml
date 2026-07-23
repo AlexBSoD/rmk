@@ -23,6 +23,7 @@ layer_change.channel_size = 4
 layer_change.subs = 6
 modifier.channel_size = 8
 modifier.subs = 6
+sleep_state.subs = 4
 
 [layout]
 rows = 8
@@ -148,6 +149,9 @@ internal_pullup = true
 
 [rmk]
 split_peripherals_num = 1
+split_pairing_timeout_seconds = 30
+ble_reconnect_timeout_seconds = 60
+ble_pairing_timeout_seconds = 60
 split_central_sleep_timeout_seconds = 120
 combo_max_num = 32
 morse_max_num = 32

@@ -1,13 +1,17 @@
 use bt_hci::cmd::le::LeSetPhy;
 use bt_hci::controller::ControllerCmdAsync;
 use embassy_futures::join::join;
+use embassy_futures::select::select;
 use embassy_time::{Duration, Timer, with_timeout};
 use rmk_types::connection::ConnectionStatus;
 use trouble_host::prelude::*;
 
 #[cfg(feature = "storage")]
 use super::PeerAddress;
-use crate::event::{CentralConnectedEvent, KeyboardEvent, SubscribableEvent, publish_event};
+use crate::event::{
+    CentralConnectedEvent, KeyboardEvent, PointingEvent, SleepStateEvent, SplitConnectionState,
+    SplitConnectionStateEvent, SubscribableEvent, publish_event,
+};
 use crate::split::driver::{SplitDriverError, SplitReader, SplitWriter};
 use crate::split::peripheral::SplitPeripheral;
 use crate::split::{SPLIT_MESSAGE_MAX_SIZE, SplitMessage};
@@ -140,6 +144,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
     stack: &'b Stack<'s, C, DefaultPacketPool>,
 ) {
     publish_event(CentralConnectedEvent { connected: false });
+    publish_event(SplitConnectionStateEvent(SplitConnectionState::Searching));
 
     let mut peripheral = stack.peripheral();
     let runner = stack.runner();
@@ -159,6 +164,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
         loop {
             update_status(|c| *c = ConnectionStatus::new());
             publish_event(CentralConnectedEvent { connected: false });
+            publish_event(SplitConnectionStateEvent(SplitConnectionState::Searching));
             match split_peripheral_advertise(id, central_addr, &mut peripheral, &server).await {
                 Ok((conn, allow_rebind)) => {
                     info!("Connected to the split central");
@@ -179,6 +185,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
                     }
 
                     publish_event(CentralConnectedEvent { connected: true });
+                    publish_event(SplitConnectionStateEvent(SplitConnectionState::Connected));
                     if !central_saved || central_addr != Some(new_addr) {
                         info!("Saving validated split central address to storage");
                         if crate::storage::write_peer_address(PeerAddress {
@@ -197,11 +204,17 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
                     info!("Disconnected from the split central");
                 }
                 Err(BleHostError::BleHost(Error::Timeout)) => {
-                    // Timeout, wait new keys to continue
                     error!("Connect to split central timeout");
-                    let mut sub = KeyboardEvent::subscriber();
-                    sub.clear();
-                    let _ = sub.next_message_pure().await;
+                    publish_event(SplitConnectionStateEvent(SplitConnectionState::Idle));
+                    publish_event(SleepStateEvent::new(true));
+
+                    let mut key_wake = KeyboardEvent::subscriber();
+                    let mut pointing_wake = PointingEvent::subscriber();
+                    key_wake.clear();
+                    pointing_wake.clear();
+                    let _ = select(key_wake.next_message_pure(), pointing_wake.next_message_pure()).await;
+
+                    publish_event(SleepStateEvent::new(false));
                     continue;
                 }
                 Err(e) => {
@@ -263,13 +276,15 @@ async fn split_peripheral_advertise<'a, 'b, C: Controller>(
     server: &'b BleSplitPeripheralServer<'_>,
 ) -> Result<(GattConnection<'a, 'b, DefaultPacketPool>, bool), BleHostError<C::Error>> {
     let mut advertiser_data = [0; 31];
+    let (directed_timeout_secs, discoverable_timeout_secs, retry_timeout_secs) =
+        split_advertising_windows(central_addr.is_some(), crate::SPLIT_PAIRING_TIMEOUT_SECONDS);
 
-    if central_addr.is_some() {
+    if directed_timeout_secs > 0 {
         let advertisement = get_peri_advertiser::<C>(id, central_addr, &mut advertiser_data)?;
         let advertiser = peripheral
             .advertise(&AdvertisementParameters::default(), advertisement)
             .await?;
-        match with_timeout(Duration::from_secs(10), advertiser.accept()).await {
+        match with_timeout(Duration::from_secs(directed_timeout_secs), advertiser.accept()).await {
             Ok(conn_res) => {
                 let conn = conn_res?.with_attribute_server(server)?;
                 info!("[adv] directed split connection established");
@@ -285,24 +300,35 @@ async fn split_peripheral_advertise<'a, 'b, C: Controller>(
     let advertiser = peripheral
         .advertise(&AdvertisementParameters::default(), advertisement)
         .await?;
-    match with_timeout(Duration::from_secs(10), advertiser.accept()).await {
+    match with_timeout(Duration::from_secs(discoverable_timeout_secs), advertiser.accept()).await {
         Ok(conn_res) => {
             let conn = conn_res?.with_attribute_server(server)?;
             info!("[adv] discoverable split connection established");
             Ok((conn, true))
         }
-        Err(_) => {
+        Err(_) if retry_timeout_secs > 0 => {
             warn!("[adv] retry discoverable split advertising");
             let advertisement = get_peri_advertiser::<C>(id, None, &mut advertiser_data)?;
             let advertiser = peripheral
                 .advertise(&AdvertisementParameters::default(), advertisement)
                 .await?;
-            match with_timeout(Duration::from_secs(300), advertiser.accept()).await {
+            match with_timeout(Duration::from_secs(retry_timeout_secs), advertiser.accept()).await {
                 Ok(re) => Ok((re?.with_attribute_server(server)?, true)),
                 Err(_e) => Err(BleHostError::BleHost(Error::Timeout)),
             }
         }
+        Err(_) => Err(BleHostError::BleHost(Error::Timeout)),
     }
+}
+
+fn split_advertising_windows(has_saved_central: bool, configured_timeout_secs: u32) -> (u64, u64, u64) {
+    if configured_timeout_secs == 0 {
+        return if has_saved_central { (10, 10, 300) } else { (0, 10, 300) };
+    }
+
+    let total = u64::from(configured_timeout_secs);
+    let directed = if has_saved_central { total.min(10) } else { 0 };
+    (directed, total.saturating_sub(directed), 0)
 }
 
 fn get_peri_advertiser<'a, C: Controller>(
@@ -355,7 +381,7 @@ async fn ble_task<C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(m
 
 #[cfg(test)]
 mod tests {
-    use super::split_central_address_allowed;
+    use super::{split_advertising_windows, split_central_address_allowed};
 
     const OLD_QUBE: [u8; 6] = [1, 2, 3, 4, 5, 6];
     const NEW_QUBE: [u8; 6] = [7, 8, 9, 10, 11, 12];
@@ -373,5 +399,17 @@ mod tests {
     #[test]
     fn validated_discoverable_connection_can_rebind_qube() {
         assert!(split_central_address_allowed(Some(OLD_QUBE), NEW_QUBE, true));
+    }
+
+    #[test]
+    fn configured_split_timeout_is_one_total_window() {
+        assert_eq!(split_advertising_windows(true, 30), (10, 20, 0));
+        assert_eq!(split_advertising_windows(false, 30), (0, 30, 0));
+    }
+
+    #[test]
+    fn zero_split_timeout_preserves_legacy_windows() {
+        assert_eq!(split_advertising_windows(true, 0), (10, 10, 300));
+        assert_eq!(split_advertising_windows(false, 0), (0, 10, 300));
     }
 }

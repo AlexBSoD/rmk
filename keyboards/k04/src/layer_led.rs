@@ -1,9 +1,9 @@
 use embassy_nrf::pwm::{SequenceConfig, SequencePwm, SingleSequenceMode, SingleSequencer};
 use embassy_time::{Duration, Instant, Timer};
 use rmk::event::{
-    BatteryStatusEvent, BleAdvertisingMode, BleAdvertisingModeEvent, CentralConnectedEvent,
-    ConnectionStatusChangeEvent, LayerChangeEvent, PeripheralBatteryRefreshEvent, PeripheralConnectedEvent,
-    PeripheralSettingsEvent,
+    BatteryStatusEvent, BleAdvertisingMode, BleAdvertisingModeEvent, ConnectionStatusChangeEvent, LayerChangeEvent,
+    PeripheralBatteryRefreshEvent, PeripheralSettingsEvent, SleepStateEvent, SplitConnectionState,
+    SplitConnectionStateEvent,
 };
 use rmk::macros::processor;
 use rmk::types::battery::{BatteryStatus, ChargeState};
@@ -14,7 +14,7 @@ use crate::module_settings::{self, Rgb};
 
 const LED_COUNT: usize = 1;
 const LOW_BATTERY_MAX: u8 = 20;
-const CHARGED_BATTERY_MIN: u8 = 100;
+const CHARGED_BATTERY_MIN: u8 = 95;
 const BATTERY_PULSE_INTERVAL_MS: u64 = 2_000;
 const BATTERY_PULSE_ON_MS: u64 = 120;
 const INDICATOR_DURATION_MS: u64 = 1_000;
@@ -32,7 +32,6 @@ enum Overlay {
     HostConnected,
     SplitConnected,
     Battery(u8),
-    Charging,
     LowBattery,
 }
 
@@ -47,8 +46,8 @@ struct TimedOverlay {
         LayerChangeEvent,
         ConnectionStatusChangeEvent,
         BleAdvertisingModeEvent,
-        PeripheralConnectedEvent,
-        CentralConnectedEvent,
+        SplitConnectionStateEvent,
+        SleepStateEvent,
         PeripheralSettingsEvent,
         BatteryStatusEvent,
         PeripheralBatteryRefreshEvent
@@ -65,14 +64,13 @@ pub struct LayerLed {
     ble_state: BleState,
     ble_advertising_mode: BleAdvertisingMode,
     ble_snapshot_initialized: bool,
-    split_connected: bool,
+    split_state: SplitConnectionState,
+    sleeping: bool,
     indicator_phase_started: Instant,
     overlay: Option<TimedOverlay>,
     latest_battery: Option<u8>,
     battery_charging: bool,
     pending_battery_display: bool,
-    usb_powered: bool,
-    last_charging_pulse: Instant,
     last_low_battery_pulse: Instant,
 }
 
@@ -89,14 +87,13 @@ impl LayerLed {
             ble_state: BleState::Inactive,
             ble_advertising_mode: BleAdvertisingMode::Pairing,
             ble_snapshot_initialized: false,
-            split_connected: false,
+            split_state: SplitConnectionState::Searching,
+            sleeping: false,
             indicator_phase_started: now,
             overlay: None,
             latest_battery: None,
             battery_charging: false,
             pending_battery_display: false,
-            usb_powered: usb_vbus_detected(),
-            last_charging_pulse: now,
             last_low_battery_pulse: now,
         }
     }
@@ -124,7 +121,7 @@ impl LayerLed {
             self.apply_ble_state_transition(previous_ble_state, self.ble_state);
         }
         if profile_changed || repeated {
-            if self.split_connected {
+            if self.split_state != SplitConnectionState::Searching {
                 self.start_overlay(Overlay::Profile(self.ble_profile), indicator_duration());
             }
         }
@@ -138,13 +135,13 @@ impl LayerLed {
         self.render(now).await;
     }
 
-    async fn on_peripheral_connected_event(&mut self, event: PeripheralConnectedEvent) {
-        self.set_split_connected(event.connected);
+    async fn on_split_connection_state_event(&mut self, event: SplitConnectionStateEvent) {
+        self.set_split_state(event.0);
         self.render(Instant::now()).await;
     }
 
-    async fn on_central_connected_event(&mut self, event: CentralConnectedEvent) {
-        self.set_split_connected(event.connected);
+    async fn on_sleep_state_event(&mut self, event: SleepStateEvent) {
+        self.sleeping = event.0;
         self.render(Instant::now()).await;
     }
 
@@ -156,14 +153,20 @@ impl LayerLed {
     }
 
     async fn on_battery_status_event(&mut self, event: BatteryStatusEvent) {
-        if let BatteryStatus::Available { charge_state, level } = event.0 {
-            self.latest_battery = level;
-            self.battery_charging = charge_state == ChargeState::Charging;
-            if self.pending_battery_display {
-                if let Some(level) = level {
-                    self.pending_battery_display = false;
-                    self.start_overlay(Overlay::Battery(level), indicator_duration());
+        match event.0 {
+            BatteryStatus::Available { charge_state, level } => {
+                self.latest_battery = level;
+                self.battery_charging = charge_state == ChargeState::Charging;
+                if self.pending_battery_display {
+                    if let Some(level) = level {
+                        self.pending_battery_display = false;
+                        self.start_overlay(Overlay::Battery(level), indicator_duration());
+                    }
                 }
+            }
+            BatteryStatus::Unavailable => {
+                self.latest_battery = None;
+                self.battery_charging = false;
             }
         }
         self.render(Instant::now()).await;
@@ -182,25 +185,9 @@ impl LayerLed {
         let now = Instant::now();
         self.initialize_ble_snapshot();
         self.expire_overlay(now);
-        let usb_powered = usb_vbus_detected();
-        if usb_powered != self.usb_powered {
-            self.usb_powered = usb_powered;
-            if usb_powered {
-                self.last_charging_pulse = now;
-                self.start_overlay(Overlay::Charging, Duration::from_millis(BATTERY_PULSE_ON_MS));
-            } else if self.overlay.is_some_and(|overlay| overlay.kind == Overlay::Charging) {
-                self.overlay = None;
-                self.arm_layer_timeout(now);
-            }
-        }
 
         if self.overlay.is_none() {
-            if self.is_charging()
-                && now.duration_since(self.last_charging_pulse).as_millis() >= BATTERY_PULSE_INTERVAL_MS
-            {
-                self.last_charging_pulse = now;
-                self.start_overlay(Overlay::Charging, Duration::from_millis(BATTERY_PULSE_ON_MS));
-            } else if !self.is_charging()
+            if !self.battery_charging
                 && self.latest_battery.is_some_and(|level| level <= LOW_BATTERY_MAX)
                 && now.duration_since(self.last_low_battery_pulse).as_millis() >= BATTERY_PULSE_INTERVAL_MS
             {
@@ -237,17 +224,17 @@ impl LayerLed {
         }
     }
 
-    fn set_split_connected(&mut self, connected: bool) {
-        if self.split_connected == connected {
-            if !connected {
+    fn set_split_state(&mut self, state: SplitConnectionState) {
+        if self.split_state == state {
+            if state != SplitConnectionState::Connected {
                 self.overlay = None;
             }
             return;
         }
         let now = Instant::now();
-        self.split_connected = connected;
+        self.split_state = state;
         self.indicator_phase_started = now;
-        if connected {
+        if state == SplitConnectionState::Connected {
             self.start_overlay(Overlay::SplitConnected, indicator_duration());
         } else {
             self.overlay = None;
@@ -257,7 +244,7 @@ impl LayerLed {
     fn start_overlay(&mut self, kind: Overlay, duration: Duration) {
         let now = Instant::now();
         self.expire_overlay(now);
-        if !self.split_connected {
+        if self.split_state == SplitConnectionState::Searching {
             return;
         }
         if let Some(overlay) = self.overlay {
@@ -286,11 +273,6 @@ impl LayerLed {
             (self.current_layer == Some(0) && timeout != 0).then(|| now + Duration::from_secs(u64::from(timeout)));
     }
 
-    fn is_charging(&self) -> bool {
-        self.battery_charging
-            || (self.usb_powered && !self.latest_battery.is_some_and(|level| level >= CHARGED_BATTERY_MIN))
-    }
-
     async fn render(&mut self, now: Instant) {
         self.expire_overlay(now);
         let color = self.display_color(now);
@@ -303,18 +285,34 @@ impl LayerLed {
     }
 
     fn display_color(&self, now: Instant) -> Rgb {
-        if !self.split_connected {
+        if self.battery_charging && module_settings::charge_indicator_enabled() {
+            return if self.latest_battery.is_some_and(|level| level >= CHARGED_BATTERY_MIN) {
+                color_green()
+            } else {
+                color_yellow()
+            };
+        }
+
+        if self.sleeping {
+            return color_off();
+        }
+
+        if self.split_state == SplitConnectionState::Searching {
             let elapsed_ms = now.duration_since(self.indicator_phase_started).as_millis();
             return split_missing_blink_color(elapsed_ms);
         }
 
         if let Some(overlay) = self.overlay.filter(|overlay| now < overlay.ends) {
-            if is_success_overlay(overlay.kind) {
+            if is_connection_overlay(overlay.kind) {
                 return overlay_color(overlay);
             }
         }
 
-        if self.ble_state != BleState::Connected {
+        if self.ble_state == BleState::Inactive {
+            return color_off();
+        }
+
+        if self.ble_state == BleState::Advertising {
             let elapsed_ms = now.duration_since(self.indicator_phase_started).as_millis();
             return match self.ble_advertising_mode {
                 BleAdvertisingMode::Pairing => pairing_blink_color(elapsed_ms),
@@ -348,13 +346,19 @@ fn overlay_color(overlay: TimedOverlay) -> Rgb {
         Overlay::HostConnected => color_green(),
         Overlay::SplitConnected => color_green(),
         Overlay::Battery(level) => color_for_battery(level),
-        Overlay::Charging => color_green(),
         Overlay::LowBattery => color_red(),
     }
 }
 
 fn is_success_overlay(kind: Overlay) -> bool {
     matches!(kind, Overlay::HostConnected | Overlay::SplitConnected)
+}
+
+fn is_connection_overlay(kind: Overlay) -> bool {
+    matches!(
+        kind,
+        Overlay::Profile(_) | Overlay::HostConnected | Overlay::SplitConnected
+    )
 }
 
 fn split_missing_blink_color(elapsed_ms: u64) -> Rgb {
@@ -425,10 +429,6 @@ fn scale_color(color: Rgb) -> Rgb {
 
 fn scale(value: u8) -> u8 {
     ((u16::from(value) * u16::from(module_settings::led_brightness())) / 255).min(255) as u8
-}
-
-fn usb_vbus_detected() -> bool {
-    embassy_nrf::pac::POWER.usbregstatus().read().vbusdetect()
 }
 
 async fn send_color(led: &mut SequencePwm<'static>, color: Rgb) {

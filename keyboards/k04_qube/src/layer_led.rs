@@ -1,7 +1,10 @@
 use embassy_nrf::pwm::{SequenceConfig, SequencePwm, SingleSequenceMode, SingleSequencer};
 use embassy_time::{Duration, Instant, Timer};
-use rmk::event::{CentralConnectedEvent, LayerChangeEvent};
+use rmk::event::{
+    BatteryStatusEvent, LayerChangeEvent, SleepStateEvent, SplitConnectionState, SplitConnectionStateEvent,
+};
 use rmk::macros::processor;
+use rmk::types::battery::{BatteryStatus, ChargeState};
 
 use crate::module_settings::{self, Rgb};
 
@@ -9,20 +12,32 @@ const LED_COUNT: usize = 1;
 const SPLIT_BLINK_PERIOD_MS: u64 = 360;
 const SPLIT_BLINK_ON_MS: u64 = 180;
 const CONNECTED_INDICATOR_MS: u64 = 1_000;
+const CHARGED_BATTERY_MIN: u8 = 95;
 const PWM_POLARITY_INVERTED: u16 = 0x8000;
 const PWM_T0H: u16 = PWM_POLARITY_INVERTED | 6;
 const PWM_T1H: u16 = PWM_POLARITY_INVERTED | 13;
 const RESET_SLOTS: usize = 80;
 const FRAME_WORDS: usize = LED_COUNT * 24 + RESET_SLOTS;
 
-#[processor(subscribe = [LayerChangeEvent, CentralConnectedEvent], poll_interval = 10)]
+#[processor(
+    subscribe = [
+        LayerChangeEvent,
+        SplitConnectionStateEvent,
+        SleepStateEvent,
+        BatteryStatusEvent
+    ],
+    poll_interval = 10
+)]
 pub struct LayerLed {
     led: SequencePwm<'static>,
     current_layer: Option<u8>,
     current_color: Option<Rgb>,
-    central_connected: bool,
+    split_state: SplitConnectionState,
+    sleeping: bool,
     phase_started: Instant,
     connected_until: Option<Instant>,
+    latest_battery: Option<u8>,
+    battery_charging: bool,
 }
 
 impl LayerLed {
@@ -32,9 +47,12 @@ impl LayerLed {
             led,
             current_layer: Some(0),
             current_color: None,
-            central_connected: false,
+            split_state: SplitConnectionState::Searching,
+            sleeping: false,
             phase_started: now,
             connected_until: None,
+            latest_battery: None,
+            battery_charging: false,
         }
     }
 
@@ -43,14 +61,32 @@ impl LayerLed {
         self.render(Instant::now()).await;
     }
 
-    async fn on_central_connected_event(&mut self, event: CentralConnectedEvent) {
-        if self.central_connected != event.connected {
+    async fn on_split_connection_state_event(&mut self, event: SplitConnectionStateEvent) {
+        if self.split_state != event.0 {
             let now = Instant::now();
-            self.central_connected = event.connected;
+            self.split_state = event.0;
             self.phase_started = now;
-            self.connected_until = event
-                .connected
+            self.connected_until = (event.0 == SplitConnectionState::Connected)
                 .then(|| now + Duration::from_millis(CONNECTED_INDICATOR_MS));
+        }
+        self.render(Instant::now()).await;
+    }
+
+    async fn on_sleep_state_event(&mut self, event: SleepStateEvent) {
+        self.sleeping = event.0;
+        self.render(Instant::now()).await;
+    }
+
+    async fn on_battery_status_event(&mut self, event: BatteryStatusEvent) {
+        match event.0 {
+            BatteryStatus::Available { charge_state, level } => {
+                self.latest_battery = level;
+                self.battery_charging = charge_state == ChargeState::Charging;
+            }
+            BatteryStatus::Unavailable => {
+                self.latest_battery = None;
+                self.battery_charging = false;
+            }
         }
         self.render(Instant::now()).await;
     }
@@ -69,7 +105,19 @@ impl LayerLed {
     }
 
     fn display_color(&self, now: Instant) -> Rgb {
-        if !self.central_connected {
+        if self.battery_charging && module_settings::charge_indicator_enabled() {
+            return if self.latest_battery.is_some_and(|level| level >= CHARGED_BATTERY_MIN) {
+                color_green()
+            } else {
+                color_yellow()
+            };
+        }
+
+        if self.sleeping || self.split_state == SplitConnectionState::Idle {
+            return color_off();
+        }
+
+        if self.split_state == SplitConnectionState::Searching {
             let elapsed_ms = now.duration_since(self.phase_started).as_millis();
             return if elapsed_ms % SPLIT_BLINK_PERIOD_MS < SPLIT_BLINK_ON_MS {
                 color_yellow()

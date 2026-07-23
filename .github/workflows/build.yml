@@ -202,12 +202,28 @@ jobs:
           retention-days: 30
 
   build-qube:
-    name: Build ${{ matrix.keyboard }} Qube firmware
+    name: Build ${{ matrix.output_name }} firmware
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        keyboard: [op36_qube, k04_qube]
+        include:
+          - keyboard: op36_qube
+            output_name: op36_qube
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+          - keyboard: k04_qube
+            output_name: k04_qube_k04
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+          - keyboard: k04_qube
+            output_name: k04_qube_mini
+            keyboard_toml: keyboard_mini.toml
+            vial_json: vial_mini.json
+          - keyboard: k04_qube
+            output_name: k04_qube_micro
+            keyboard_toml: keyboard_micro.toml
+            vial_json: vial_micro.json
 
     steps:
       - name: Checkout
@@ -256,55 +272,61 @@ jobs:
         working-directory: keyboards/${{ matrix.keyboard }}
         env:
           BINDGEN_EXTRA_CLANG_ARGS: "--sysroot=/usr/lib/arm-none-eabi --target=arm-none-eabi -I/usr/lib/arm-none-eabi/include -I/usr/lib/gcc/arm-none-eabi/13.2.1/include"
-          CARGO_TARGET_DIR: target/qube
+          CARGO_TARGET_DIR: target/${{ matrix.output_name }}/qube
+          KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
+          VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
         run: cargo build --release --bin qube --features qube
 
       - name: Build left half
         working-directory: keyboards/${{ matrix.keyboard }}
         env:
           BINDGEN_EXTRA_CLANG_ARGS: "--sysroot=/usr/lib/arm-none-eabi --target=arm-none-eabi -I/usr/lib/arm-none-eabi/include -I/usr/lib/gcc/arm-none-eabi/13.2.1/include"
-          CARGO_TARGET_DIR: target/halves
+          CARGO_TARGET_DIR: target/${{ matrix.output_name }}/halves
+          KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
+          VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
         run: cargo build --release --bin left
 
       - name: Build right half
         working-directory: keyboards/${{ matrix.keyboard }}
         env:
           BINDGEN_EXTRA_CLANG_ARGS: "--sysroot=/usr/lib/arm-none-eabi --target=arm-none-eabi -I/usr/lib/arm-none-eabi/include -I/usr/lib/gcc/arm-none-eabi/13.2.1/include"
-          CARGO_TARGET_DIR: target/halves
+          CARGO_TARGET_DIR: target/${{ matrix.output_name }}/halves
+          KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
+          VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
         run: cargo build --release --bin right
 
       - name: Convert to UF2
         working-directory: keyboards/${{ matrix.keyboard }}
         run: |
           arm-none-eabi-objcopy -O binary \
-            target/qube/thumbv7em-none-eabihf/release/qube qube.bin
+            target/${{ matrix.output_name }}/qube/thumbv7em-none-eabihf/release/qube qube.bin
           python3 ../../uf2conv.py qube.bin \
             --base 0x1000 --family 0xADA52840 \
-            --output ${{ matrix.keyboard }}_dongle.uf2
+            --output ${{ matrix.output_name }}_dongle.uf2
 
           arm-none-eabi-objcopy -O binary \
-            target/halves/thumbv7em-none-eabihf/release/left left.bin
+            target/${{ matrix.output_name }}/halves/thumbv7em-none-eabihf/release/left left.bin
           python3 ../../uf2conv.py left.bin \
             --base 0x26000 --family 0xADA52840 \
-            --output ${{ matrix.keyboard }}_left.uf2
+            --output ${{ matrix.output_name }}_left.uf2
 
           arm-none-eabi-objcopy -O binary \
-            target/halves/thumbv7em-none-eabihf/release/right right.bin
+            target/${{ matrix.output_name }}/halves/thumbv7em-none-eabihf/release/right right.bin
           python3 ../../uf2conv.py right.bin \
             --base 0x26000 --family 0xADA52840 \
-            --output ${{ matrix.keyboard }}_right.uf2
+            --output ${{ matrix.output_name }}_right.uf2
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.keyboard }}
+          name: ${{ matrix.output_name }}
           path: |
-            keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard }}_dongle.uf2
-            keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard }}_left.uf2
-            keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard }}_right.uf2
+            keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}_dongle.uf2
+            keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}_left.uf2
+            keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}_right.uf2
           retention-days: 30
 
   build-settings-reset:

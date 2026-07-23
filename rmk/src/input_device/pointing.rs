@@ -570,8 +570,6 @@ const QUBE_TEXT_AXIS_IDLE_MS: u32 = 220;
 const QUBE_TEXT_THRESHOLD: i32 = 1;
 const QUBE_AUTO_LAYER_TIMEOUT_MS_TABLE: [u32; 6] = [250, 500, 750, 1000, 1250, 1500];
 const QUBE_DEFAULT_AUTO_LAYER_TIMEOUT_INDEX: u8 = 1;
-const QUBE_MODULE_SELECT_BALL: u8 = 2;
-const QUBE_MODULE_SELECT_TOUCH: u8 = 3;
 const QUBE_FLAG_LEFT_INVERT_SCROLL_Y: u8 = 1 << 0;
 const QUBE_FLAG_RIGHT_INVERT_SCROLL_Y: u8 = 1 << 1;
 const QUBE_FLAG_LEFT_INVERT_TEXT_Y: u8 = 1 << 2;
@@ -627,7 +625,6 @@ struct QubePointingSettings {
     flags: u8,
     auto_layer: u8,
     auto_flags: u8,
-    module_select: u8,
     axis_flags: u8,
     auto_layer_timeout_index: u8,
 }
@@ -644,7 +641,6 @@ impl QubePointingSettings {
             flags: 0,
             auto_layer: 4,
             auto_flags: 1,
-            module_select: QUBE_MODULE_SELECT_TOUCH | (QUBE_MODULE_SELECT_BALL << 2),
             axis_flags: 0,
             auto_layer_timeout_index: QUBE_DEFAULT_AUTO_LAYER_TIMEOUT_INDEX,
         }
@@ -669,18 +665,8 @@ impl QubePointingSettings {
         self.text_sens[1] = i32::from(data[10].max(1));
         self.flags = data[11];
         self.auto_flags = data[12];
-        self.module_select = data[25] & 0x0f;
         self.axis_flags = data[26] & 0x0f;
         self.auto_layer_timeout_index = (data[26] >> 4).min(5);
-    }
-
-    fn module_enabled(&self, source: QubePointingSource) -> bool {
-        let shift = if source.side == 0 { 0 } else { 2 };
-        let selected = (self.module_select >> shift) & 0x03;
-        matches!(
-            (selected, source.kind),
-            (QUBE_MODULE_SELECT_BALL, QubePointingKind::Ball) | (QUBE_MODULE_SELECT_TOUCH, QubePointingKind::Touch)
-        )
     }
 
     fn orientation(&self, source: QubePointingSource) -> u8 {
@@ -878,9 +864,9 @@ impl<'a> QubePointingModeProcessor<'a> {
         let Some(source) = qube_pointing_source(event.device_id) else {
             return;
         };
-        if !self.settings.module_enabled(source) {
-            return;
-        }
+
+        #[cfg(all(feature = "split", feature = "_ble"))]
+        crate::split::ble::central::update_activity_time();
 
         let mut x = 0i16;
         let mut y = 0i16;

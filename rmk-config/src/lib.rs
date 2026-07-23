@@ -257,7 +257,16 @@ pub(crate) struct RmkConstantsConfig {
     /// The number of available BLE profiles
     #[serde_inline_default(3)]
     pub ble_profiles_num: usize,
-    /// BLE Split Central sleep timeout in minutes (0 = disabled)
+    /// BLE split pairing/reconnect window in seconds (0 = legacy/unbounded)
+    #[serde_inline_default(0)]
+    pub split_pairing_timeout_seconds: u32,
+    /// BLE reconnect window for the active bonded host in seconds
+    #[serde_inline_default(300)]
+    pub ble_reconnect_timeout_seconds: u32,
+    /// BLE pairing window for a new host in seconds (0 = legacy behavior)
+    #[serde_inline_default(0)]
+    pub ble_pairing_timeout_seconds: u32,
+    /// BLE Split Central sleep timeout in seconds (0 = disabled)
     #[serde_inline_default(0)]
     pub split_central_sleep_timeout_seconds: u32,
     /// Maximum number of key actions in a bulk keymap transfer (protocol).
@@ -335,6 +344,9 @@ impl Default for RmkConstantsConfig {
             flash_channel_size: 4,
             split_peripherals_num: 0,
             ble_profiles_num: 3,
+            split_pairing_timeout_seconds: 0,
+            ble_reconnect_timeout_seconds: 300,
+            ble_pairing_timeout_seconds: 0,
             split_central_sleep_timeout_seconds: 0,
             protocol_max_bulk_size: 8,
             protocol_macro_chunk_size: 64,
@@ -415,6 +427,7 @@ define_event_config!(
     // Split events
     peripheral_connected,
     central_connected,
+    split_connection_state,
     peripheral_battery,
     peripheral_battery_refresh,
     peripheral_settings,

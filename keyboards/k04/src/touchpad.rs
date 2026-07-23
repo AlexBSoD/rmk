@@ -26,12 +26,14 @@ const REG_HOLD_TIME: u16 = 0x06bd;
 const REG_SCROLL_INITIAL_DISTANCE: u16 = 0x06c8;
 const REG_END_COMMS: u16 = 0xeeee;
 
-const REPORT_RATE_MS: u16 = 5;
+const REPORT_RATE_MS: u16 = 15;
 const TOUCH_EVENT_BLOCK_LEN: usize = 10;
-const TOUCH_PROBE_INTERVAL_MS: u32 = 500;
+const TOUCH_FAST_PROBE_INTERVAL_MS: u32 = 500;
+const TOUCH_SLOW_PROBE_INTERVAL_MS: u32 = 2_000;
+const TOUCH_FAST_PROBE_WINDOW_MS: u32 = 10_000;
 const TOUCH_READ_FAILURE_REINIT_THRESHOLD: u8 = 4;
 const TOUCH_MOTION_ACCUM_LIMIT: i32 = (i8::MAX as i32) * 2;
-const TOUCH_REPORT_INTERVAL_MS: u32 = 8;
+const TOUCH_REPORT_INTERVAL_MS: u32 = 16;
 const GESTURE_0_SINGLE_TAP: u8 = 1 << 0;
 const GESTURE_0_PRESS_AND_HOLD: u8 = 1 << 1;
 const GESTURE_1_TWO_FINGER_TAP: u8 = 1 << 0;
@@ -43,7 +45,7 @@ const FILTER_IIR: u8 = 1 << 0;
 const FILTER_MAV: u8 = 1 << 1;
 const FILTER_ALP_COUNT: u8 = 1 << 3;
 
-#[processor(subscribe = [LayerChangeEvent], poll_interval = 8)]
+#[processor(subscribe = [LayerChangeEvent], poll_interval = 16)]
 pub struct Touchpad {
     i2c: Twim<'static>,
     device_id: u8,
@@ -54,6 +56,7 @@ pub struct Touchpad {
     acc_y: i32,
     last_report_ms: u32,
     next_probe_ms: u32,
+    unavailable_since_ms: Option<u32>,
 }
 
 impl Touchpad {
@@ -68,6 +71,7 @@ impl Touchpad {
             acc_y: 0,
             last_report_ms: 0,
             next_probe_ms: 0,
+            unavailable_since_ms: None,
         }
     }
 
@@ -76,12 +80,12 @@ impl Touchpad {
     async fn poll(&mut self) {
         if !self.ready {
             let now = now_ms();
-            if self.next_probe_ms != 0 && now.wrapping_sub(self.next_probe_ms) < u32::MAX / 2 {
+            if deadline_pending(now, self.next_probe_ms) {
                 return;
             }
 
             if !self.init().await {
-                self.next_probe_ms = now.wrapping_add(TOUCH_PROBE_INTERVAL_MS);
+                self.schedule_next_probe(now);
                 Timer::after(Duration::from_millis(1)).await;
                 return;
             }
@@ -160,6 +164,7 @@ impl Touchpad {
             self.ready = true;
             self.read_failures = 0;
             self.next_probe_ms = 0;
+            self.unavailable_since_ms = None;
             self.acc_x = 0;
             self.acc_y = 0;
         }
@@ -211,11 +216,22 @@ impl Touchpad {
     }
 
     fn reset(&mut self) {
+        let now = now_ms();
         self.ready = false;
         self.read_failures = 0;
         self.acc_x = 0;
         self.acc_y = 0;
-        self.next_probe_ms = now_ms().wrapping_add(TOUCH_PROBE_INTERVAL_MS);
+        self.schedule_next_probe(now);
+    }
+
+    fn schedule_next_probe(&mut self, now: u32) {
+        let unavailable_since = *self.unavailable_since_ms.get_or_insert(now);
+        let interval = if now.wrapping_sub(unavailable_since) < TOUCH_FAST_PROBE_WINDOW_MS {
+            TOUCH_FAST_PROBE_INTERVAL_MS
+        } else {
+            TOUCH_SLOW_PROBE_INTERVAL_MS
+        };
+        self.next_probe_ms = now.wrapping_add(interval);
     }
 
     fn send_accumulated_motion(&mut self) {
@@ -296,6 +312,10 @@ enum TouchReadResult {
 
 fn now_ms() -> u32 {
     Instant::now().as_millis() as u32
+}
+
+fn deadline_pending(now: u32, deadline: u32) -> bool {
+    deadline != 0 && deadline.wrapping_sub(now) < u32::MAX / 2
 }
 
 fn clamp_motion_accum(value: i32) -> i32 {

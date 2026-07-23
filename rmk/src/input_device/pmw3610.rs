@@ -193,6 +193,20 @@ impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTIO
         }
     }
 
+    /// Check that a connected sensor is still present and initialized.
+    ///
+    /// This is intentionally lightweight so hot-swappable devices can verify
+    /// their PMW3610 periodically without resetting a healthy sensor.
+    pub async fn is_configured(&mut self) -> bool {
+        let Ok(product_id) = self.read_reg(PMW3610_PROD_ID).await else {
+            return false;
+        };
+        let Ok(performance) = self.read_reg(PMW3610_PERFORMANCE).await else {
+            return false;
+        };
+        configured_registers_valid(product_id, performance)
+    }
+
     /// Set force awake mode
     async fn set_force_awake(&mut self, enable: bool) -> Result<(), PointingDriverError> {
         let mut val = self.read_reg(PMW3610_PERFORMANCE).await?;
@@ -356,6 +370,10 @@ impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTIO
     }
 }
 
+fn configured_registers_valid(product_id: u8, performance: u8) -> bool {
+    product_id == PRODUCT_ID_PMW3610 && performance & !PERFORMANCE_FMODE_MASK == PERFORMANCE_INIT
+}
+
 impl<SPI, CS, MOTION> PointingDriver for Pmw3610<SPI, CS, MOTION>
 where
     SPI: SpiBus,
@@ -451,6 +469,22 @@ where
 
         debug!("PMW3610: Resolution set to {} CPI", cpi);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_signature_accepts_power_modes_and_rejects_reset_sensor() {
+        assert!(configured_registers_valid(PRODUCT_ID_PMW3610, PERFORMANCE_INIT));
+        assert!(configured_registers_valid(
+            PRODUCT_ID_PMW3610,
+            PERFORMANCE_INIT | PERFORMANCE_FMODE_FORCE_AWAKE
+        ));
+        assert!(!configured_registers_valid(0xff, PERFORMANCE_INIT));
+        assert!(!configured_registers_valid(PRODUCT_ID_PMW3610, 0));
     }
 }
 

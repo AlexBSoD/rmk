@@ -1,6 +1,8 @@
-# Ergohaven K:04 Qube
+# Ergohaven K:04 Series + Qube
 
-RMK BLE dongle firmware for K:04 with a Qube ST7789 status screen.
+One Qube split BLE firmware crate for K:04, K:04 Mini, and K:04 Micro.
+All Rust code is shared; each model has its own matrix, factory keymap, Vial
+definition, Product ID, and Vial keyboard ID.
 
 This target is intentionally separate from `keyboards/k04`:
 
@@ -9,27 +11,39 @@ This target is intentionally separate from `keyboards/k04`:
 - RMK comes from the root workspace crates (`../../rmk`, `../../rmk-types`),
   synced from official upstream `https://github.com/HaoboGu/rmk` main.
 
+| Profile | Keyboard config | Vial config | Matrix | Product ID |
+|---------|-----------------|-------------|--------|------------|
+| K:04 | `keyboard.toml` | `vial.json` | 10×6 | `0x0071` |
+| Mini | `keyboard_mini.toml` | `vial_mini.json` | 8×6 | `0x0072` |
+| Micro | `keyboard_micro.toml` | `vial_micro.json` | 8×6 | `0x0073` |
+
 ## Build
 
 ```sh
+KEYBOARD_TOML_PATH="$PWD/keyboard.toml" \
+VIAL_JSON_PATH="$PWD/vial.json" \
+CARGO_TARGET_DIR=target/k04/qube \
 cargo build --release --bin qube --features qube
-cargo build --release --bin left
-cargo build --release --bin right
+
+KEYBOARD_TOML_PATH="$PWD/keyboard.toml" \
+VIAL_JSON_PATH="$PWD/vial.json" \
+CARGO_TARGET_DIR=target/k04/halves \
+cargo build --release --bin left --bin right
 ```
 
-Or build UF2 files with:
+Replace the two config paths and `k04` target directory with
+`keyboard_mini.toml` / `vial_mini.json` / `mini` or
+`keyboard_micro.toml` / `vial_micro.json` / `micro`.
 
 ```sh
-cargo make uf2
+./scripts/build_k04_matrix.sh
 ```
 
 ## Scope
 
-The first K:04 Qube target covers matrix, split BLE, two encoders, battery
+The K:04 Series + Qube target covers matrix, split BLE, two encoders, battery
 telemetry, and the Qube status screen. It shares the root RMK BLE split engine
-with `keyboards/k04`; only the configured central topology differs. The regular
-K:04 target also carries the custom layer LED, trackball, touchpad, and
-module-settings runtime.
+with `keyboards/k04`; only the configured central topology differs.
 
 ## Battery
 

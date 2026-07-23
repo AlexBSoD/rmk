@@ -81,6 +81,8 @@ events = [
     { name = "ble_advertising_mode", count = 2 },
     # split/ble/peripheral.rs: KeyboardEvent::subscriber() (temporary, on timeout)
     { name = "keyboard" },
+    # split/ble/peripheral.rs: PointingEvent::subscriber() (temporary, on timeout)
+    { name = "pointing" },
     # split/peripheral.rs: ChargingStateEvent::subscriber() (cfg _ble)
     { name = "charging_state" },
     # split/peripheral.rs: BatteryStatusEvent::subscriber() (cfg _ble)

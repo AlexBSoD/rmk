@@ -4,7 +4,7 @@ use rmk::event::PeripheralSettingsEvent;
 use rmk::macros::processor;
 
 const VERSION: u8 = 9;
-const SETTINGS_LEN: usize = 43;
+const SETTINGS_LEN: usize = 45;
 const TOUCH_DPI_BASE: u16 = 400;
 
 const IDX_LEFT_MODE: usize = 1;
@@ -32,6 +32,9 @@ const IDX_LAYER_COLORS_PACKED: usize = 22;
 const IDX_BT_PROFILE_COLORS: usize = 32;
 const IDX_MODULE_SELECT: usize = 39;
 const IDX_AXIS_FLAGS: usize = 42;
+const IDX_LEFT_ENCODER_STEPS: usize = 43;
+const IDX_RIGHT_ENCODER_STEPS: usize = 44;
+const AUTO_FLAG_CHARGE_INDICATOR_DISABLED: u8 = 1 << 6;
 
 const BALL_DPI_TABLE: [u16; 16] = [
     200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000, 3200,
@@ -62,6 +65,10 @@ impl ModuleSettingsSync {
 
 pub fn led_brightness() -> u8 {
     byte(IDX_LED_BRIGHTNESS)
+}
+
+pub fn charge_indicator_enabled() -> bool {
+    byte(IDX_AUTO_FLAGS) & AUTO_FLAG_CHARGE_INDICATOR_DISABLED == 0
 }
 
 pub fn led_timeout_sec() -> u8 {
@@ -102,6 +109,16 @@ pub fn scale_touch_delta(value: i16, side: u8) -> i16 {
 }
 
 pub(crate) fn apply_settings_packet(data: &[u8; 27]) {
+    if data[0] == VERSION | 0x40 {
+        ensure_initialized();
+        let left_steps = data[1].min(7);
+        let right_steps = data[2].min(7);
+        SETTINGS[IDX_LEFT_ENCODER_STEPS].store(left_steps, Ordering::Relaxed);
+        SETTINGS[IDX_RIGHT_ENCODER_STEPS].store(right_steps, Ordering::Relaxed);
+        rmk::input_device::rotary_encoder::set_encoder_steps(0, left_steps + 1);
+        rmk::input_device::rotary_encoder::set_encoder_steps(1, right_steps + 1);
+        return;
+    }
     if data[0] == VERSION | 0x80 {
         let mut profile = 0usize;
         while profile < 5 {
@@ -162,6 +179,10 @@ fn ensure_initialized() {
     SETTINGS[IDX_RIGHT_TEXT_SENS].store(16, Ordering::Relaxed);
     SETTINGS[IDX_LED_BRIGHTNESS].store(8, Ordering::Relaxed);
     SETTINGS[IDX_LED_TIMEOUT_SEC].store(1, Ordering::Relaxed);
+    SETTINGS[IDX_LEFT_ENCODER_STEPS].store(0, Ordering::Relaxed);
+    SETTINGS[IDX_RIGHT_ENCODER_STEPS].store(0, Ordering::Relaxed);
+    rmk::input_device::rotary_encoder::set_encoder_steps(0, 1);
+    rmk::input_device::rotary_encoder::set_encoder_steps(1, 1);
     set_layer_color_index(0, 0);
     set_layer_color_index(1, 2);
     set_layer_color_index(2, 16);

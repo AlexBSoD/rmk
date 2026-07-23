@@ -98,11 +98,31 @@ build_qube() {
     run "keyboards/$keyboard" env CARGO_TARGET_DIR=target/halves cargo build --release --bin left --bin right
 }
 
+build_k04_qube_profile() {
+    local profile="$1"
+    local keyboard_toml="$2"
+    local vial_json="$3"
+
+    run "keyboards/k04_qube" env \
+        "CARGO_TARGET_DIR=target/$profile/qube" \
+        "KEYBOARD_TOML_PATH=$repo_root/keyboards/k04_qube/$keyboard_toml" \
+        "VIAL_JSON_PATH=$repo_root/keyboards/k04_qube/$vial_json" \
+        cargo build --release --bin qube --features qube
+    run "keyboards/k04_qube" env \
+        "CARGO_TARGET_DIR=target/$profile/halves" \
+        "KEYBOARD_TOML_PATH=$repo_root/keyboards/k04_qube/$keyboard_toml" \
+        "VIAL_JSON_PATH=$repo_root/keyboards/k04_qube/$vial_json" \
+        cargo build --release --bin left --bin right
+}
+
 echo "Using BINDGEN_EXTRA_CLANG_ARGS=$BINDGEN_EXTRA_CLANG_ARGS"
 
 build_k04_series_profile k04 keyboard.toml vial.json
 build_k04_series_profile mini keyboard_mini.toml vial_mini.json
 build_k04_series_profile micro keyboard_micro.toml vial_micro.json
+build_k04_qube_profile k04 keyboard.toml vial.json
+build_k04_qube_profile mini keyboard_mini.toml vial_mini.json
+build_k04_qube_profile micro keyboard_micro.toml vial_micro.json
 build_split op36
 build_split k03
 build_split imperial44
@@ -111,7 +131,6 @@ build_split velvet_ui
 run "keyboards/trackball_v30" cargo build --release --bin keyboard
 run "keyboards/trackball_v31" cargo build --release --bin keyboard
 run "keyboards/trackball_royale" cargo build --release --bin keyboard
-build_qube k04_qube
 build_qube op36_qube
 
 echo

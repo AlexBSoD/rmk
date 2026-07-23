@@ -145,6 +145,12 @@ pub(crate) fn rmk_entry_select(
                     ::rmk::split::ble::central::scan_peripherals(&stack, &peripheral_addrs)
                 };
                 tasks.push(scan_task);
+                tasks.push(quote! {
+                    ::rmk::split::ble::central::run_split_connection_supervisor()
+                });
+                tasks.push(quote! {
+                    ::rmk::split::ble::central::run_split_power_state_manager()
+                });
                 let joined = join_all_tasks(tasks);
                 quote! {
                     #transport_prelude

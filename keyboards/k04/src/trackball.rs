@@ -1,16 +1,21 @@
+use embassy_futures::select::{select, Either};
 use embassy_nrf::gpio::{Flex, Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::Peri;
 use embassy_time::{Duration, Instant, Timer};
+use rmk::core_traits::Runnable;
 use rmk::driver::bitbang_spi::BitBangSpiBus;
-use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, LayerChangeEvent, PointingEvent};
+use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, EventSubscriber, PointingEvent};
 use rmk::input_device::pmw3610::{Pmw3610, Pmw3610Config};
 use rmk::input_device::pointing::PointingDriver;
-use rmk::macros::processor;
+use rmk::processor::Processor;
 
 use crate::module_settings;
 
-const PROBE_INTERVAL_MS: u32 = 250;
-const REPORT_INTERVAL_MS: u32 = 12;
+const FAST_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+const SLOW_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+const FAST_PROBE_WINDOW: Duration = Duration::from_secs(10);
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const REPORT_INTERVAL: Duration = Duration::from_millis(12);
 const MOTION_ACCUM_LIMIT: i32 = (i8::MAX as i32) * 2;
 const DEFAULT_CPI: u16 = 1000;
 
@@ -51,15 +56,16 @@ pub fn new_trackball_from_pins(
     )
 }
 
-#[processor(subscribe = [LayerChangeEvent], poll_interval = 12)]
 pub struct Trackball {
     trackball: K04Trackball,
     device_id: u8,
     ready: bool,
     acc_x: i32,
     acc_y: i32,
-    last_report_ms: u32,
-    next_probe_ms: u32,
+    last_report: Instant,
+    next_probe: Instant,
+    next_health_check: Instant,
+    unavailable_since: Option<Instant>,
     current_cpi: u16,
 }
 
@@ -71,64 +77,106 @@ impl Trackball {
             ready: false,
             acc_x: 0,
             acc_y: 0,
-            last_report_ms: 0,
-            next_probe_ms: 0,
+            last_report: Instant::MIN,
+            next_probe: Instant::MIN,
+            next_health_check: Instant::MIN,
+            unavailable_since: None,
             current_cpi: DEFAULT_CPI,
         }
     }
 
-    async fn on_layer_change_event(&mut self, _event: LayerChangeEvent) {}
+    async fn run_loop(&mut self) -> ! {
+        loop {
+            if !self.ready {
+                let now = Instant::now();
+                if now < self.next_probe {
+                    Timer::at(self.next_probe).await;
+                }
 
-    async fn poll(&mut self) {
-        if !self.ready {
-            let now = now_ms();
-            if self.next_probe_ms != 0 && now.wrapping_sub(self.next_probe_ms) < u32::MAX / 2 {
-                return;
-            }
-
-            match self.trackball.init().await {
-                Ok(()) => {
+                if self.trackball.init().await.is_ok() {
+                    let now = Instant::now();
                     self.current_cpi = module_settings::ball_cpi(self.device_id);
                     let _ = self.trackball.set_resolution(self.current_cpi).await;
                     self.ready = true;
                     self.acc_x = 0;
                     self.acc_y = 0;
-                    self.last_report_ms = now_ms();
-                }
-                Err(_) => {
-                    self.next_probe_ms = now.wrapping_add(PROBE_INTERVAL_MS);
-                    Timer::after(Duration::from_millis(1)).await;
-                    return;
+                    self.last_report = now;
+                    self.next_health_check = now + HEALTH_CHECK_INTERVAL;
+                    self.unavailable_since = None;
+                } else {
+                    self.mark_unavailable(Instant::now());
+                    continue;
                 }
             }
-        }
 
+            self.apply_configured_cpi().await;
+            let report_deadline = (self.acc_x != 0 || self.acc_y != 0).then_some(self.last_report + REPORT_INTERVAL);
+            let deadline = report_deadline
+                .map(|report| report.min(self.next_health_check))
+                .unwrap_or(self.next_health_check);
+
+            let motion_woke = if let Some(gpio) = self.trackball.motion_gpio() {
+                matches!(select(gpio.wait_for_low(), Timer::at(deadline)).await, Either::First(_))
+            } else {
+                Timer::at(deadline).await;
+                false
+            };
+
+            if motion_woke {
+                while self.trackball.motion_pending() {
+                    match self.trackball.read_motion().await {
+                        Ok(motion) => {
+                            self.acc_x = clamp_motion_accum(self.acc_x.saturating_add(motion.dx as i32));
+                            self.acc_y = clamp_motion_accum(self.acc_y.saturating_add(motion.dy as i32));
+                        }
+                        Err(_) => {
+                            self.mark_unavailable(Instant::now());
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !self.ready {
+                continue;
+            }
+
+            let now = Instant::now();
+            if now >= self.next_health_check {
+                self.next_health_check = now + HEALTH_CHECK_INTERVAL;
+                if !self.trackball.is_configured().await {
+                    self.mark_unavailable(now);
+                    continue;
+                }
+                self.apply_configured_cpi().await;
+            }
+
+            if (self.acc_x != 0 || self.acc_y != 0) && now.duration_since(self.last_report) >= REPORT_INTERVAL {
+                self.send_accumulated_motion();
+                self.last_report = now;
+            }
+        }
+    }
+
+    async fn apply_configured_cpi(&mut self) {
         let configured_cpi = module_settings::ball_cpi(self.device_id);
         if configured_cpi != self.current_cpi && self.trackball.set_resolution(configured_cpi).await.is_ok() {
             self.current_cpi = configured_cpi;
         }
+    }
 
-        while self.trackball.motion_pending() {
-            match self.trackball.read_motion().await {
-                Ok(motion) => {
-                    self.acc_x = clamp_motion_accum(self.acc_x.saturating_add(motion.dx as i32));
-                    self.acc_y = clamp_motion_accum(self.acc_y.saturating_add(motion.dy as i32));
-                }
-                Err(_) => {
-                    self.ready = false;
-                    self.next_probe_ms = now_ms().wrapping_add(PROBE_INTERVAL_MS);
-                    self.acc_x = 0;
-                    self.acc_y = 0;
-                    return;
-                }
-            }
-        }
-
-        let now = now_ms();
-        if now.wrapping_sub(self.last_report_ms) >= REPORT_INTERVAL_MS {
-            self.send_accumulated_motion();
-            self.last_report_ms = now;
-        }
+    fn mark_unavailable(&mut self, now: Instant) {
+        self.ready = false;
+        let unavailable_since = *self.unavailable_since.get_or_insert(now);
+        let retry_interval = if now.duration_since(unavailable_since) < FAST_PROBE_WINDOW {
+            FAST_PROBE_INTERVAL
+        } else {
+            SLOW_PROBE_INTERVAL
+        };
+        self.next_probe = now + retry_interval;
+        self.next_health_check = Instant::MIN;
+        self.acc_x = 0;
+        self.acc_y = 0;
     }
 
     fn send_accumulated_motion(&mut self) {
@@ -164,8 +212,35 @@ impl Trackball {
     }
 }
 
-fn now_ms() -> u32 {
-    Instant::now().as_millis() as u32
+struct NeverSub;
+pub struct NeverEvent;
+
+impl EventSubscriber for NeverSub {
+    type Event = NeverEvent;
+
+    async fn next_event(&mut self) -> NeverEvent {
+        core::future::pending().await
+    }
+}
+
+impl Runnable for Trackball {
+    async fn run(&mut self) -> ! {
+        self.run_loop().await
+    }
+}
+
+impl Processor for Trackball {
+    type Event = NeverEvent;
+
+    fn subscriber() -> impl EventSubscriber<Event = NeverEvent> {
+        NeverSub
+    }
+
+    async fn process(&mut self, _: NeverEvent) {}
+
+    async fn process_loop(&mut self) -> ! {
+        self.run().await
+    }
 }
 
 fn clamp_motion_accum(value: i32) -> i32 {

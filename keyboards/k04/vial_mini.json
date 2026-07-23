@@ -60,6 +60,7 @@
             "fields": [
                 { "type": "select", "title": "Module", "qsid": 149, "variants": ["None", "Encoder", "Trackball", "Touchpad"] },
                 { "type": "select", "title": "Encoder interval", "qsid": 325, "variants": ["0 ms", "5 ms", "10 ms", "15 ms", "20 ms", "30 ms", "40 ms", "60 ms", "80 ms", "100 ms"] },
+                { "type": "select", "title": "Encoder steps", "qsid": 332, "variants": ["1", "2", "3", "4", "5", "6", "7", "8"] },
                 { "type": "select", "title": "Mode", "qsid": 134, "variants": ["Normal", "Sniper", "Scroll", "Text"] },
                 { "type": "select", "title": "Ball axis", "qsid": 130, "variants": ["0°", "90°", "180°", "270°"] },
                 { "type": "select", "title": "Touch axis", "qsid": 132, "variants": ["0°", "90°", "180°", "270°"] },
@@ -82,6 +83,7 @@
             "fields": [
                 { "type": "select", "title": "Module", "qsid": 150, "variants": ["None", "Encoder", "Trackball", "Touchpad"] },
                 { "type": "select", "title": "Encoder interval", "qsid": 326, "variants": ["0 ms", "5 ms", "10 ms", "15 ms", "20 ms", "30 ms", "40 ms", "60 ms", "80 ms", "100 ms"] },
+                { "type": "select", "title": "Encoder steps", "qsid": 333, "variants": ["1", "2", "3", "4", "5", "6", "7", "8"] },
                 { "type": "select", "title": "Mode", "qsid": 135, "variants": ["Normal", "Sniper", "Scroll", "Text"] },
                 { "type": "select", "title": "Ball axis", "qsid": 131, "variants": ["0°", "90°", "180°", "270°"] },
                 { "type": "select", "title": "Touch axis", "qsid": 133, "variants": ["0°", "90°", "180°", "270°"] },
@@ -137,6 +139,7 @@
             "name": "Bluetooth settings",
             "fields": [
                 { "type": "select", "title": "Sleep timeout", "qsid": 323, "variants": ["Never", "10 minutes", "15 minutes", "20 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "5 hours"] },
+                { "type": "boolean", "title": "Charge indicator", "qsid": 331, "bit": 0 },
                 { "type": "select", "title": "BT profile 0 color", "qsid": 318, "variants": ["Off", "White", "Red", "Orange", "Goldenrod", "Gold", "Yellow", "Chartreuse", "Lime", "Green", "Spring Green", "Turquoise", "Teal", "Cyan", "Azure", "Sky", "Blue", "Indigo", "Purple", "Magenta", "Pink", "Coral", "Salmon", "Warm White", "Amber"] },
                 { "type": "select", "title": "BT profile 1 color", "qsid": 319, "variants": ["Off", "White", "Red", "Orange", "Goldenrod", "Gold", "Yellow", "Chartreuse", "Lime", "Green", "Spring Green", "Turquoise", "Teal", "Cyan", "Azure", "Sky", "Blue", "Indigo", "Purple", "Magenta", "Pink", "Coral", "Salmon", "Warm White", "Amber"] },
                 { "type": "select", "title": "BT profile 2 color", "qsid": 320, "variants": ["Off", "White", "Red", "Orange", "Goldenrod", "Gold", "Yellow", "Chartreuse", "Lime", "Green", "Spring Green", "Turquoise", "Teal", "Cyan", "Azure", "Sky", "Blue", "Indigo", "Purple", "Magenta", "Pink", "Coral", "Salmon", "Warm White", "Amber"] },

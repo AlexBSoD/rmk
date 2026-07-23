@@ -20,7 +20,7 @@ use embassy_nrf::peripherals::{P0_02, P0_03, P0_28, P1_10, P1_11, P1_13, SPI3};
 use embassy_nrf::spim::{self, Spim};
 use embassy_nrf::{interrupt, Peri};
 use embassy_time::{Delay, Duration, Instant, Timer};
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10, FONT_8X13, FONT_9X15};
+use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_8X13, FONT_9X15};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -41,6 +41,7 @@ use rmk::event::{
 use rmk::processor::Processor;
 use rmk_types::battery::BatteryStatus;
 use static_cell::StaticCell;
+use u8g2_fonts::{fonts, U8g2TextStyle};
 
 // --- Panel geometry ---------------------------------------------------------
 
@@ -788,7 +789,7 @@ impl QubeStatusRenderer {
     fn media_needs_marquee(&self) -> bool {
         let mut media: heapless::String<72> = heapless::String::new();
         push_media_label(&mut media, &self.host_data);
-        media.len() > MEDIA_VISIBLE_CHARS
+        media.chars().count() > MEDIA_VISIBLE_CHARS
     }
 }
 
@@ -797,11 +798,11 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         let _ = display.clear(COL_BG);
 
         let layer_meta = MonoTextStyle::new(&FONT_6X10, COL_LABEL);
-        let header_media = MonoTextStyle::new(&FONT_6X10, COL_FG);
+        let header_media = U8g2TextStyle::new(fonts::u8g2_font_6x12_t_cyrillic, COL_FG);
         let header_fallback = MonoTextStyle::new(&FONT_8X13, COL_ACCENT);
         let body = MonoTextStyle::new(&FONT_8X13, COL_FG);
-        let title_shadow = MonoTextStyle::new(&FONT_10X20, COL_ACCENT_DIM);
-        let title = MonoTextStyle::new(&FONT_10X20, COL_FG);
+        let title_shadow = U8g2TextStyle::new(fonts::u8g2_font_10x20_t_cyrillic, COL_ACCENT_DIM);
+        let title = U8g2TextStyle::new(fonts::u8g2_font_10x20_t_cyrillic, COL_FG);
         let tc = TextStyleBuilder::new()
             .alignment(Alignment::Center)
             .baseline(Baseline::Top)
@@ -829,7 +830,7 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         draw_panel(display, SAFE_X, 14, SAFE_W, 28, COL_PANEL, COL_BORDER_DIM);
         draw_round_fill(display, SAFE_X + 11, 23, 3, 10, 2, COL_ACCENT);
         let mut s: heapless::String<16> = heapless::String::new();
-        draw_media_or_fallback(display, &self.host_data, header_media, header_fallback);
+        draw_media_or_fallback(display, &self.host_data, &header_media, header_fallback);
         if host_time_available(&self.host_data) {
             push_host_time(&mut s, self.host_data.hour, self.host_data.minute);
             let _ = Text::with_text_style(&s, Point::new(SAFE_X + SAFE_W as i32 - 14, 21), body, tr).draw(display);
@@ -840,8 +841,8 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         s.clear();
         let _ = write!(&mut s, "LAYER {}", ctx.layer);
         let _ = Text::with_text_style(&s, Point::new(SCREEN_W as i32 / 2, 66), layer_meta, tc).draw(display);
-        let _ = Text::with_text_style(name, Point::new(SCREEN_W as i32 / 2 + 1, 101), title_shadow, mc).draw(display);
-        let _ = Text::with_text_style(name, Point::new(SCREEN_W as i32 / 2, 100), title, mc).draw(display);
+        let _ = Text::with_text_style(name, Point::new(SCREEN_W as i32 / 2 + 1, 101), &title_shadow, mc).draw(display);
+        let _ = Text::with_text_style(name, Point::new(SCREEN_W as i32 / 2, 100), &title, mc).draw(display);
         draw_round_fill(display, 104, 125, 72, 2, 1, COL_ACCENT_DIM);
 
         // Modifier chips.
@@ -1071,7 +1072,7 @@ fn push_host_time(buffer: &mut heapless::String<16>, hour: Option<u8>, minute: O
 fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
     display: &mut D,
     host_data: &rmk::host_data::HostData,
-    media_style: MonoTextStyle<'_, Rgb565>,
+    media_style: &U8g2TextStyle<Rgb565>,
     fallback_style: MonoTextStyle<'_, Rgb565>,
 ) {
     let top = TextStyleBuilder::new().baseline(Baseline::Top).build();
@@ -1085,12 +1086,12 @@ fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
         return;
     }
 
-    let mut visible: heapless::String<32> = heapless::String::new();
-    if media.len() <= MEDIA_VISIBLE_CHARS {
+    let mut visible: heapless::String<64> = heapless::String::new();
+    if media.chars().count() <= MEDIA_VISIBLE_CHARS {
         let _ = visible.push_str(&media);
     } else {
         let elapsed = Instant::now().duration_since(Instant::from_ticks(0)).as_millis() as usize;
-        let offset = (elapsed / 300) % (media.len() + MEDIA_GAP_CHARS);
+        let offset = (elapsed / 300) % (media.chars().count() + MEDIA_GAP_CHARS);
         push_marquee_slice(&mut visible, &media, offset);
     }
 
@@ -1099,31 +1100,37 @@ fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
 
 fn push_media_label(buffer: &mut heapless::String<72>, host_data: &rmk::host_data::HostData) {
     if !host_data.media_artist.is_empty() {
-        push_ascii_text(buffer, &host_data.media_artist);
+        push_display_text(buffer, &host_data.media_artist);
     }
     if !host_data.media_title.is_empty() {
         if !buffer.is_empty() {
             let _ = buffer.push_str(" - ");
         }
-        push_ascii_text(buffer, &host_data.media_title);
+        push_display_text(buffer, &host_data.media_title);
     }
 }
 
-fn push_ascii_text<const N: usize>(buffer: &mut heapless::String<N>, value: &str) {
+fn push_display_text<const N: usize>(buffer: &mut heapless::String<N>, value: &str) {
     for ch in value.chars() {
-        let ch = if ch.is_ascii_graphic() || ch == ' ' { ch } else { '?' };
+        if ch.is_control() {
+            continue;
+        }
         if buffer.push(ch).is_err() {
             break;
         }
     }
 }
 
-fn push_marquee_slice(buffer: &mut heapless::String<32>, text: &str, offset: usize) {
-    let bytes = text.as_bytes();
-    let cycle_len = bytes.len() + MEDIA_GAP_CHARS;
+fn push_marquee_slice(buffer: &mut heapless::String<64>, text: &str, offset: usize) {
+    let text_len = text.chars().count();
+    let cycle_len = text_len + MEDIA_GAP_CHARS;
     for i in 0..MEDIA_VISIBLE_CHARS {
         let idx = (offset + i) % cycle_len;
-        let ch = if idx < bytes.len() { bytes[idx] as char } else { ' ' };
+        let ch = if idx < text_len {
+            text.chars().nth(idx).unwrap_or(' ')
+        } else {
+            ' '
+        };
         let _ = buffer.push(ch);
     }
 }

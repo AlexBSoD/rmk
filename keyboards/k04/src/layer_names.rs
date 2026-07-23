@@ -8,23 +8,26 @@ pub const LAYER_NAME_COUNT: usize = 16;
 pub const LAYER_NAME_MAX: usize = 12;
 const LAYER_NAME_QSID_BASE: u16 = 200;
 const STORAGE_MARKER: u8 = 0xE4;
-const STORAGE_VERSION: u8 = 1;
+const STORAGE_VERSION: u8 = 2;
+const LEGACY_STORAGE_VERSION: u8 = 1;
 const STORAGE_HEADER_LEN: usize = 2;
 const MODULE_STORAGE_OFFSET: usize = STORAGE_HEADER_LEN;
 const LAYER_NAMES_STORAGE_OFFSET: usize = MODULE_STORAGE_OFFSET + MODULE_SETTINGS_STORAGE_LEN;
+const LEGACY_LAYER_NAMES_STORAGE_OFFSET: usize = MODULE_STORAGE_OFFSET + LEGACY_MODULE_SETTINGS_STORAGE_LEN;
 
 pub type LayerNameString = heapless::String<LAYER_NAME_MAX>;
 
-const SETTING_KEYS: [u16; 80] = [
+const SETTING_KEYS: [u16; 83] = [
     120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142,
     143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
     213, 214, 215, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319,
-    320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330,
+    320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333,
 ];
 
 const MODULE_SETTINGS_VERSION: u8 = 9;
-const MODULE_SETTINGS_LEN: usize = 43;
-const MODULE_SETTINGS_STORAGE_LEN: usize = 32;
+const MODULE_SETTINGS_LEN: usize = 45;
+const LEGACY_MODULE_SETTINGS_STORAGE_LEN: usize = 32;
+const MODULE_SETTINGS_STORAGE_LEN: usize = 33;
 const MODULE_SETTINGS_SYNC_LEN: usize = 27;
 const SLEEP_TIMEOUT_SECONDS_TABLE: [u64; 10] = [
     10 * 60,
@@ -69,6 +72,8 @@ const IDX_MODULE_SELECT: usize = 39;
 const IDX_LEFT_ENCODER_INTERVAL: usize = 40;
 const IDX_RIGHT_ENCODER_INTERVAL: usize = 41;
 const IDX_AXIS_FLAGS: usize = 42;
+const IDX_LEFT_ENCODER_STEPS: usize = 43;
+const IDX_RIGHT_ENCODER_STEPS: usize = 44;
 
 const FLAG_LEFT_INVERT_SCROLL_Y: u8 = 1 << 0;
 const FLAG_RIGHT_INVERT_SCROLL_Y: u8 = 1 << 1;
@@ -86,6 +91,7 @@ const AXIS_FLAG_RIGHT_INVERT_TEXT_X: u8 = 1 << 3;
 
 const AUTO_FLAG_TOUCH_GESTURES_LEFT: u8 = 1 << 4;
 const AUTO_FLAG_TOUCH_GESTURES_RIGHT: u8 = 1 << 5;
+const AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT: u8 = 6;
 
 const MODULE_SELECT_TOUCH: u8 = 3;
 
@@ -111,6 +117,8 @@ const MODULE_DEFAULTS: [u8; MODULE_SETTINGS_LEN] = {
     data[IDX_AUTO_LAYER_TIMEOUT] = 1;
     data[IDX_LEFT_ENCODER_INTERVAL] = 4;
     data[IDX_RIGHT_ENCODER_INTERVAL] = 4;
+    data[IDX_LEFT_ENCODER_STEPS] = 0;
+    data[IDX_RIGHT_ENCODER_STEPS] = 0;
     data = set_default_layer_color(data, 0, 0);
     data = set_default_layer_color(data, 1, 2);
     data = set_default_layer_color(data, 2, 16);
@@ -240,12 +248,21 @@ fn serialize() -> VialDeviceSettingsData {
 }
 
 fn deserialize(bytes: &[u8]) {
-    if bytes.first() == Some(&STORAGE_MARKER) && bytes.len() >= LAYER_NAMES_STORAGE_OFFSET {
-        deserialize_module_settings(&bytes[MODULE_STORAGE_OFFSET..LAYER_NAMES_STORAGE_OFFSET]);
-        deserialize_compact_layer_names(&bytes[LAYER_NAMES_STORAGE_OFFSET..]);
-        LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
-        publish_module_settings();
-        return;
+    if bytes.first() == Some(&STORAGE_MARKER) {
+        let layer_names_offset = match bytes.get(1).copied() {
+            Some(STORAGE_VERSION) if bytes.len() >= LAYER_NAMES_STORAGE_OFFSET => Some(LAYER_NAMES_STORAGE_OFFSET),
+            Some(LEGACY_STORAGE_VERSION) if bytes.len() >= LEGACY_LAYER_NAMES_STORAGE_OFFSET => {
+                Some(LEGACY_LAYER_NAMES_STORAGE_OFFSET)
+            }
+            _ => None,
+        };
+        if let Some(layer_names_offset) = layer_names_offset {
+            deserialize_module_settings(&bytes[MODULE_STORAGE_OFFSET..layer_names_offset]);
+            deserialize_compact_layer_names(&bytes[layer_names_offset..]);
+            LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
+            publish_module_settings();
+            return;
+        }
     }
 
     deserialize_module_settings(&[]);
@@ -335,7 +352,7 @@ fn module_get_setting(qsid: u16, out: &mut [u8]) -> Option<usize> {
 
 fn module_qsid_width(qsid: u16) -> Option<usize> {
     match qsid {
-        120..=152 | 300..=315 | 317..=330 => Some(1),
+        120..=152 | 300..=315 | 317..=333 => Some(1),
         316 => Some(2),
         _ => None,
     }
@@ -392,6 +409,9 @@ fn module_set_setting(qsid: u16, data: &[u8]) -> bool {
         328 => module_set_axis_flag(AXIS_FLAG_RIGHT_INVERT_SCROLL_X, value != 0),
         329 => module_set_axis_flag(AXIS_FLAG_LEFT_INVERT_TEXT_X, value != 0),
         330 => module_set_axis_flag(AXIS_FLAG_RIGHT_INVERT_TEXT_X, value != 0),
+        331 => module_set_auto_flag(AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT, value == 0),
+        332 => module_set_byte(IDX_LEFT_ENCODER_STEPS, value.min(7)),
+        333 => module_set_byte(IDX_RIGHT_ENCODER_STEPS, value.min(7)),
         _ => return false,
     }
     publish_module_settings();
@@ -401,6 +421,7 @@ fn module_set_setting(qsid: u16, data: &[u8]) -> bool {
 pub fn publish_module_settings() {
     publish_event(PeripheralSettingsEvent(module_settings_sync_packet()));
     publish_event(PeripheralSettingsEvent(module_profile_settings_sync_packet()));
+    publish_event(PeripheralSettingsEvent(module_encoder_settings_sync_packet()));
 }
 
 fn module_profile_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
@@ -411,6 +432,14 @@ fn module_profile_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
         data[1 + usize::from(profile)] = module_bt_profile_color_index(profile);
         profile += 1;
     }
+    data
+}
+
+fn module_encoder_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
+    let mut data = [0u8; MODULE_SETTINGS_SYNC_LEN];
+    data[0] = MODULE_SETTINGS_VERSION | 0x40;
+    data[1] = module_byte(IDX_LEFT_ENCODER_STEPS).min(7);
+    data[2] = module_byte(IDX_RIGHT_ENCODER_STEPS).min(7);
     data
 }
 
@@ -495,6 +524,9 @@ fn module_qsid_value(qsid: u16) -> Option<u8> {
         328 => module_axis_flag(AXIS_FLAG_RIGHT_INVERT_SCROLL_X) as u8,
         329 => module_axis_flag(AXIS_FLAG_LEFT_INVERT_TEXT_X) as u8,
         330 => module_axis_flag(AXIS_FLAG_RIGHT_INVERT_TEXT_X) as u8,
+        331 => (!module_auto_flag(AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT)) as u8,
+        332 => module_byte(IDX_LEFT_ENCODER_STEPS).min(7),
+        333 => module_byte(IDX_RIGHT_ENCODER_STEPS).min(7),
         _ => return None,
     })
 }
@@ -536,11 +568,17 @@ fn serialize_module_settings() -> [u8; MODULE_SETTINGS_STORAGE_LEN] {
     data[30] =
         module_byte(IDX_AUTO_LAYER_TIMEOUT).min(5) | ((module_byte(IDX_RIGHT_ENCODER_INTERVAL).min(9) & 0x0f) << 4);
     data[31] = (module_byte(IDX_MODULE_SELECT) & 0x0f) | ((module_byte(IDX_AXIS_FLAGS) & 0x0f) << 4);
+    data[32] = (module_byte(IDX_LEFT_ENCODER_STEPS).min(7) & 0x0f)
+        | ((module_byte(IDX_RIGHT_ENCODER_STEPS).min(7) & 0x0f) << 4);
     data
 }
 
 fn deserialize_module_settings(data: &[u8]) {
-    if data.len() != MODULE_SETTINGS_STORAGE_LEN || data[0] != MODULE_SETTINGS_VERSION {
+    if !matches!(
+        data.len(),
+        LEGACY_MODULE_SETTINGS_STORAGE_LEN | MODULE_SETTINGS_STORAGE_LEN
+    ) || data[0] != MODULE_SETTINGS_VERSION
+    {
         reset_module_settings();
         return;
     }
@@ -583,6 +621,10 @@ fn deserialize_module_settings(data: &[u8]) {
     MODULE_SETTINGS[IDX_RIGHT_ENCODER_INTERVAL].store((data[30] >> 4).min(9), Ordering::Relaxed);
     MODULE_SETTINGS[IDX_MODULE_SELECT].store(data[31] & 0x0f, Ordering::Relaxed);
     MODULE_SETTINGS[IDX_AXIS_FLAGS].store((data[31] >> 4) & 0x0f, Ordering::Relaxed);
+    if let Some(encoder_steps) = data.get(32).copied() {
+        MODULE_SETTINGS[IDX_LEFT_ENCODER_STEPS].store((encoder_steps & 0x0f).min(7), Ordering::Relaxed);
+        MODULE_SETTINGS[IDX_RIGHT_ENCODER_STEPS].store(((encoder_steps >> 4) & 0x0f).min(7), Ordering::Relaxed);
+    }
 }
 
 fn ensure_module_settings_initialized() {

@@ -21,6 +21,26 @@ pub struct CentralConnectedEvent {
     pub connected: bool,
 }
 
+/// Current split-link acquisition state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SplitConnectionState {
+    /// The central/peripheral is actively looking for its split peer.
+    Searching,
+    /// Every required split link is established.
+    Connected,
+    /// The configured split search window elapsed.
+    Idle,
+}
+
+/// Split-link acquisition state changed event.
+#[event(channel_size = crate::SPLIT_CONNECTION_STATE_EVENT_CHANNEL_SIZE, pubs = crate::SPLIT_CONNECTION_STATE_EVENT_PUB_SIZE, subs = crate::SPLIT_CONNECTION_STATE_EVENT_SUB_SIZE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SplitConnectionStateEvent(pub SplitConnectionState);
+
+impl_payload_wrapper!(SplitConnectionStateEvent, SplitConnectionState);
+
 /// Peripheral battery status changed event
 #[event(channel_size = crate::PERIPHERAL_BATTERY_EVENT_CHANNEL_SIZE, pubs = crate::PERIPHERAL_BATTERY_EVENT_PUB_SIZE, subs = crate::PERIPHERAL_BATTERY_EVENT_SUB_SIZE)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

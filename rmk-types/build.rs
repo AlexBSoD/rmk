@@ -73,6 +73,18 @@ fn generate_constants(bc: &BuildConstants) -> String {
     lines.push(format!("pub const SPLIT_PRODUCT_ID: u16 = {};", bc.product_id));
     lines.push(format!("pub const NUM_BLE_PROFILE: usize = {};", bc.ble_profiles_num));
     lines.push(format!(
+        "pub const SPLIT_PAIRING_TIMEOUT_SECONDS: u32 = {};",
+        bc.split_pairing_timeout_seconds
+    ));
+    lines.push(format!(
+        "pub const BLE_RECONNECT_TIMEOUT_SECONDS: u32 = {};",
+        bc.ble_reconnect_timeout_seconds
+    ));
+    lines.push(format!(
+        "pub const BLE_PAIRING_TIMEOUT_SECONDS: u32 = {};",
+        bc.ble_pairing_timeout_seconds
+    ));
+    lines.push(format!(
         "pub const SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS: u32 = {};",
         bc.split_central_sleep_timeout_seconds
     ));

@@ -3,7 +3,7 @@
 //! Stock RMK `battery_adc_pin` is not used: its NrfAdc path calls
 //! `calibrate().await`, which can hang under SoftDevice and leave the dongle
 //! on "??" forever. This reader skips calibrate, times out samples, and
-//! re-publishes BatteryStatusEvent every 2s so the split loop can forward.
+//! re-publishes BatteryStatusEvent periodically so the split loop can forward.
 
 use embassy_futures::select::select;
 use embassy_nrf::interrupt;
@@ -29,6 +29,8 @@ const FULL_MV: i32 = 4100;
 const RAW_PER_MV_NUM: i32 = 4;
 const RAW_PER_MV_DEN: i32 = 5;
 const HYSTERESIS_PCT: u8 = 2;
+const CHARGING_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+const DISCHARGING_SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
 
 fn percent(val: u16) -> u8 {
     let val = val as i32;
@@ -61,7 +63,7 @@ impl K04Battery {
 
     fn smoothed_percent(&mut self, next: u8) -> u8 {
         match self.level {
-            Some(current) if next.abs_diff(current) < HYSTERESIS_PCT => current,
+            Some(current) if next != 0 && next != 100 && next.abs_diff(current) < HYSTERESIS_PCT => current,
             _ => {
                 self.level = Some(next);
                 next
@@ -100,12 +102,20 @@ impl K04Battery {
     async fn publish_sample(&mut self) {
         let status = match self.sample_raw().await {
             Some(raw) => BatteryStatus::Available {
-                charge_state: ChargeState::Unknown,
+                charge_state: current_charge_state(),
                 level: Some(self.smoothed_percent(percent(raw))),
             },
             None => BatteryStatus::Unavailable,
         };
         publish_event(BatteryStatusEvent(status));
+    }
+}
+
+fn current_charge_state() -> ChargeState {
+    if embassy_nrf::pac::POWER.usbregstatus().read().vbusdetect() {
+        ChargeState::Charging
+    } else {
+        ChargeState::Discharging
     }
 }
 
@@ -125,7 +135,11 @@ impl Runnable for K04Battery {
         let mut refresh_sub = PeripheralBatteryRefreshEvent::subscriber();
         loop {
             self.publish_sample().await;
-            let _ = select(Timer::after(Duration::from_secs(2)), refresh_sub.next_event()).await;
+            let interval = match current_charge_state() {
+                ChargeState::Charging => CHARGING_SAMPLE_INTERVAL,
+                _ => DISCHARGING_SAMPLE_INTERVAL,
+            };
+            let _ = select(Timer::after(interval), refresh_sub.next_event()).await;
         }
     }
 }

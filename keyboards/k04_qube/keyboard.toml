@@ -12,7 +12,10 @@ unlock_keys = [[0, 5], [0, 4]]
 
 [rmk]
 split_peripherals_num = 2
-split_central_sleep_timeout_seconds = 120
+split_pairing_timeout_seconds = 30
+ble_reconnect_timeout_seconds = 60
+ble_pairing_timeout_seconds = 60
+split_central_sleep_timeout_seconds = 900
 combo_max_num = 32
 morse_max_num = 32
 macro_space_size = 2048
@@ -35,6 +38,7 @@ layer_change.channel_size = 4
 layer_change.subs = 6
 modifier.channel_size = 8
 modifier.subs = 6
+sleep_state.subs = 4
 
 [split]
 connection = "ble"
