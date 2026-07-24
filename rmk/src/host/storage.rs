@@ -89,7 +89,7 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
             .map_err(|e| print_storage_error::<F>(e))?
         {
             match (key, item) {
-                (StorageKey::Keymap { layer, row, col }, StorageData::KeyAction(action)) => {
+                (StorageKey::KeymapV2 { layer, row, col }, StorageData::KeyAction(action)) => {
                     let layer = layer as usize;
                     let row = row as usize;
                     let col = col as usize;
@@ -97,7 +97,7 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                         data.keymap[layer][row][col] = action;
                     }
                 }
-                (StorageKey::Encoder { layer, idx }, StorageData::EncoderAction(action)) => {
+                (StorageKey::EncoderV2 { layer, idx }, StorageData::EncoderAction(action)) => {
                     let idx = idx as usize;
                     let layer = layer as usize;
                     if layer < NUM_LAYER && idx < NUM_ENCODER {
