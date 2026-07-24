@@ -148,9 +148,11 @@ pub(crate) fn rmk_entry_select(
                 tasks.push(quote! {
                     ::rmk::split::ble::central::run_split_connection_supervisor()
                 });
-                tasks.push(quote! {
-                    ::rmk::split::ble::central::run_split_power_state_manager()
-                });
+                if split_config.peripheral.len() > 1 {
+                    tasks.push(quote! {
+                        ::rmk::split::ble::central::run_split_power_state_manager()
+                    });
+                }
                 let joined = join_all_tasks(tasks);
                 quote! {
                     #transport_prelude

@@ -899,6 +899,21 @@ async fn sleep_manager_task<
             }
         };
         update_conn_params(stack, conn, &conn_params).await;
+
+        // A single split link owns the central sleep state itself. Keeping the
+        // transition here avoids an extra global task on ordinary two-half
+        // keyboards, while multi-peripheral centrals (for example Qube) use
+        // `run_split_power_state_manager` so one link cannot consume another
+        // link's sleep transition.
+        if crate::SPLIT_PERIPHERALS_NUM == 1 {
+            if next_mode == SplitPowerMode::Sleeping {
+                if !SLEEPING_STATE.swap(true, Ordering::AcqRel) {
+                    publish_event(SleepStateEvent::new(true));
+                }
+            } else if current_mode == SplitPowerMode::Sleeping && SLEEPING_STATE.swap(false, Ordering::AcqRel) {
+                publish_event(SleepStateEvent::new(false));
+            }
+        }
         current_mode = next_mode;
     }
 }
