@@ -60,7 +60,7 @@ pub struct ViaReport {
 
 /// Predefined report ids for composite hid report.
 /// Should be same with `#[gen_hid_descriptor]` of `CompositeReport` and `BleCompositeReport`
-/// DO NOT EDIT
+/// and the Report Reference descriptors in `ble::ble_server::HidService`.
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 
@@ -280,11 +280,35 @@ pub struct BleCompositeReport {
     pub(crate) system_usage_id: u8,
 }
 
+#[cfg(all(feature = "_ble", feature = "host"))]
+pub(crate) const BLE_REPORT_MAP_LEN: usize = 205;
+
+/// Compose the one HID-over-GATT report map used by BLE hosts.
+///
+/// Keeping Vial in this same service avoids the platform-dependent behavior of
+/// multiple HOGP service instances. USB keeps its existing dedicated,
+/// unnumbered Vial interface. Vial remains report id 0 and is placed before the
+/// numbered keyboard reports so existing Vial clients keep their standard
+/// `[0, 32-byte payload]` HID framing.
+#[cfg(all(feature = "_ble", feature = "host"))]
+pub(crate) fn ble_report_map() -> [u8; BLE_REPORT_MAP_LEN] {
+    let composite = BleCompositeReport::desc();
+    let vial = ViaReport::desc();
+    assert_eq!(composite.len() + vial.len(), BLE_REPORT_MAP_LEN);
+
+    let mut report_map = [0u8; BLE_REPORT_MAP_LEN];
+    report_map[..vial.len()].copy_from_slice(vial);
+    report_map[vial.len()..].copy_from_slice(composite);
+    report_map
+}
+
 #[cfg(all(test, feature = "_ble"))]
 mod ble_report_map_tests {
     use usbd_hid::descriptor::SerializedDescriptor;
 
     use super::BleCompositeReport;
+    #[cfg(feature = "host")]
+    use super::{BLE_REPORT_MAP_LEN, ble_report_map};
 
     /// Pins the report map: `ble_server::HidService` hardcodes its length, and
     /// the report ids must match `CompositeReportType`.
@@ -302,6 +326,23 @@ mod ble_report_map_tests {
                 assert!(keyboard < id, "keyboard collection must own ReportID 1");
             }
         }
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_ble_report_map_includes_vial_in_the_composite_service() {
+        let desc = ble_report_map();
+        fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+            haystack.windows(needle.len()).position(|w| w == needle)
+        }
+
+        assert_eq!(desc.len(), BLE_REPORT_MAP_LEN);
+        let vial_usage = find(&desc, &[0x06, 0x60, 0xff, 0x09, 0x61]).expect("missing Vial application usage");
+        let first_report_id = find(&desc, &[0x85, 0x01]).expect("missing keyboard ReportID");
+        assert!(
+            vial_usage < first_report_id,
+            "unnumbered Vial collection must precede numbered reports"
+        );
     }
 }
 

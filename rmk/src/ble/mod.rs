@@ -300,11 +300,7 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
     let hid_control_point = server.hid_service.hid_control_point;
     let input_keyboard = server.hid_service.input_keyboard;
     #[cfg(feature = "host")]
-    let (output_host, input_host, host_control_point) = (
-        server.host_service.output_data,
-        server.host_service.input_data,
-        server.host_service.hid_control_point,
-    );
+    let (output_host, input_host) = (server.hid_service.vial_output, server.hid_service.vial_input);
     let mouse = server.hid_service.mouse_report;
     let media = server.hid_service.media_report;
     let system_control = server.hid_service.system_report;
@@ -373,11 +369,6 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                         }
                     }
                     GattEvent::Write(event) => {
-                        #[cfg(feature = "host")]
-                        let host_control_point_match = event.handle() == host_control_point.handle;
-                        #[cfg(not(feature = "host"))]
-                        let host_control_point_match = false;
-
                         // trouble-host 0.7 exposes written bytes via a closure; copy them out
                         // once so the dispatch below (which awaits) can use them freely.
                         let mut data_buf = [0u8; 32];
@@ -403,7 +394,7 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                             || event.handle() == level.cccd_handle.expect("No CCCD for battery level")
                         {
                             cccd_updated = true;
-                        } else if event.handle() == hid_control_point.handle || host_control_point_match {
+                        } else if event.handle() == hid_control_point.handle {
                             info!("Write GATT Event to Control Point: {:?}", event.handle());
                             #[cfg(feature = "split")]
                             {
@@ -854,7 +845,7 @@ async fn run_ble_keyboard<
     let led_task = run_led_reader(&mut ble_led_reader, ConnectionType::Ble);
 
     #[cfg(feature = "host")]
-    let host_task = crate::host::ble::run_ble_host(server.host_service.input_data, conn);
+    let host_task = crate::host::ble::run_ble_host(server.hid_service.vial_input, conn);
     #[cfg(not(feature = "host"))]
     let host_task = core::future::pending::<()>();
 
