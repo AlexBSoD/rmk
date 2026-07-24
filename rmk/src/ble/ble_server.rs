@@ -54,10 +54,10 @@ pub(crate) struct HidService {
     #[descriptor(uuid = "2908", read, value = [CompositeReportType::System as u8, 1u8])]
     #[characteristic(uuid = "2a4d", read, notify)]
     pub(crate) system_report: [u8; 1],
-    #[descriptor(uuid = "2908", read, value = [0u8, 1u8])]
+    #[descriptor(uuid = "2908", read, value = [CompositeReportType::Vial as u8, 1u8])]
     #[characteristic(uuid = "2a4d", read, notify)]
     pub(crate) vial_input: [u8; 32],
-    #[descriptor(uuid = "2908", read, value = [0u8, 2u8])]
+    #[descriptor(uuid = "2908", read, value = [CompositeReportType::Vial as u8, 2u8])]
     #[characteristic(uuid = "2a4d", read, write, write_without_response)]
     pub(crate) vial_output: [u8; 32],
 }
