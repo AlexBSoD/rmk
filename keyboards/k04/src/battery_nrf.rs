@@ -111,8 +111,12 @@ impl K04Battery {
     }
 }
 
+pub(crate) fn usb_powered() -> bool {
+    embassy_nrf::pac::POWER.usbregstatus().read().vbusdetect()
+}
+
 fn current_charge_state() -> ChargeState {
-    if embassy_nrf::pac::POWER.usbregstatus().read().vbusdetect() {
+    if usb_powered() {
         ChargeState::Charging
     } else {
         ChargeState::Discharging

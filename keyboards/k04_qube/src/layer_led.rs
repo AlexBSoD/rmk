@@ -4,7 +4,7 @@ use rmk::event::{
     BatteryStatusEvent, LayerChangeEvent, SleepStateEvent, SplitConnectionState, SplitConnectionStateEvent,
 };
 use rmk::macros::processor;
-use rmk::types::battery::{BatteryStatus, ChargeState};
+use rmk::types::battery::BatteryStatus;
 
 use crate::module_settings::{self, Rgb};
 
@@ -37,7 +37,6 @@ pub struct LayerLed {
     phase_started: Instant,
     connected_until: Option<Instant>,
     latest_battery: Option<u8>,
-    battery_charging: bool,
 }
 
 impl LayerLed {
@@ -52,7 +51,6 @@ impl LayerLed {
             phase_started: now,
             connected_until: None,
             latest_battery: None,
-            battery_charging: false,
         }
     }
 
@@ -79,13 +77,11 @@ impl LayerLed {
 
     async fn on_battery_status_event(&mut self, event: BatteryStatusEvent) {
         match event.0 {
-            BatteryStatus::Available { charge_state, level } => {
+            BatteryStatus::Available { level, .. } => {
                 self.latest_battery = level;
-                self.battery_charging = charge_state == ChargeState::Charging;
             }
             BatteryStatus::Unavailable => {
                 self.latest_battery = None;
-                self.battery_charging = false;
             }
         }
         self.render(Instant::now()).await;
@@ -105,7 +101,10 @@ impl LayerLed {
     }
 
     fn display_color(&self, now: Instant) -> Rgb {
-        if self.battery_charging && module_settings::charge_indicator_enabled() {
+        if self.current_layer == Some(0)
+            && crate::battery_nrf::usb_powered()
+            && module_settings::charge_indicator_enabled()
+        {
             return if self.latest_battery.is_some_and(|level| level >= CHARGED_BATTERY_MIN) {
                 color_green()
             } else {

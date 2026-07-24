@@ -6,7 +6,7 @@ use rmk::event::{
     SplitConnectionStateEvent,
 };
 use rmk::macros::processor;
-use rmk::types::battery::{BatteryStatus, ChargeState};
+use rmk::types::battery::BatteryStatus;
 use rmk::types::ble::BleState;
 use rmk::types::connection::ConnectionStatus;
 
@@ -69,7 +69,6 @@ pub struct LayerLed {
     indicator_phase_started: Instant,
     overlay: Option<TimedOverlay>,
     latest_battery: Option<u8>,
-    battery_charging: bool,
     pending_battery_display: bool,
     last_low_battery_pulse: Instant,
 }
@@ -92,7 +91,6 @@ impl LayerLed {
             indicator_phase_started: now,
             overlay: None,
             latest_battery: None,
-            battery_charging: false,
             pending_battery_display: false,
             last_low_battery_pulse: now,
         }
@@ -154,9 +152,8 @@ impl LayerLed {
 
     async fn on_battery_status_event(&mut self, event: BatteryStatusEvent) {
         match event.0 {
-            BatteryStatus::Available { charge_state, level } => {
+            BatteryStatus::Available { level, .. } => {
                 self.latest_battery = level;
-                self.battery_charging = charge_state == ChargeState::Charging;
                 if self.pending_battery_display {
                     if let Some(level) = level {
                         self.pending_battery_display = false;
@@ -166,7 +163,6 @@ impl LayerLed {
             }
             BatteryStatus::Unavailable => {
                 self.latest_battery = None;
-                self.battery_charging = false;
             }
         }
         self.render(Instant::now()).await;
@@ -187,7 +183,7 @@ impl LayerLed {
         self.expire_overlay(now);
 
         if self.overlay.is_none() {
-            if !self.battery_charging
+            if !crate::battery_nrf::usb_powered()
                 && self.latest_battery.is_some_and(|level| level <= LOW_BATTERY_MAX)
                 && now.duration_since(self.last_low_battery_pulse).as_millis() >= BATTERY_PULSE_INTERVAL_MS
             {
@@ -285,7 +281,10 @@ impl LayerLed {
     }
 
     fn display_color(&self, now: Instant) -> Rgb {
-        if self.battery_charging && module_settings::charge_indicator_enabled() {
+        if self.current_layer == Some(0)
+            && crate::battery_nrf::usb_powered()
+            && module_settings::charge_indicator_enabled()
+        {
             return if self.latest_battery.is_some_and(|level| level >= CHARGED_BATTERY_MIN) {
                 color_green()
             } else {
