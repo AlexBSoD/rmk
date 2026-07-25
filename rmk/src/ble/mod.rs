@@ -572,8 +572,10 @@ async fn advertise<'a, 'b, C: Controller>(
     )?;
 
     let fast_advertise_config = AdvertisementParameters {
-        primary_phy: PhyKind::Le2M,
-        secondary_phy: PhyKind::Le2M,
+        // Keep discovery compatible with hosts that scan advertising on LE 1M.
+        // The established connection is still upgraded to LE 2M below.
+        primary_phy: PhyKind::Le1M,
+        secondary_phy: PhyKind::Le1M,
         tx_power: TxPower::Plus8dBm,
         interval_min: Duration::from_millis(30),
         interval_max: Duration::from_millis(30),
