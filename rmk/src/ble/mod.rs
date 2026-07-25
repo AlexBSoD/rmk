@@ -1,9 +1,11 @@
 use core::sync::atomic::AtomicBool;
 
-use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeSetPhy};
+use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeReadPhy, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, Either3, select, select3};
+#[cfg(feature = "host")]
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
 use rmk_types::battery::BatteryStatus;
 use rmk_types::ble::BleState;
@@ -51,6 +53,14 @@ pub(crate) const L2CAP_CHANNELS_MAX: usize = CONNECTIONS_MAX * 4; // Signal + at
 
 const DIRECTED_RECONNECT_WINDOW_MS: u64 = 1_300;
 const FAST_ADVERTISING_TIMEOUT_SECS: u64 = 30;
+const HOST_PHY_UPDATE_ATTEMPTS: u8 = 3;
+const HOST_PHY_UPDATE_SETTLE_MS: u64 = 80;
+const HOST_IDLE_MAX_LATENCY: u16 = 30;
+const HOST_INTERACTIVE_MAX_LATENCY: u16 = 0;
+const VIAL_LINK_IDLE_TIMEOUT_SECS: u64 = 30;
+
+#[cfg(feature = "host")]
+static VIAL_BLE_ACTIVITY: Signal<crate::RawMutex, ()> = Signal::new();
 
 /// Build the BLE stack.
 pub async fn build_ble_stack<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(
@@ -71,7 +81,10 @@ pub async fn build_ble_stack<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P
 pub struct BleTransport<'b, 's, C>
 where
     's: 'b,
-    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    C: Controller
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdSync<LeReadPhy>,
 {
     stack: &'b Stack<'s, C, DefaultPacketPool>,
     server: Server<'static>,
@@ -83,7 +96,10 @@ where
 impl<'b, 's, C> BleTransport<'b, 's, C>
 where
     's: 'b,
-    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    C: Controller
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdSync<LeReadPhy>,
 {
     pub async fn new(stack: &'b Stack<'s, C, DefaultPacketPool>, rmk_config: RmkConfig<'static>) -> Self {
         #[cfg(feature = "_nrf_ble")]
@@ -142,7 +158,10 @@ where
 impl<'b, 's, C> Runnable for BleTransport<'b, 's, C>
 where
     's: 'b,
-    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    C: Controller
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdSync<LeReadPhy>,
 {
     async fn run(&mut self) -> ! {
         // Load the preferred connection from storage
@@ -415,6 +434,7 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                             if event.handle() == output_host.handle {
                                 debug!("Got host packet: {:?}", data);
                                 if data_len == 32 {
+                                    VIAL_BLE_ACTIVITY.signal(());
                                     crate::channel::enqueue_host_request(ConnectionType::Ble, data_buf).await;
                                 } else {
                                     warn!("Wrong host packet data: {:?}", data);
@@ -740,14 +760,7 @@ pub(crate) async fn set_conn_params<
     update_conn_params(
         stack,
         conn.raw(),
-        &RequestedConnParams {
-            min_connection_interval: Duration::from_millis(15),
-            max_connection_interval: Duration::from_millis(15),
-            max_latency: 30,
-            min_event_length: Duration::from_secs(0),
-            max_event_length: Duration::from_secs(0),
-            supervision_timeout: Duration::from_secs(5),
-        },
+        &host_connection_params(Duration::from_millis(15), HOST_IDLE_MAX_LATENCY),
     )
     .await;
 
@@ -757,20 +770,53 @@ pub(crate) async fn set_conn_params<
     update_conn_params(
         stack,
         conn.raw(),
-        &RequestedConnParams {
-            min_connection_interval: Duration::from_micros(7500),
-            max_connection_interval: Duration::from_micros(7500),
-            max_latency: 30,
-            min_event_length: Duration::from_secs(0),
-            max_event_length: Duration::from_secs(0),
-            supervision_timeout: Duration::from_secs(5),
-        },
+        &host_connection_params(Duration::from_micros(7500), HOST_IDLE_MAX_LATENCY),
     )
     .await;
 
-    // Wait forever. This is because we want the conn params setting can be interrupted when the connection is lost.
-    // So this task shouldn't quit after setting the conn params.
+    #[cfg(feature = "host")]
+    loop {
+        // Slave latency 30 lets an idle keyboard skip up to 30 connection
+        // events, but it also makes every sequential Vial round trip wait up
+        // to 232.5 ms. Switch only the configuration session to latency 0;
+        // repeated Vial traffic extends the session without polling.
+        VIAL_BLE_ACTIVITY.wait().await;
+        update_conn_params(
+            stack,
+            conn.raw(),
+            &host_connection_params(Duration::from_micros(7500), HOST_INTERACTIVE_MAX_LATENCY),
+        )
+        .await;
+
+        while with_timeout(
+            Duration::from_secs(VIAL_LINK_IDLE_TIMEOUT_SECS),
+            VIAL_BLE_ACTIVITY.wait(),
+        )
+        .await
+        .is_ok()
+        {}
+
+        update_conn_params(
+            stack,
+            conn.raw(),
+            &host_connection_params(Duration::from_micros(7500), HOST_IDLE_MAX_LATENCY),
+        )
+        .await;
+    }
+
+    #[cfg(not(feature = "host"))]
     core::future::pending::<()>().await;
+}
+
+fn host_connection_params(interval: Duration, max_latency: u16) -> RequestedConnParams {
+    RequestedConnParams {
+        min_connection_interval: interval,
+        max_connection_interval: interval,
+        max_latency,
+        min_event_length: Duration::from_secs(0),
+        max_event_length: Duration::from_secs(0),
+        supervision_timeout: Duration::from_secs(5),
+    }
 }
 
 /// Run BLE keyboard for one connection.
@@ -788,7 +834,10 @@ fn seed_battery_level(server: &Server<'_>, status: BatteryStatus) {
 async fn run_ble_keyboard<
     'a,
     'b,
-    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    C: Controller
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdSync<LeReadPhy>,
 >(
     server: &'b Server<'_>,
     conn: &GattConnection<'a, 'b, DefaultPacketPool>,
@@ -796,6 +845,9 @@ async fn run_ble_keyboard<
     #[cfg(feature = "storage")] active_bond_info: Option<crate::ble::profile::ProfileInfo>,
     config: &BleBatteryConfig<'a>,
 ) {
+    #[cfg(feature = "host")]
+    VIAL_BLE_ACTIVITY.reset();
+
     // Seed the readable GATT value before processing host requests. Otherwise
     // Windows can read the characteristic's default 0% before the delayed
     // battery notification publishes the measured level.
@@ -820,8 +872,11 @@ async fn run_ble_keyboard<
         }
     }
 
-    // Use 2M Phy
-    update_ble_phy(stack, conn.raw()).await;
+    // Advertising stays on the universally discoverable LE 1M PHY. Verify
+    // that the established host link actually upgrades to LE 2M: accepting
+    // LE Set PHY only schedules the controller procedure and does not prove
+    // that the peer completed it.
+    ensure_host_ble_2m_phy(stack, conn.raw()).await;
 
     let communication_task = async {
         if let Either3::First(e) = select3(
@@ -853,6 +908,91 @@ async fn run_ble_keyboard<
 
     let inner = embassy_futures::join::join3(writer_task, led_task, host_task);
     select(communication_task, inner).await;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostPhyUpdateState {
+    Verified,
+    Retry,
+    Exhausted,
+}
+
+fn host_phy_update_state(tx_phy: PhyKind, rx_phy: PhyKind, attempt: u8) -> HostPhyUpdateState {
+    if tx_phy == PhyKind::Le2M && rx_phy == PhyKind::Le2M {
+        HostPhyUpdateState::Verified
+    } else if attempt < HOST_PHY_UPDATE_ATTEMPTS {
+        HostPhyUpdateState::Retry
+    } else {
+        HostPhyUpdateState::Exhausted
+    }
+}
+
+async fn ensure_host_ble_2m_phy<C, P>(stack: &Stack<'_, C, P>, conn: &Connection<'_, P>)
+where
+    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadPhy>,
+    P: PacketPool,
+{
+    for attempt in 1..=HOST_PHY_UPDATE_ATTEMPTS {
+        match conn.set_phy(stack, PhyKind::Le2M).await {
+            Ok(()) => info!(
+                "[host_phy] LE 2M update requested ({}/{})",
+                attempt, HOST_PHY_UPDATE_ATTEMPTS
+            ),
+            Err(BleHostError::BleHost(Error::Hci(error))) => {
+                warn!(
+                    "[host_phy] LE 2M update request failed ({}/{}): {:?}",
+                    attempt, HOST_PHY_UPDATE_ATTEMPTS, error
+                );
+            }
+            Err(e) => {
+                #[cfg(feature = "defmt")]
+                let e = defmt::Debug2Format(&e);
+                warn!(
+                    "[host_phy] LE 2M update request failed ({}/{}): {:?}",
+                    attempt, HOST_PHY_UPDATE_ATTEMPTS, e
+                );
+            }
+        }
+
+        // LE Set PHY completes asynchronously. Give the controller enough
+        // time for more than one normal connection event before reading the
+        // negotiated PHY back.
+        Timer::after_millis(HOST_PHY_UPDATE_SETTLE_MS).await;
+
+        match conn.read_phy(stack).await {
+            Ok((tx_phy, rx_phy)) => match host_phy_update_state(tx_phy, rx_phy, attempt) {
+                HostPhyUpdateState::Verified => {
+                    info!("[host_phy] LE 2M verified");
+                    return;
+                }
+                HostPhyUpdateState::Retry => {
+                    warn!(
+                        "[host_phy] still on {:?}/{:?} after attempt {}/{}",
+                        tx_phy, rx_phy, attempt, HOST_PHY_UPDATE_ATTEMPTS
+                    );
+                }
+                HostPhyUpdateState::Exhausted => {
+                    warn!(
+                        "[host_phy] LE 2M not negotiated; continuing on {:?}/{:?}",
+                        tx_phy, rx_phy
+                    );
+                    return;
+                }
+            },
+            Err(e) => {
+                #[cfg(feature = "defmt")]
+                let e = defmt::Debug2Format(&e);
+                warn!(
+                    "[host_phy] failed to read negotiated PHY ({}/{}): {:?}",
+                    attempt, HOST_PHY_UPDATE_ATTEMPTS, e
+                );
+            }
+        }
+
+        if !conn.is_connected() {
+            return;
+        }
+    }
 }
 
 // Update the PHY to 2M
@@ -924,13 +1064,16 @@ mod tests {
 
     use embassy_futures::join::join;
     use embassy_futures::select::select;
-    use embassy_time::Timer;
+    use embassy_time::{Duration, Timer};
     use rmk_types::battery::{BatteryStatus, ChargeState};
     use rmk_types::ble::{BleState, BleStatus};
-
     use trouble_host::Error;
+    use trouble_host::prelude::PhyKind;
 
-    use super::{Server, advertising_mode, directed_reconnect_should_fallback, seed_battery_level};
+    use super::{
+        HostPhyUpdateState, Server, advertising_mode, directed_reconnect_should_fallback, host_phy_update_state,
+        seed_battery_level,
+    };
     use crate::event::{
         Axis, AxisEvent, AxisValType, BleAdvertisingMode, KeyboardEvent, PointingEvent, SubscribableEvent,
         publish_event,
@@ -959,6 +1102,49 @@ mod tests {
     fn directed_reconnect_timeout_falls_back_to_undirected_advertising() {
         assert!(directed_reconnect_should_fallback(&Error::Timeout));
         assert!(!directed_reconnect_should_fallback(&Error::Disconnected));
+    }
+
+    #[test]
+    fn host_phy_update_stops_only_after_bidirectional_2m_is_verified() {
+        assert_eq!(
+            host_phy_update_state(PhyKind::Le2M, PhyKind::Le2M, 1),
+            HostPhyUpdateState::Verified
+        );
+        assert_eq!(
+            host_phy_update_state(PhyKind::Le2M, PhyKind::Le1M, 1),
+            HostPhyUpdateState::Retry
+        );
+        assert_eq!(
+            host_phy_update_state(PhyKind::Le1M, PhyKind::Le2M, 1),
+            HostPhyUpdateState::Retry
+        );
+    }
+
+    #[test]
+    fn host_phy_update_stops_retrying_after_bounded_attempts() {
+        assert_eq!(
+            host_phy_update_state(PhyKind::Le1M, PhyKind::Le1M, super::HOST_PHY_UPDATE_ATTEMPTS - 1),
+            HostPhyUpdateState::Retry
+        );
+        assert_eq!(
+            host_phy_update_state(PhyKind::Le1M, PhyKind::Le1M, super::HOST_PHY_UPDATE_ATTEMPTS),
+            HostPhyUpdateState::Exhausted
+        );
+    }
+
+    #[test]
+    fn vial_interactive_connection_params_remove_only_slave_latency() {
+        let idle = super::host_connection_params(Duration::from_micros(7500), super::HOST_IDLE_MAX_LATENCY);
+        let interactive =
+            super::host_connection_params(Duration::from_micros(7500), super::HOST_INTERACTIVE_MAX_LATENCY);
+
+        assert!(idle.is_valid());
+        assert!(interactive.is_valid());
+        assert_eq!(idle.min_connection_interval, interactive.min_connection_interval);
+        assert_eq!(idle.max_connection_interval, interactive.max_connection_interval);
+        assert_eq!(idle.max_latency, 30);
+        assert_eq!(interactive.max_latency, 0);
+        assert_eq!(idle.supervision_timeout, interactive.supervision_timeout);
     }
 
     #[test]
