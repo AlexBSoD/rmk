@@ -5,9 +5,9 @@
 ### Features
 
 - Added complete K:04 Series firmware for K:04, Mini, and Micro in standalone and Qube configurations
-- Added shared Qube firmware profiles for K:03, Velvet, Imperial44, and OP36 while preserving each model's matrix, encoders, Vial identity, and default keymap
-- Added left/right battery telemetry, Qube live display data, module-aware pointing settings, configurable encoder steps, and factory-enabled touchpad acceleration and gestures
-- Embedded the Ergohaven manufacturer and firmware version `0.1.3` in every Vial definition and exposed the same version through VIA `id_firmware_version`
+- Added left/right battery telemetry and Qube live display data across the complete K:04 Series
+- Added module-aware pointing settings, configurable encoder steps, and factory-enabled touchpad acceleration and gestures for the K:04 Series
+- Embedded the Ergohaven manufacturer and firmware version `0.1.3` in the released K:04 and trackball definitions and exposed the same version through VIA `id_firmware_version`
 
 ### Fixes
 
