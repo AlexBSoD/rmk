@@ -15,7 +15,3 @@
 - Fixed excessive idle polling for trackball and touchpad modules
 - Fixed BLE Vial report framing, host-session responsiveness, discovery compatibility, and split battery updates
 - Fixed K:04 settings persistence, Layer LED writes, touch gestures, and Qube pointing runtime parity
-
-### Contributors
-
-- Based on upstream RMK 0.8.2; thanks to @HaoboGu and all upstream RMK contributors
