@@ -161,18 +161,12 @@ rg -Fq 'uses_tail_key_namespace' rmk/src/host/storage.rs \
 rg -Fq 'no_action_layer_start: #no_action_layer_start' rmk-macro/src/codegen/chip/flash.rs \
     || fail "rmk-macro: no-action boundary is not propagated to runtime storage"
 
-python3 - <<'PY' || fail "OP36 common factory layers must mirror K:04 Micro"
+python3 - <<'PY' || fail "projected factory layers must mirror their K:04 Series references"
 import tomllib
 
 def layers(path):
     with open(path, "rb") as source:
         return tomllib.load(source).get("layer", [])
-
-micro = layers("keyboards/k04/keyboard_micro.toml")[:4]
-op36_profiles = [
-    "keyboards/op36/keyboard.toml",
-    "keyboards/op36_qube/keyboard.toml",
-]
 
 replacements = {
     "User19": "User0",
@@ -183,30 +177,92 @@ replacements = {
     "User26": "User7",
     "User37": "OutputBluetooth",
     "User38": "OutputUsb",
-    # OP36 has no K:04 status LED for the battery indication action.
+    # Classic profiles have no K:04 status LED for the battery indication action.
     "User39": "No",
 }
 
-def project(layer):
+def project(layer, drop_indices, expected_source_actions):
     actions = layer["keys"].split()
-    if len(actions) != 38:
-        raise SystemExit(f"K:04 Micro layer {layer['name']} has {len(actions)} actions, expected 38")
-    # OP36 lacks K:04 Micro's two unused inner positions in the bottom row.
-    actions = actions[:25] + actions[27:]
+    if len(actions) != expected_source_actions:
+        raise SystemExit(
+            f"K:04 reference layer {layer['name']} has {len(actions)} actions, "
+            f"expected {expected_source_actions}"
+        )
+    projected = []
     for index, action in enumerate(actions):
+        if index in drop_indices:
+            continue
         for source, target in replacements.items():
             action = action.replace(source, target)
-        actions[index] = action
-    return layer["name"], actions
+        projected.append(action)
+    return projected
 
-expected = [project(layer) for layer in micro]
-for path in op36_profiles:
-    actual_layers = layers(path)
-    if len(actual_layers) != 4:
-        raise SystemExit(f"{path}: expected four common factory layers, found {len(actual_layers)}")
-    actual = [(layer["name"], layer["keys"].split()) for layer in actual_layers]
-    if actual != expected:
-        raise SystemExit(f"{path}: common factory layers drifted from K:04 Micro")
+def check_projection(
+    reference_path,
+    target_paths,
+    drop_indices,
+    expected_source_actions,
+    preserve_encoders,
+):
+    reference_layers = layers(reference_path)[:4]
+    expected = [
+        (
+            layer["name"],
+            project(layer, drop_indices, expected_source_actions),
+            layer.get("encoders") if preserve_encoders else None,
+        )
+        for layer in reference_layers
+    ]
+
+    for path in target_paths:
+        actual_layers = layers(path)
+        if len(actual_layers) != 4:
+            raise SystemExit(
+                f"{path}: expected four common factory layers, found {len(actual_layers)}"
+            )
+        actual = [
+            (
+                layer["name"],
+                layer["keys"].split(),
+                layer.get("encoders"),
+            )
+            for layer in actual_layers
+        ]
+        if actual != expected:
+            raise SystemExit(
+                f"{path}: common factory layers drifted from {reference_path}"
+            )
+
+check_projection(
+    "keyboards/k04/keyboard_micro.toml",
+    [
+        "keyboards/op36/keyboard.toml",
+        "keyboards/op36_qube/keyboard.toml",
+    ],
+    {25, 26},
+    38,
+    False,
+)
+check_projection(
+    "keyboards/k04/keyboard_mini.toml",
+    [
+        "keyboards/imperial44/keyboard.toml",
+        "keyboards/op36_qube/keyboard_imperial44.toml",
+    ],
+    {38, 39, 46, 47},
+    48,
+    True,
+)
+check_projection(
+    "keyboards/k04/keyboard_mini.toml",
+    [
+        "keyboards/velvet/keyboard.toml",
+        "keyboards/op36_qube/keyboard_velvet.toml",
+    ],
+    {30, 31},
+    48,
+    False,
+)
 PY
 
 for file in "${non_k04_profiles[@]}"; do

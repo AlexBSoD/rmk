@@ -108,10 +108,12 @@ matrix_map = """
 
 [[layer]]
 name = "Base"
+# Common factory layers mirror K:04 Mini. Imperial44 omits its four outer
+# thumb positions; hardware-specific pointing actions are not copied.
 keys = """
 Escape  Q     W     E     R     T     Y     U     I     O     P     Backspace
-Tab     A     S     D     F     G     H     J     K     L     Semicolon  LGui
-LShift  Z     X     C     V     B     LeftBracket  RightBracket  N  M  Comma  Dot  Quote  RShift
+Tab     A     S     D     F     G     H     J     K     L     Semicolon  Backslash
+LShift  Z     X     C     V     B     _     _     N     M     Comma  Dot  Quote  RShift
                           LCtrl MO(1) Space Enter MO(2) LAlt
 """
 encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
@@ -119,29 +121,29 @@ encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
 [[layer]]
 name = "Nav"
 keys = """
-_   Kc1   Kc2   Kc3   Kc4   Kc5   Kc6   Kc7   Kc8   Kc9   Kc0   _
-_   Home  Insert  Delete  End  WM(LAlt,LShift)  _  Left  Down  Up  Right  _
-_   WM(Z,LCtrl)  WM(X,LCtrl)  WM(C,LCtrl)  WM(V,LCtrl)  PrintScreen  _  _  CapsLock  WM(Left,LCtrl)  PageDown  PageUp  WM(Right,LCtrl)  _
-                              _     _     _     _     MO(3)  _
+_  Kc1   Kc2    Kc3     Kc4  Kc5          Kc6  Kc7  Kc8  Kc9  Kc0    _
+_  Home  Insert  Delete  End  Enter        _    Left Down Up   Right  _
+_  _     _       _       _    PrintScreen  _    _    _    _    _      _      _  _
+                              _    _    _    _    MO(3)  _
 """
 encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
 
 [[layer]]
 name = "Symbols"
 keys = """
-_  SHIFTED(Kc2)  SHIFTED(Comma)  Equal  SHIFTED(Dot)  Grave   SHIFTED(Kc6)  LeftBracket  SHIFTED(Minus)  RightBracket  _  _
-_  Backslash  SHIFTED(Kc9)  Minus  SHIFTED(Kc0)  SHIFTED(Equal)  SHIFTED(Kc5)  SHIFTED(LeftBracket)  Semicolon  SHIFTED(RightBracket)  SHIFTED(Kc1)  _
-_  SHIFTED(Kc3)  SHIFTED(Kc8)  SHIFTED(Semicolon)  Slash  _  _  _  SHIFTED(Backslash)  SHIFTED(Grave)  SHIFTED(Kc7)  SHIFTED(Kc4)  _  _
-                      _     MO(3)  _  _  _  _
+_  SHIFTED(Kc2)  SHIFTED(Comma)  Equal  SHIFTED(Dot)       Grave           SHIFTED(Kc6)  SHIFTED(Quote)       SHIFTED(Minus)      Quote           _              _
+_  Backslash     SHIFTED(Kc9)    Minus  SHIFTED(Kc0)       SHIFTED(Equal)  SHIFTED(Kc5)  SHIFTED(LeftBracket) Semicolon           SHIFTED(RightBracket) SHIFTED(Kc1) _
+_  SHIFTED(Kc3)  SHIFTED(Kc8)    SHIFTED(Semicolon) Slash  _               _             _                    _                   SHIFTED(Backslash) SHIFTED(Grave) SHIFTED(Kc7) SHIFTED(Kc4) _
+                             _  MO(3)  _  _  _  _
 """
 encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
 
 [[layer]]
 name = "Adjust"
 keys = """
-Bootloader  _  F1  F2  F3  F4  User0  User1  User2  User5  User6  User7
+Bootloader  _  F1  F2  F3  F4  User0  User1  User2  User3  User4  User7
 _  _  F5  F6  F7  F8  OutputBluetooth  AudioVolDown  AudioMute  AudioVolUp  _  _
-_  _  F9  F10  F11  F12  OutputUsb  MediaPrevTrack  MediaPlayPause  MediaNextTrack  _  _
+_  _  F9  F10  F11  F12  _  _  OutputUsb  MediaPrevTrack  MediaPlayPause  MediaNextTrack  _  No
                     _  _  _  _  _  _
 """
 encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
