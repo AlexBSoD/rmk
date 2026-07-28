@@ -63,21 +63,21 @@ col_pins = ["P0_10", "P1_10", "P0_02", "P1_13", "P0_28", "P0_03"]
 pin_a = "P1_02"
 pin_b = "P1_00"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [[split.peripheral.input_device.encoder]]
 pin_a = "P0_22"
 pin_b = "P0_20"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [[split.peripheral.input_device.encoder]]
 pin_a = "P1_06"
 pin_b = "P1_04"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [[split.peripheral]]
@@ -95,21 +95,21 @@ col_pins = ["P0_09", "P0_10", "P0_28", "P0_03", "P1_10", "P1_11"]
 pin_a = "P1_02"
 pin_b = "P1_00"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [[split.peripheral.input_device.encoder]]
 pin_a = "P0_22"
 pin_b = "P0_20"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [[split.peripheral.input_device.encoder]]
 pin_a = "P1_06"
 pin_b = "P1_04"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [layout]
