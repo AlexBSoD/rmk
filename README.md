@@ -14,8 +14,7 @@ RMK BLE split firmware for Ergohaven keyboards and trackballs (nRF52840).
 | Imperial44  | 4×6 + 3 thumb  | 1+1      | —         |
 | OP36        | 3×5 + 3 thumb  | —        | —         |
 | Classic splits + Qube | K:03 / Velvet / Imperial44 / OP36 | model-specific | Qube dongle + ST7789 |
-| Velvet      | 4×6 + 5 thumb  | —        | —         |
-| Velvet UI   | 4×6 + 5 thumb  | —        | PMW3610   |
+| Velvet      | 4×6 + 5 thumb  | —        | Optional PMW3610 in place of the right thumb key |
 
 ### Trackballs (standalone BLE)
 
@@ -69,6 +68,11 @@ Then re-flash the normal firmware.
 Non-K:04 devices upgrading from firmware that used the legacy storage address
 can first run `storage_migrate.uf2`, or `storage_migrate_qube.uf2` on Qube, to
 preserve the raw keymap, settings, and BLE bonds.
+
+The first upgrade from the former Velvet UI firmware requires
+`settings_reset.uf2` on both halves. Afterwards remove the old Velvet UI
+Bluetooth device on the host and pair the unified Velvet firmware again.
+Existing standard Velvet installations do not need this reset.
 
 ## CI
 

@@ -66,7 +66,6 @@ profiles=(
     keyboards/trackball_v30/keyboard.toml
     keyboards/trackball_v31/keyboard.toml
     keyboards/velvet/keyboard.toml
-    keyboards/velvet_ui/keyboard.toml
 )
 
 split_profiles=(
@@ -84,7 +83,6 @@ split_profiles=(
     keyboards/op36_qube/keyboard_k03.toml
     keyboards/op36_qube/keyboard_velvet.toml
     keyboards/velvet/keyboard.toml
-    keyboards/velvet_ui/keyboard.toml
 )
 
 standalone_split_profiles=(
@@ -95,7 +93,6 @@ standalone_split_profiles=(
     keyboards/k04/keyboard_mini.toml
     keyboards/op36/keyboard.toml
     keyboards/velvet/keyboard.toml
-    keyboards/velvet_ui/keyboard.toml
 )
 
 qube_profiles=(
@@ -120,7 +117,6 @@ non_k04_profiles=(
     keyboards/trackball_v30/keyboard.toml
     keyboards/trackball_v31/keyboard.toml
     keyboards/velvet/keyboard.toml
-    keyboards/velvet_ui/keyboard.toml
 )
 
 for file in "${profiles[@]}"; do
@@ -203,6 +199,7 @@ def check_projection(
     drop_indices,
     expected_source_actions,
     encoders_per_half,
+    expected_target_layers,
 ):
     reference_layers = layers(reference_path)[:4]
     for layer in reference_layers:
@@ -229,9 +226,10 @@ def check_projection(
 
     for path in target_paths:
         actual_layers = layers(path)
-        if len(actual_layers) != 4:
+        if len(actual_layers) != expected_target_layers:
             raise SystemExit(
-                f"{path}: expected four common factory layers, found {len(actual_layers)}"
+                f"{path}: expected {expected_target_layers} factory layers, "
+                f"found {len(actual_layers)}"
             )
         actual = [
             (
@@ -239,7 +237,7 @@ def check_projection(
                 layer["keys"].split(),
                 layer.get("encoders"),
             )
-            for layer in actual_layers
+            for layer in actual_layers[:4]
         ]
         if actual != expected:
             raise SystemExit(
@@ -255,6 +253,7 @@ check_projection(
     {25, 26},
     38,
     0,
+    4,
 )
 check_projection(
     "keyboards/k04/keyboard_mini.toml",
@@ -265,6 +264,7 @@ check_projection(
     {38, 39, 46, 47},
     48,
     1,
+    4,
 )
 check_projection(
     "keyboards/k04/keyboard_mini.toml",
@@ -275,6 +275,7 @@ check_projection(
     {30, 31},
     48,
     0,
+    5,
 )
 check_projection(
     "keyboards/k04/keyboard.toml",
@@ -285,6 +286,7 @@ check_projection(
     set(),
     60,
     3,
+    4,
 )
 PY
 
@@ -326,7 +328,6 @@ memory_files=(
     keyboards/trackball_v30/memory.x
     keyboards/trackball_v31/memory.x
     keyboards/velvet/memory.x
-    keyboards/velvet_ui/memory.x
 )
 for file in "${memory_files[@]}"; do
     rg -Fq 'Reserve 0xCC000..0xEC000 for RMK storage.' "$file" \
@@ -335,7 +336,12 @@ for file in "${memory_files[@]}"; do
         || fail "$file: application linker must stop at 0xCC000"
 done
 
-mapfile -t build_scripts < <(git ls-files 'keyboards/*/build.rs')
+mapfile -t build_scripts < <(
+    git ls-files 'keyboards/*/build.rs' |
+        while read -r file; do
+            [[ -f "$file" ]] && printf '%s\n' "$file"
+        done
+)
 for file in "${build_scripts[@]}"; do
     rg -q 'const FIRMWARE_VERSION: &str = "0\.1\.3";' "$file" \
         || fail "$file: firmware version must be 0.1.3"
@@ -343,7 +349,12 @@ for file in "${build_scripts[@]}"; do
         || fail "$file: BCD firmware version must be 0x0103"
 done
 
-mapfile -t vial_definitions < <(git ls-files 'keyboards/*/vial*.json')
+mapfile -t vial_definitions < <(
+    git ls-files 'keyboards/*/vial*.json' |
+        while read -r file; do
+            [[ -f "$file" ]] && printf '%s\n' "$file"
+        done
+)
 for file in "${vial_definitions[@]}"; do
     jq -e '.manufacturer == "Ergohaven"' "$file" >/dev/null \
         || fail "$file: manufacturer must be Ergohaven"
@@ -400,7 +411,6 @@ standard_no_mouse_roots=(
     keyboards/imperial44/src/central.rs
     keyboards/k03/src/central.rs
     keyboards/op36/src/central.rs
-    keyboards/velvet/src/central.rs
 )
 for file in "${standard_no_mouse_roots[@]}"; do
     rg -Fq 'default_layer_names::STANDARD_NO_MOUSE' "$file" \
@@ -410,7 +420,7 @@ done
 standard_with_mouse_roots=(
     keyboards/k04/src/central.rs
     keyboards/k04_qube/src/qube.rs
-    keyboards/velvet_ui/src/central.rs
+    keyboards/velvet/src/central.rs
 )
 for file in "${standard_with_mouse_roots[@]}"; do
     rg -Fq 'default_layer_names::STANDARD_WITH_MOUSE' "$file" \
@@ -423,7 +433,9 @@ for file in keyboards/trackball_{royale,v30,v31}/src/keyboard.rs; do
 done
 
 rg -Fq 'crate::default_layer_names::STANDARD_NO_MOUSE' keyboards/op36_qube/build.rs \
-    || fail "keyboards/op36_qube/build.rs: generated Qube defaults drifted"
+    || fail "keyboards/op36_qube/build.rs: generated non-pointing Qube defaults drifted"
+rg -Fq 'crate::default_layer_names::STANDARD_WITH_MOUSE' keyboards/op36_qube/build.rs \
+    || fail "keyboards/op36_qube/build.rs: generated Velvet Qube defaults drifted"
 rg -Fq 'const STORAGE_VERSION: u8 = 2;' keyboards/common/layer_names.rs \
     || fail "keyboards/common/layer_names.rs: default-name migration version drifted"
 for file in keyboards/{k04,k04_qube}/src/layer_names.rs; do
@@ -441,14 +453,41 @@ for file in \
     keyboards/trackball_royale/vial.json \
     keyboards/trackball_v30/vial.json \
     keyboards/trackball_v31/vial.json \
-    keyboards/velvet/vial.json \
-    keyboards/velvet_ui/vial.json
+    keyboards/velvet/vial.json
 do
     actual="$(jq -r '.customKeycodes[0:10] | map(.name) | join(",")' "$file")"
     if [[ "$actual" != "$classic_user_registry" ]]; then
         fail "$file: classic USER00..USER09 registry drifted"
     fi
 done
+
+if find keyboards/velvet_ui -type f -print -quit 2>/dev/null | grep -q .; then
+    fail "keyboards/velvet_ui: obsolete duplicate profile must stay removed"
+fi
+
+for file in keyboards/velvet/keyboard.toml keyboards/op36_qube/keyboard_velvet.toml; do
+    [[ "$(rg -c '^\[\[split\.peripheral\.input_device\.pmw3610\]\]$' "$file")" == "1" ]] \
+        || fail "$file: unified Velvet must define one optional PMW3610"
+    [[ "$(rg -c '^\[\[behavior\.auto_mouse_layer\]\]$' "$file")" == "1" ]] \
+        || fail "$file: unified Velvet must define one auto Mouse layer"
+    [[ "$(rg -c '^name = "Mouse"$' "$file")" == "1" ]] \
+        || fail "$file: unified Velvet must define one Mouse factory layer"
+done
+
+actual_velvet_modes="$(jq -r '.customKeycodes[10:13] | map(.name) | join(",")' keyboards/velvet/vial.json)"
+if [[ "$actual_velvet_modes" != "EH_SNP,EH_SCR,EH_TXT" ]]; then
+    fail "keyboards/velvet/vial.json: Velvet pointing USER10..USER12 registry drifted"
+fi
+jq -e '
+    .productId == "0x00BE"
+    and .layouts.labels == ["Right trackball instead of key"]
+    and ([.layouts.keymap[][] | select(type == "string")] | index("7,1\n\n\n0,0") != null)
+' keyboards/velvet/vial.json >/dev/null \
+    || fail "keyboards/velvet/vial.json: unified right key/trackball layout option drifted"
+rg -Fq '#[path = "../../common/velvet_pointing_mode.rs"]' keyboards/velvet/src/central.rs \
+    || fail "keyboards/velvet/src/central.rs: shared Velvet pointing-mode owner is missing"
+rg -Fq '#[cfg(velvet_pointing)]' keyboards/op36_qube/src/qube.rs \
+    || fail "keyboards/op36_qube/src/qube.rs: Velvet-only Qube pointing-mode registration is missing"
 
 reset_source=tools/settings_reset/src/main.rs
 rg -Fq 'const STORAGE_RANGE: (u32, u32) = (0xCC000, 0xEC000);' "$reset_source" \

@@ -36,7 +36,7 @@ clear_storage = false
 
 [event]
 action.channel_size = 16
-action.subs = 1
+action.subs = 2
 keyboard.subs = 4
 peripheral_battery.pubs = 2
 peripheral_battery.subs = 4
@@ -79,6 +79,21 @@ col_offset = 0
 matrix_type = "normal"
 row_pins = ["P1_13", "P0_02", "P0_29", "P0_30"]
 col_pins = ["P0_24", "P0_09", "P0_10", "P1_11", "P1_10", "P0_03"]
+
+# Optional PMW3610 on the right half. The same firmware also supports the
+# key-only Velvet because these pins are independent from the key matrix.
+[[split.peripheral.input_device.pmw3610]]
+name = "trackball0"
+spi.instance = "bitbang0"
+spi.sck = "P0_08"
+spi.mosi = "P0_17"
+spi.miso = "P0_17"
+spi.cs = "P0_13"
+motion = "P0_15"
+cpi = 1000
+swap_xy = true
+invert_x = true
+invert_y = true
 
 [layout]
 rows = 8
@@ -129,3 +144,18 @@ _   _  F5  F6  F7  F8  OutputBluetooth  AudioVolDown  AudioMute  AudioVolUp  _  
 _   _  F9  F10  F11  F12  OutputUsb  MediaPrevTrack  MediaPlayPause  MediaNextTrack  _  No
         _  _  _  _  _  _  _  _  _  _
 """
+
+[[layer]]
+name = "Mouse"
+keys = """
+_  _      _          _          _          _       _       _          _          _          _       _
+_  User11 MouseBtn3  MouseBtn2  MouseBtn1  User10  User10  MouseBtn1  MouseBtn2  MouseBtn3  User11  _
+_  _      _          _          _          User12  User12  _          _          _          _       _
+        _  _  _  _  _  _  _  _  _  _
+"""
+
+[[behavior.auto_mouse_layer]]
+device_id = 0
+target_layer = 4
+timeout = "350ms"
+threshold = 1

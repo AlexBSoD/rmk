@@ -30,7 +30,7 @@ All Ergohaven keyboards with nRF52840 + Adafruit bootloader:
 - K:04 / Mini / Micro, standalone and with Qube
 - K:03 (both halves)
 - Imperial44 (both halves)
-- Velvet / Velvet UI (both halves)
+- Velvet, including the optional right-hand trackball variant (both halves)
 - OP36 (both halves)
 - Trackball Royale
 - Trackball Mini v3.0 / v3.1

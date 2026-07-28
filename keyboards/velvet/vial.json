@@ -65,9 +65,27 @@
             "name": "BT_PEER",
             "title": "Clear split peer",
             "shortName": "Clear\nPeer"
+        },
+        {
+            "name": "EH_SNP",
+            "title": "Set trackball to sniper mode",
+            "shortName": "Sniper\nmode"
+        },
+        {
+            "name": "EH_SCR",
+            "title": "Set trackball to scroll mode",
+            "shortName": "Scroll\nmode"
+        },
+        {
+            "name": "EH_TXT",
+            "title": "Set trackball to text mode",
+            "shortName": "Text\nmode"
         }
     ],
     "layouts": {
+        "labels": [
+            "Right trackball instead of key"
+        ],
         "keymap": [
             [
                 {
@@ -262,7 +280,7 @@
                 {
                     "y": 0.2
                 },
-                "7,1"
+                "7,1\n\n\n0,0"
             ]
         ]
     }

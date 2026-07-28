@@ -53,10 +53,6 @@ jobs:
             output_name: velvet
             keyboard_toml: keyboard.toml
             vial_json: vial.json
-          - keyboard: velvet_ui
-            output_name: velvet_ui
-            keyboard_toml: keyboard.toml
-            vial_json: vial.json
 
     steps:
       - name: Checkout

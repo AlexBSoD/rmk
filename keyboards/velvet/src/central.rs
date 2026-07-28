@@ -6,8 +6,10 @@ mod battery_nrf;
 mod default_layer_names;
 #[path = "../../common/layer_names.rs"]
 mod layer_names;
+#[path = "../../common/velvet_pointing_mode.rs"]
+mod pointing_mode;
 
-const DEFAULT_LAYER_NAMES: [&str; 16] = default_layer_names::STANDARD_NO_MOUSE;
+const DEFAULT_LAYER_NAMES: [&str; 16] = default_layer_names::STANDARD_WITH_MOUSE;
 
 use rmk::macros::rmk_central;
 
@@ -16,6 +18,11 @@ mod keyboard_central {
     #[register_processor(event)]
     fn battery() -> crate::battery_nrf::SplitBattery {
         crate::battery_nrf::SplitBattery::new(p.SAADC, p.P0_31)
+    }
+
+    #[register_processor(event)]
+    fn pointing_mode() -> crate::pointing_mode::VelvetPointingMode {
+        crate::pointing_mode::VelvetPointingMode::new()
     }
 
     #[register_processor(poll)]

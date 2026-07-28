@@ -33,6 +33,7 @@ fn main() {
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION={FIRMWARE_VERSION}");
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION_BCD={FIRMWARE_VERSION_BCD}");
     println!("cargo:rustc-env=RMK_VIAL_DEVICE_SETTINGS_FN=crate::layer_names::vial_device_settings");
+    println!("cargo:rustc-check-cfg=cfg(velvet_pointing)");
 
     // Put `memory.x` in our output directory and ensure it's
     // on the linker search path.
@@ -127,7 +128,13 @@ fn generate_vial_config(vial_path: &Path) -> u16 {
 
 fn generate_qube_profile(product_id: u16, out: &Path) {
     let source = match product_id {
-        0x0036 | 0x0044 | 0x0070 | 0x00BE => {
+        0x00BE => {
+            println!("cargo:rustc-cfg=velvet_pointing");
+            r#"pub const DEFAULT_LAYER_NAMES: [&str; 16] =
+    crate::default_layer_names::STANDARD_WITH_MOUSE;
+"#
+        }
+        0x0036 | 0x0044 | 0x0070 => {
             r#"pub const DEFAULT_LAYER_NAMES: [&str; 16] =
     crate::default_layer_names::STANDARD_NO_MOUSE;
 "#

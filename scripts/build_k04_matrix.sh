@@ -138,7 +138,6 @@ build_split op36
 build_split k03
 build_split imperial44
 build_split velvet
-build_split velvet_ui
 run "keyboards/trackball_v30" cargo build --release --bin keyboard
 run "keyboards/trackball_v31" cargo build --release --bin keyboard
 run "keyboards/trackball_royale" cargo build --release --bin keyboard

@@ -23,9 +23,11 @@ User-defined names remain authoritative.
 
 Every Ergohaven profile compiles layers 5–15 as `No`, not `Transparent`, so
 Entropy displays those factory layers as empty instead of inheriting keys from
-lower layers. Layers 0–4 keep their existing keymaps. Velvet UI still uses
-layer-state changes on virtual keys 5 and 6 to select Scroll and Sniper pointing
-modes, but those layers contain no key actions.
+lower layers. Layers 0–4 keep their existing keymaps. Velvet uses one firmware
+for both hardware variants: the ordinary right thumb key remains in the matrix,
+while an optional PMW3610 occupies that position on the pointing variant.
+Layers 5 and 6 can still select Scroll and Sniper pointing modes, but their
+factory keymaps contain only `No`.
 
 Saved key and encoder actions on layers 0–4 remain in the established V2
 storage namespace. Legacy V2 records for layers 5–15 are ignored so the new
@@ -64,5 +66,12 @@ partition; separate files are required because the application origins differ.
 Profiles upgrading from the legacy `0xA0000–0xC0000` partition can preserve
 their raw settings by running the matching one-time storage migration utility
 before flashing the new firmware.
+
+The former Velvet UI profile used a separate USB identity (`0x00BF`) and a
+different saved-keymap shape. Before its first upgrade to the unified Velvet
+firmware (`0x00BE`), reset both halves with `settings_reset.uf2`, remove the
+old Velvet UI Bluetooth pairing on the host, and pair again. Existing standard
+Velvet installations already use the unified identity and do not need this
+one-time reset.
 
 Run `./scripts/check_ergohaven_profile.sh` to reject accidental profile drift.

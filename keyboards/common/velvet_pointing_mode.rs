@@ -1,4 +1,4 @@
-//! Velvet UI pointing mode bridge for the root RMK event model.
+//! Pointing-mode bridge shared by Velvet standalone and Velvet + Qube.
 
 use rmk::event::{publish_event_async, ActionEvent, LayerChangeEvent, PointingProcessorEvent};
 use rmk::input_device::pointing::{CaretConfig, CursorConfig, PointingMode, ScrollConfig, SniperConfig};
@@ -22,14 +22,14 @@ enum Mode {
 }
 
 #[processor(subscribe = [ActionEvent, LayerChangeEvent])]
-pub struct VelvetUiPointingMode {
+pub struct VelvetPointingMode {
     layer_mode: Mode,
     key_mode: Option<Mode>,
     published: Mode,
 }
 
-impl VelvetUiPointingMode {
-    pub fn new() -> Self {
+impl VelvetPointingMode {
+    pub const fn new() -> Self {
         Self {
             layer_mode: Mode::Cursor,
             key_mode: None,
