@@ -19,6 +19,7 @@ keyboard.subs = 4
 rows = 6
 cols = 6
 layers = 16
+no_action_layer_start = 5
 # op36: 3 rows x 5+5 cols = 30 + 3+3 thumb = 36 total
 # Left: rows 0-2 (cols 0-4 main, col5 = thumb)
 # Right: rows 3-5 (cols 0-4 main, col5 = thumb)

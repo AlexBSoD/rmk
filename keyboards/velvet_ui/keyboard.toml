@@ -19,6 +19,7 @@ keyboard.subs = 4
 rows = 11
 cols = 6
 layers = 16
+no_action_layer_start = 5
 # velvet_v3: 4 rows x 12 cols split (left: rows 0-3, right: rows 4-7)
 # Layout: 3 rows of 6+6 + 1 thumb row (special arrangement)
 # Rows 8-10 are virtual (not connected to physical matrix), used for auto-mouse layer selection
@@ -84,40 +85,15 @@ _ _ _
 # Row 2: User6=BT Prev  User5=BT Next  User8=BT Toggle  User9=Peer Clear
 # Row 4: User10=Sniper mode  User11=Scroll mode  User12=Text mode
 
-# Layer 4: Mouse — activated automatically when trackball moves (auto-mouse-layer)
-# MO(5) = Scroll mode, MO(6) = Sniper mode
+# Layer 4: Mouse — activated automatically when trackball moves (auto-mouse-layer).
+# Virtual MO(5)/MO(6) still select Scroll/Sniper pointing modes, while their
+# keymaps are generated as No actions with every other layer from 5 through 15.
 [[layer]]
 name = "Mouse"
 keys = """
 _  _      _     _     _     _     _     _     _     _     _     _
 _  User11  MouseBtn3  MouseBtn2  MouseBtn1  User10  User10  MouseBtn1  MouseBtn2  MouseBtn3  User11  _
 _  _      _     _     _     User12  User12  _     _     _     _  _
-        _     _     _     _     _     _     _     _     _     _
-_ _ _ _ _ _
-_ _ _ _ _ _
-_ _ _
-"""
-
-# Layer 5: Scroll — trackball moves scroll wheel
-[[layer]]
-name = "Scroll"
-keys = """
-_  _     _     _     _     _     _     _     _     _     _     _
-_  _     MouseBtn3  MouseBtn2  MouseBtn1  _     _     MouseBtn1  MouseBtn2  MouseBtn3  _     _
-_  _     _     _     _     _     _     _     _     _     _     _
-        _     _     _     _     _     _     _     _     _     _
-_ _ _ _ _ _
-_ _ _ _ _ _
-_ _ _
-"""
-
-# Layer 6: Sniper — reduced trackball speed for precision
-[[layer]]
-name = "Sniper"
-keys = """
-_  _     _     _     _     _     _     _     _     _     _     _
-_  _     MouseBtn3  MouseBtn2  MouseBtn1  _     _     MouseBtn1  MouseBtn2  MouseBtn3  _     _
-_  _     _     _     _     _     _     _     _     _     _     _
         _     _     _     _     _     _     _     _     _     _
 _ _ _ _ _ _
 _ _ _ _ _ _

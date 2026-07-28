@@ -19,6 +19,7 @@ keyboard.subs = 4
 rows = 8
 cols = 6
 layers = 16
+no_action_layer_start = 5
 # imperial44: 4 rows split (left: rows 0-3, right: rows 4-7)
 # ZMK transform: RC(r,5..0) left, RC(r,6..11) right
 # In RMK: left half row=0-3 col=0-5, right half row=4-7 col=0-5

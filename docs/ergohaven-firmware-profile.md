@@ -21,6 +21,17 @@ decimal indices. Standalone trackballs retain functional `Mouse` and `Adjust`
 names at their real layer positions and use numeric names for the other slots.
 User-defined names remain authoritative.
 
+Every Ergohaven profile compiles layers 5–15 as `No`, not `Transparent`, so
+Entropy displays those factory layers as empty instead of inheriting keys from
+lower layers. Layers 0–4 keep their existing keymaps. Velvet UI still uses
+layer-state changes on virtual keys 5 and 6 to select Scroll and Sniper pointing
+modes, but those layers contain no key actions.
+
+Saved key and encoder actions on layers 0–4 remain in the established V2
+storage namespace. Legacy V2 records for layers 5–15 are ignored so the new
+factory `No` actions take effect without a settings reset. New edits on layers
+5–15 use a separate V3 tail namespace and continue to persist normally.
+
 Split pairing uses a 30-second window. Standalone split centrals sleep after
 120 seconds; powered Qube centrals use 900 seconds. Entropy capability metadata
 advertises separate half batteries on all split devices and time/media live

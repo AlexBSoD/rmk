@@ -19,6 +19,7 @@ keyboard.subs = 4
 rows = 8
 cols = 6
 layers = 16
+no_action_layer_start = 5
 # velvet_v3: 4 rows x 12 cols split (left: rows 0-3, right: rows 4-7)
 # Layout: 3 rows of 6+6 + 1 thumb row (special arrangement)
 matrix_map = """

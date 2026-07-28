@@ -23,6 +23,7 @@ matrix_map = """
 (1,0) (1,1)
 """
 layers = 16
+no_action_layer_start = 5
 
 [[layer]]
 name = "Mouse"

@@ -23,6 +23,7 @@ matrix_map = """
 (1,0) (1,1)
 """
 layers = 16
+no_action_layer_start = 5
 
 # Row 0: physical top buttons, Row 1: virtual BT keys (P0_01/P0_00 not populated on v3.0)
 [[layer]]

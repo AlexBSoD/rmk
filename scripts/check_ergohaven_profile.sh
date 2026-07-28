@@ -126,6 +126,7 @@ non_k04_profiles=(
 for file in "${profiles[@]}"; do
     expect_toml "$file" manufacturer Ergohaven
     expect_toml "$file" layers 16
+    expect_toml "$file" no_action_layer_start 5
     expect_toml "$file" combo_max_num 32
     expect_toml "$file" morse_max_num 32
     expect_toml "$file" macro_space_size 2048
@@ -135,6 +136,30 @@ for file in "${profiles[@]}"; do
     expect_not_true "$file" clear_storage
     expect_not_true "$file" clear_layout
 done
+
+python3 - "${profiles[@]}" <<'PY' || fail "factory keymaps must leave layers 5-15 for generated No actions"
+import sys
+import tomllib
+
+for path in sys.argv[1:]:
+    with open(path, "rb") as source:
+        config = tomllib.load(source)
+    explicit_layers = config.get("layer", [])
+    if len(explicit_layers) > 5:
+        raise SystemExit(
+            f"{path}: defines {len(explicit_layers)} factory layers; "
+            "layers 5-15 must be generated as No"
+        )
+PY
+
+rg -Fq 'KeymapTailV3' rmk/src/storage/mod.rs \
+    || fail "rmk/src/storage/mod.rs: separate keymap tail namespace is missing"
+rg -Fq 'EncoderTailV3' rmk/src/storage/mod.rs \
+    || fail "rmk/src/storage/mod.rs: separate encoder tail namespace is missing"
+rg -Fq 'uses_tail_key_namespace' rmk/src/host/storage.rs \
+    || fail "rmk/src/host/storage.rs: legacy tail records are not filtered"
+rg -Fq 'no_action_layer_start: #no_action_layer_start' rmk-macro/src/codegen/chip/flash.rs \
+    || fail "rmk-macro: no-action boundary is not propagated to runtime storage"
 
 for file in "${non_k04_profiles[@]}"; do
     expect_toml "$file" combo_max_length 4

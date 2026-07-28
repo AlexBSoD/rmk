@@ -21,6 +21,7 @@ keyboard.subs = 4
 rows = 10
 cols = 6
 layers = 16
+no_action_layer_start = 5
 # matrix_map: maps physical (row,col) positions to logical matrix positions
 # Left half rows 0-4, Right half rows 5-9
 matrix_map = """

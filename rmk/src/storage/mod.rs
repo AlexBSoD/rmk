@@ -226,6 +226,19 @@ pub(crate) enum StorageKey {
         layer: u8,
         idx: u8,
     },
+    // Optional tail namespace: profiles can replace legacy default actions
+    // above a layer boundary while preserving stored lower-layer actions.
+    #[cfg(feature = "host")]
+    KeymapTailV3 {
+        layer: u8,
+        row: u8,
+        col: u8,
+    },
+    #[cfg(feature = "host")]
+    EncoderTailV3 {
+        layer: u8,
+        idx: u8,
+    },
 }
 
 impl StorageKey {
@@ -404,6 +417,7 @@ pub struct Storage<
 > {
     pub(crate) flash: MapStorage<StorageKey, F, NoCache>,
     pub(crate) buffer: [u8; get_buffer_size()],
+    no_action_layer_start: Option<u8>,
 }
 
 /// Read out storage config, update and then save back.
@@ -423,6 +437,34 @@ macro_rules! update_storage_field {
 impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>
     Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>
 {
+    #[cfg(feature = "host")]
+    pub(crate) fn uses_tail_key_namespace(&self, layer: u8) -> bool {
+        self.no_action_layer_start.is_some_and(|start| layer >= start)
+    }
+
+    #[cfg(feature = "host")]
+    pub(crate) fn tail_key_namespace_start(&self) -> Option<u8> {
+        self.no_action_layer_start
+    }
+
+    #[cfg(feature = "host")]
+    fn keymap_storage_key(&self, layer: u8, row: u8, col: u8) -> StorageKey {
+        if self.uses_tail_key_namespace(layer) {
+            StorageKey::KeymapTailV3 { layer, row, col }
+        } else {
+            StorageKey::KeymapV2 { layer, row, col }
+        }
+    }
+
+    #[cfg(feature = "host")]
+    fn encoder_storage_key(&self, idx: u8, layer: u8) -> StorageKey {
+        if self.uses_tail_key_namespace(layer) {
+            StorageKey::EncoderTailV3 { layer, idx }
+        } else {
+            StorageKey::EncoderV2 { layer, idx }
+        }
+    }
+
     async fn fetch_data(&mut self, key: StorageKey) -> Option<StorageData> {
         match self.flash.fetch_item(&mut self.buffer, &key).await {
             Ok(data) => data,
@@ -487,6 +529,9 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         let mut storage = Self {
             flash: MapStorage::new(flash, MapConfig::new(storage_range), NoCache::new()),
             buffer: [0; get_buffer_size()],
+            no_action_layer_start: storage_config
+                .no_action_layer_start
+                .filter(|start| usize::from(*start) < NUM_LAYER),
         };
 
         // Check whether keymap and configs have been storaged in flash
@@ -597,12 +642,10 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         for (layer, layer_data) in keymap.iter().enumerate() {
             for (row, row_data) in layer_data.iter().enumerate() {
                 for (col, action) in row_data.iter().enumerate() {
-                    self.store_data(
-                        StorageKey::keymap(layer as u8, row as u8, col as u8),
-                        &StorageData::KeyAction(*action),
-                    )
-                    .await
-                    .map_err(|e| print_storage_error::<F>(e))?;
+                    let key = self.keymap_storage_key(layer as u8, row as u8, col as u8);
+                    self.store_data(key, &StorageData::KeyAction(*action))
+                        .await
+                        .map_err(|e| print_storage_error::<F>(e))?;
                 }
             }
         }
@@ -612,12 +655,10 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         if let Some(encoder_map) = encoder_map {
             for (layer, layer_data) in encoder_map.iter().enumerate() {
                 for (idx, action) in layer_data.iter().enumerate() {
-                    self.store_data(
-                        StorageKey::encoder(idx as u8, layer as u8),
-                        &StorageData::EncoderAction(*action),
-                    )
-                    .await
-                    .map_err(|e| print_storage_error::<F>(e))?;
+                    let key = self.encoder_storage_key(idx as u8, layer as u8);
+                    self.store_data(key, &StorageData::EncoderAction(*action))
+                        .await
+                        .map_err(|e| print_storage_error::<F>(e))?;
                 }
             }
         }
@@ -664,11 +705,8 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         for (layer, layer_data) in keymap.iter().enumerate() {
             for (row, row_data) in layer_data.iter().enumerate() {
                 for (col, action) in row_data.iter().enumerate() {
-                    self.store_data(
-                        StorageKey::keymap(layer as u8, row as u8, col as u8),
-                        &StorageData::KeyAction(*action),
-                    )
-                    .await?;
+                    let key = self.keymap_storage_key(layer as u8, row as u8, col as u8);
+                    self.store_data(key, &StorageData::KeyAction(*action)).await?;
                 }
             }
         }
@@ -677,11 +715,8 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         if let Some(encoder_map) = encoder_map {
             for (layer, layer_data) in encoder_map.iter().enumerate() {
                 for (idx, action) in layer_data.iter().enumerate() {
-                    self.store_data(
-                        StorageKey::encoder(idx as u8, layer as u8),
-                        &StorageData::EncoderAction(*action),
-                    )
-                    .await?;
+                    let key = self.encoder_storage_key(idx as u8, layer as u8);
+                    self.store_data(key, &StorageData::EncoderAction(*action)).await?;
                 }
             }
         }
@@ -834,13 +869,13 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                     col,
                     action,
                 } => {
-                    self.store_data(StorageKey::keymap(layer, row, col), &StorageData::KeyAction(action))
-                        .await
+                    let key = self.keymap_storage_key(layer, row, col);
+                    self.store_data(key, &StorageData::KeyAction(action)).await
                 }
                 #[cfg(feature = "host")]
                 FlashOperationMessage::Encoder { layer, idx, action } => {
-                    self.store_data(StorageKey::encoder(idx, layer), &StorageData::EncoderAction(action))
-                        .await
+                    let key = self.encoder_storage_key(idx, layer);
+                    self.store_data(key, &StorageData::EncoderAction(action)).await
                 }
                 #[cfg(feature = "host")]
                 FlashOperationMessage::Combo { idx, config } => {
@@ -1112,6 +1147,14 @@ mod tests {
             },
             #[cfg(feature = "host")]
             StorageKey::EncoderV2 { layer: 12, idx: 13 },
+            #[cfg(feature = "host")]
+            StorageKey::KeymapTailV3 {
+                layer: 14,
+                row: 15,
+                col: 16,
+            },
+            #[cfg(feature = "host")]
+            StorageKey::EncoderTailV3 { layer: 17, idx: 18 },
         ];
 
         let mut buffer = [0u8; 64];
@@ -1372,6 +1415,138 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(updated_runtime_data.keymap[0][0][0], legacy);
+        });
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn tail_namespace_preserves_lower_layers_and_replaces_legacy_tail() {
+        block_on(async {
+            use rmk_types::action::{Action, EncoderAction, KeyAction};
+            use rmk_types::keycode::{HidKeyCode, KeyCode};
+
+            type Flash = TestFlash<16_384, 4_096, 1>;
+
+            let key = |keycode| KeyAction::Single(Action::Key(KeyCode::Hid(keycode)));
+            let lower_key = key(HidKeyCode::A);
+            let legacy_tail_key = key(HidKeyCode::B);
+            let new_tail_key = key(HidKeyCode::C);
+            let lower_encoder = EncoderAction::new(key(HidKeyCode::D), key(HidKeyCode::E));
+            let legacy_tail_encoder = EncoderAction::new(key(HidKeyCode::F), key(HidKeyCode::G));
+            let new_tail_encoder = EncoderAction::new(key(HidKeyCode::H), key(HidKeyCode::I));
+
+            let storage_range = (16_384 - 2 * 4_096) as u32..16_384u32;
+            let mut map =
+                MapStorage::<StorageKey, _, _>::new(Flash::new(), MapConfig::new(storage_range), NoCache::new());
+            let mut buffer = [0u8; 256];
+
+            map.store_item(
+                &mut buffer,
+                &StorageKey::StorageConfig,
+                &StorageData::StorageConfig(LocalStorageConfig {
+                    enable: true,
+                    build_hash: BUILD_HASH,
+                }),
+            )
+            .await
+            .unwrap();
+            map.store_item(
+                &mut buffer,
+                &StorageKey::KeymapSchemaVersion,
+                &StorageData::KeymapSchemaVersion(KEYMAP_STORAGE_SCHEMA_VERSION),
+            )
+            .await
+            .unwrap();
+            map.store_item(
+                &mut buffer,
+                &StorageKey::KeymapV2 {
+                    layer: 4,
+                    row: 0,
+                    col: 0,
+                },
+                &StorageData::KeyAction(lower_key),
+            )
+            .await
+            .unwrap();
+            map.store_item(
+                &mut buffer,
+                &StorageKey::KeymapV2 {
+                    layer: 5,
+                    row: 0,
+                    col: 0,
+                },
+                &StorageData::KeyAction(legacy_tail_key),
+            )
+            .await
+            .unwrap();
+            map.store_item(
+                &mut buffer,
+                &StorageKey::EncoderV2 { layer: 4, idx: 0 },
+                &StorageData::EncoderAction(lower_encoder),
+            )
+            .await
+            .unwrap();
+            map.store_item(
+                &mut buffer,
+                &StorageKey::EncoderV2 { layer: 5, idx: 0 },
+                &StorageData::EncoderAction(legacy_tail_encoder),
+            )
+            .await
+            .unwrap();
+
+            let (flash, _) = map.destroy();
+            let factory_keymap = [[[KeyAction::No; 1]; 1]; 6];
+            let factory_encoder_map = [[EncoderAction::default(); 1]; 6];
+            let encoder_map: Option<&mut [[EncoderAction; 1]; 6]> = None;
+            let storage_config = RuntimeStorageConfig {
+                no_action_layer_start: Some(5),
+                ..RuntimeStorageConfig::default()
+            };
+            let mut storage = Storage::<Flash, 1, 1, 6, 1>::new(
+                flash,
+                &factory_keymap,
+                &encoder_map,
+                &storage_config,
+                &RuntimeBehaviorConfig::default(),
+            )
+            .await;
+
+            let mut runtime_data = crate::keymap::KeymapData::new_with_encoder(factory_keymap, factory_encoder_map);
+            let mut runtime_behavior = RuntimeBehaviorConfig::default();
+            storage
+                .read_runtime_state(&mut runtime_data, &mut runtime_behavior)
+                .await
+                .unwrap();
+
+            assert_eq!(runtime_data.keymap[4][0][0], lower_key);
+            assert_eq!(runtime_data.keymap[5][0][0], KeyAction::No);
+            assert_eq!(runtime_data.encoder_map[4][0], lower_encoder);
+            assert_eq!(runtime_data.encoder_map[5][0], EncoderAction::default());
+
+            let tail_key = storage.keymap_storage_key(5, 0, 0);
+            let tail_encoder_key = storage.encoder_storage_key(0, 5);
+            assert!(matches!(tail_key, StorageKey::KeymapTailV3 { .. }));
+            assert!(matches!(tail_encoder_key, StorageKey::EncoderTailV3 { .. }));
+            storage
+                .store_data(tail_key, &StorageData::KeyAction(new_tail_key))
+                .await
+                .unwrap();
+            storage
+                .store_data(tail_encoder_key, &StorageData::EncoderAction(new_tail_encoder))
+                .await
+                .unwrap();
+
+            let mut updated_runtime_data =
+                crate::keymap::KeymapData::new_with_encoder(factory_keymap, factory_encoder_map);
+            storage
+                .read_runtime_state(&mut updated_runtime_data, &mut runtime_behavior)
+                .await
+                .unwrap();
+
+            assert_eq!(updated_runtime_data.keymap[4][0][0], lower_key);
+            assert_eq!(updated_runtime_data.keymap[5][0][0], new_tail_key);
+            assert_eq!(updated_runtime_data.encoder_map[4][0], lower_encoder);
+            assert_eq!(updated_runtime_data.encoder_map[5][0], new_tail_encoder);
         });
     }
 }

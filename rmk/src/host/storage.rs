@@ -73,6 +73,9 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         data: &mut crate::keymap::KeymapData<ROW, COL, NUM_LAYER, NUM_ENCODER>,
         behavior: &mut crate::config::BehaviorConfig,
     ) -> Result<(), ()> {
+        let no_action_layer_start = self.tail_key_namespace_start();
+        let uses_tail_key_namespace = |layer: u8| no_action_layer_start.is_some_and(|start| layer >= start);
+
         // Restore every host-owned setting in one flash traversal. Calling
         // fetch_item once per combo/fork/morse repeatedly scanned the complete
         // sequential-storage map and delayed K04 runtime startup by ~20 s.
@@ -89,7 +92,9 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
             .map_err(|e| print_storage_error::<F>(e))?
         {
             match (key, item) {
-                (StorageKey::KeymapV2 { layer, row, col }, StorageData::KeyAction(action)) => {
+                (StorageKey::KeymapV2 { layer, row, col }, StorageData::KeyAction(action))
+                    if !uses_tail_key_namespace(layer) =>
+                {
                     let layer = layer as usize;
                     let row = row as usize;
                     let col = col as usize;
@@ -97,7 +102,28 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                         data.keymap[layer][row][col] = action;
                     }
                 }
-                (StorageKey::EncoderV2 { layer, idx }, StorageData::EncoderAction(action)) => {
+                (StorageKey::KeymapTailV3 { layer, row, col }, StorageData::KeyAction(action))
+                    if uses_tail_key_namespace(layer) =>
+                {
+                    let layer = layer as usize;
+                    let row = row as usize;
+                    let col = col as usize;
+                    if layer < NUM_LAYER && row < ROW && col < COL {
+                        data.keymap[layer][row][col] = action;
+                    }
+                }
+                (StorageKey::EncoderV2 { layer, idx }, StorageData::EncoderAction(action))
+                    if !uses_tail_key_namespace(layer) =>
+                {
+                    let idx = idx as usize;
+                    let layer = layer as usize;
+                    if layer < NUM_LAYER && idx < NUM_ENCODER {
+                        data.encoder_map[layer][idx] = action;
+                    }
+                }
+                (StorageKey::EncoderTailV3 { layer, idx }, StorageData::EncoderAction(action))
+                    if uses_tail_key_namespace(layer) =>
+                {
                     let idx = idx as usize;
                     let layer = layer as usize;
                     if layer < NUM_LAYER && idx < NUM_ENCODER {
