@@ -343,6 +343,7 @@ where
     renderer: QubeStatusRenderer,
     ctx: RenderContext,
     last_host_data: rmk::host_data::HostData,
+    last_layer_names_version: u8,
     last_render: Instant,
     pending: bool,
     min_interval: Duration,
@@ -391,6 +392,7 @@ where
         },
         ctx: RenderContext::default(),
         last_host_data: host_data,
+        last_layer_names_version: crate::layer_names::version(),
         last_render: Instant::from_ticks(0),
         pending: true,
         min_interval: Duration::from_millis(80),
@@ -407,6 +409,7 @@ where
 {
     async fn redraw(&mut self) {
         self.sync_host_data();
+        self.sync_layer_names();
         let now = Instant::now();
         if now.duration_since(self.last_render) < self.min_interval {
             self.pending = true;
@@ -427,6 +430,14 @@ where
         if host_data != self.last_host_data {
             self.last_host_data = host_data.clone();
             self.renderer.host_data = host_data;
+            self.request_redraw();
+        }
+    }
+
+    fn sync_layer_names(&mut self) {
+        let version = crate::layer_names::version();
+        if version != self.last_layer_names_version {
+            self.last_layer_names_version = version;
             self.request_redraw();
         }
     }
@@ -675,6 +686,7 @@ where
             UiEv::Central(e) => self.ctx.central_connected = e.connected,
             UiEv::HostDataTick => {
                 self.sync_host_data();
+                self.sync_layer_names();
                 if self.renderer.media_needs_marquee() {
                     self.request_redraw();
                 }
@@ -753,7 +765,10 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         let right = ctx.peripherals_connected.get(1).copied().unwrap_or(false);
         let lp = battery_reading(ctx.peripheral_batteries.first().map(|b| b.0));
         let rp = battery_reading(ctx.peripheral_batteries.get(1).map(|b| b.0));
-        let name = layer_name(ctx.layer);
+        let mut custom_name = [0u8; crate::layer_names::LAYER_NAME_MAX];
+        let name = crate::layer_names::copy_layer_name(ctx.layer, &mut custom_name)
+            .and_then(|len| core::str::from_utf8(&custom_name[..len]).ok())
+            .unwrap_or_else(|| layer_name(ctx.layer));
 
         // Header.
         draw_panel(display, SAFE_X, 14, SAFE_W, 28, COL_PANEL, COL_BORDER_DIM);

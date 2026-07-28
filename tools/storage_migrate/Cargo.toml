@@ -1,6 +1,6 @@
 [package]
-name = "settings-reset"
-version = "0.2.0"
+name = "storage-migrate"
+version = "0.1.0"
 edition = "2021"
 
 [features]

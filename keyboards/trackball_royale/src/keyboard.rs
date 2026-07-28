@@ -2,6 +2,8 @@
 #![no_std]
 
 mod battery_nrf;
+#[path = "../../common/layer_names.rs"]
+mod layer_names;
 mod trackball_processor;
 
 use rmk::macros::rmk_keyboard;

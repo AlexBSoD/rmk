@@ -39,27 +39,27 @@
             "shortName": "BT4"
         },
         {
-            "name": "BT Next",
+            "name": "BT_NEXT",
             "title": "Next BT Profile",
             "shortName": "BNXT"
         },
         {
-            "name": "BT Prev",
+            "name": "BT_PREV",
             "title": "Previous BT Profile",
             "shortName": "BPRV"
         },
         {
-            "name": "CLR BT",
+            "name": "BT_CLR",
             "title": "Clear BT Profile",
             "shortName": "BCLR"
         },
         {
-            "name": "Toggle",
+            "name": "BT_TOG",
             "title": "Toggle USB/BLE",
             "shortName": "BTOG"
         },
         {
-            "name": "CLR Peer",
+            "name": "BT_PEER",
             "title": "Clear Split Peer",
             "shortName": "CPER"
         },

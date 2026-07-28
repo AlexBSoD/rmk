@@ -3,6 +3,9 @@
     "manufacturer": "Ergohaven",
     "vendorId": "0xE126",
     "productId": "0x00BE",
+    "entropy": {
+        "batteryHalves": true
+    },
     "firmware": {
         "version": "0.1.3"
     },
@@ -39,27 +42,27 @@
             "shortName": "BT4"
         },
         {
-            "name": "NEXT_BT",
+            "name": "BT_NEXT",
             "title": "Switch to next BT channel",
             "shortName": "Next\nBT"
         },
         {
-            "name": "PREV_BT",
+            "name": "BT_PREV",
             "title": "Switch to prev BT channel",
             "shortName": "Prev\nBT"
         },
         {
-            "name": "CLR_BT",
+            "name": "BT_CLR",
             "title": "Clear BT bond info",
             "shortName": "Clear\nBT"
         },
         {
-            "name": "SWITCH",
+            "name": "BT_TOG",
             "title": "Switch USB/BLE output",
             "shortName": "Switch\nOutput"
         },
         {
-            "name": "CLR_PEER",
+            "name": "BT_PEER",
             "title": "Clear split peer",
             "shortName": "Clear\nPeer"
         }

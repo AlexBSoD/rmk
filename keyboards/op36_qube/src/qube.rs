@@ -5,6 +5,8 @@
 //!
 //! Build: `cargo make uf2-qube`
 
+#[path = "../../common/layer_names.rs"]
+mod layer_names;
 mod qube_display;
 
 use rmk::macros::rmk_central;

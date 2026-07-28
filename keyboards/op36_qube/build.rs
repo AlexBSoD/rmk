@@ -32,6 +32,7 @@ fn main() {
     println!("cargo:rerun-if-changed=memory_qube.x");
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION={FIRMWARE_VERSION}");
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION_BCD={FIRMWARE_VERSION_BCD}");
+    println!("cargo:rustc-env=RMK_VIAL_DEVICE_SETTINGS_FN=crate::layer_names::vial_device_settings");
 
     // Put `memory.x` in our output directory and ensure it's
     // on the linker search path.
@@ -90,8 +91,7 @@ fn generate_vial_config(vial_path: &Path) -> u16 {
         Err(e) => panic!("Cannot find {}: {e}", vial_path.display()),
     };
 
-    let parsed =
-        json::parse(&content).unwrap_or_else(|e| panic!("Cannot parse {}: {e}", vial_path.display()));
+    let mut parsed = json::parse(&content).unwrap_or_else(|e| panic!("Cannot parse {}: {e}", vial_path.display()));
     let product_id = parsed["productId"]
         .as_str()
         .and_then(|value| value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")))
@@ -102,13 +102,12 @@ fn generate_vial_config(vial_path: &Path) -> u16 {
         _ => panic!("Unsupported Ergohaven Qube productId: 0x{product_id:04X}"),
     }
 
-    let mut vial_cfg = json::stringify(parsed);
-    if !vial_cfg.contains("\"entropy\"") {
-        vial_cfg.insert_str(
-            1,
-            "\"entropy\":{\"liveFeatures\":[\"time\",\"media\"],\"batteryHalves\":true},",
-        );
+    if !parsed.has_key("entropy") {
+        parsed.insert("entropy", json::object! {}).unwrap();
     }
+    parsed["entropy"]["liveFeatures"] = json::array!["time", "media"];
+    parsed["entropy"]["batteryHalves"] = true.into();
+    let vial_cfg = json::stringify(parsed);
     let mut keyboard_def_compressed: Vec<u8> = Vec::new();
     XzEncoder::new(vial_cfg.as_bytes(), 6)
         .read_to_end(&mut keyboard_def_compressed)

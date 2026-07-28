@@ -3,6 +3,9 @@
     "manufacturer": "Ergohaven",
     "vendorId": "0xE126",
     "productId": "0x00BF",
+    "entropy": {
+        "batteryHalves": true
+    },
     "firmware": {
         "version": "0.1.3"
     },

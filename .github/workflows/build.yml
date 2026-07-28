@@ -7,6 +7,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  validate-profile:
+    name: Validate Ergohaven firmware profile
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate profile contract
+        run: ./scripts/check_ergohaven_profile.sh
+
   build:
     name: Build ${{ matrix.output_name }} firmware
     runs-on: ubuntu-latest
@@ -342,7 +353,7 @@ jobs:
           retention-days: 30
 
   build-settings-reset:
-    name: Build settings_reset firmware
+    name: Build storage utility firmware
     runs-on: ubuntu-latest
 
     steps:
@@ -365,29 +376,80 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-settings-reset-${{ hashFiles('tools/settings_reset/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-storage-utilities-${{ hashFiles('tools/settings_reset/Cargo.lock', 'tools/storage_migrate/Cargo.lock') }}
 
       - name: Download uf2conv script
         run: |
           curl -fL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o $GITHUB_WORKSPACE/uf2conv.py
           curl -fL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o $GITHUB_WORKSPACE/uf2families.json
 
-      - name: Build Settings Reset
-        working-directory: tools/settings_reset
-        run: cargo build --release
+      - name: Test Storage Migration preflight
+        working-directory: tools/storage_migrate
+        run: |
+          host_target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo test --locked --lib --target "$host_target"
 
-      - name: Convert to UF2
+      - name: Build Settings Reset for halves and trackballs
+        working-directory: tools/settings_reset
+        env:
+          CARGO_TARGET_DIR: target/halves
+        run: cargo build --release --locked
+
+      - name: Build Settings Reset for Qube
+        working-directory: tools/settings_reset
+        env:
+          CARGO_TARGET_DIR: target/qube
+        run: cargo build --release --locked --features qube
+
+      - name: Build Storage Migration for halves and trackballs
+        working-directory: tools/storage_migrate
+        env:
+          CARGO_TARGET_DIR: target/halves
+        run: cargo build --release --locked
+
+      - name: Build Storage Migration for Qube
+        working-directory: tools/storage_migrate
+        env:
+          CARGO_TARGET_DIR: target/qube
+        run: cargo build --release --locked --features qube
+
+      - name: Convert reset utilities to UF2
         working-directory: tools/settings_reset
         run: |
           arm-none-eabi-objcopy -O binary \
-            target/thumbv7em-none-eabihf/release/settings-reset settings_reset.bin
+            target/halves/thumbv7em-none-eabihf/release/settings-reset settings_reset.bin
           python3 $GITHUB_WORKSPACE/uf2conv.py settings_reset.bin \
             --base 0x26000 --family 0xADA52840 \
             --output settings_reset.uf2
 
+          arm-none-eabi-objcopy -O binary \
+            target/qube/thumbv7em-none-eabihf/release/settings-reset settings_reset_qube.bin
+          python3 $GITHUB_WORKSPACE/uf2conv.py settings_reset_qube.bin \
+            --base 0x1000 --family 0xADA52840 \
+            --output settings_reset_qube.uf2
+
+      - name: Convert migration utilities to UF2
+        working-directory: tools/storage_migrate
+        run: |
+          arm-none-eabi-objcopy -O binary \
+            target/halves/thumbv7em-none-eabihf/release/storage-migrate storage_migrate.bin
+          python3 $GITHUB_WORKSPACE/uf2conv.py storage_migrate.bin \
+            --base 0x26000 --family 0xADA52840 \
+            --output storage_migrate.uf2
+
+          arm-none-eabi-objcopy -O binary \
+            target/qube/thumbv7em-none-eabihf/release/storage-migrate storage_migrate_qube.bin
+          python3 $GITHUB_WORKSPACE/uf2conv.py storage_migrate_qube.bin \
+            --base 0x1000 --family 0xADA52840 \
+            --output storage_migrate_qube.uf2
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: settings_reset
-          path: tools/settings_reset/settings_reset.uf2
+          name: storage_utilities
+          path: |
+            tools/settings_reset/settings_reset.uf2
+            tools/settings_reset/settings_reset_qube.uf2
+            tools/storage_migrate/storage_migrate.uf2
+            tools/storage_migrate/storage_migrate_qube.uf2
           retention-days: 30

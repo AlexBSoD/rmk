@@ -30,6 +30,7 @@ RMK BLE split firmware for Ergohaven keyboards and trackballs (nRF52840).
 | Tool           | Description                              |
 |----------------|------------------------------------------|
 | settings_reset | Erases keymap and BLE bonds, resets to bootloader |
+| storage_migrate | One-time legacy-to-unified storage copy |
 
 ## Building
 
@@ -45,6 +46,14 @@ Current K:04/OP36 regression matrix:
 ./scripts/build_k04_matrix.sh
 ```
 
+The shared production limits and metadata are documented in
+[`docs/ergohaven-firmware-profile.md`](docs/ergohaven-firmware-profile.md) and
+checked with:
+
+```sh
+./scripts/check_ergohaven_profile.sh
+```
+
 ## Flashing
 
 1. Put device into bootloader (double-tap reset)
@@ -53,7 +62,13 @@ Current K:04/OP36 regression matrix:
 
 ## Settings Reset
 
-Flash `settings_reset.uf2` to erase all saved keymap/BLE data, then re-flash keyboard firmware.
+Flash `settings_reset.uf2` on halves and standalone trackballs, or
+`settings_reset_qube.uf2` on a Qube dongle, to erase saved keymap/BLE data.
+Then re-flash the normal firmware.
+
+Non-K:04 devices upgrading from firmware that used the legacy storage address
+can first run `storage_migrate.uf2`, or `storage_migrate_qube.uf2` on Qube, to
+preserve the raw keymap, settings, and BLE bonds.
 
 ## CI
 
