@@ -127,18 +127,9 @@ fn generate_vial_config(vial_path: &Path) -> u16 {
 
 fn generate_qube_profile(product_id: u16, out: &Path) {
     let source = match product_id {
-        0x0036 => {
-            r#"pub const DEFAULT_LAYER_NAMES: [&str; 16] = [
-    "BASE", "GAM", "GFN", "NAV", "SYM", "NUM", "?", "?",
-    "?", "?", "?", "?", "?", "?", "?", "?",
-];
-"#
-        }
-        0x0044 | 0x0070 | 0x00BE => {
-            r#"pub const DEFAULT_LAYER_NAMES: [&str; 16] = [
-    "BASE", "NAV", "SYM", "ADJ", "?", "?", "?", "?",
-    "?", "?", "?", "?", "?", "?", "?", "?",
-];
+        0x0036 | 0x0044 | 0x0070 | 0x00BE => {
+            r#"pub const DEFAULT_LAYER_NAMES: [&str; 16] =
+    crate::default_layer_names::STANDARD_NO_MOUSE;
 "#
         }
         _ => unreachable!(),

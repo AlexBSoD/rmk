@@ -214,6 +214,73 @@ for file in keyboards/op36_qube/vial.json keyboards/k04_qube/vial{,_mini,_micro}
     ' "$file" >/dev/null || fail "$file: Qube must advertise time, media, and half batteries"
 done
 
+default_names_source=keyboards/common/default_layer_names.rs
+python3 - "$default_names_source" <<'PY' || fail "$default_names_source: factory layer-name profiles drifted"
+import ast
+import re
+import sys
+
+source = open(sys.argv[1], encoding="utf-8").read()
+
+def rust_array(name):
+    match = re.search(
+        rf"pub const {name}:.*?=\s*\[(.*?)\];",
+        source,
+        flags=re.DOTALL,
+    )
+    if not match:
+        raise SystemExit(f"missing {name}")
+    return ast.literal_eval("[" + match.group(1) + "]")
+
+numeric_tail = [str(index) for index in range(5, 16)]
+assert rust_array("STANDARD_NO_MOUSE") == [
+    "Base", "Navigation", "Symbols", "Adjust", "4", *numeric_tail
+]
+assert rust_array("STANDARD_WITH_MOUSE") == [
+    "Base", "Navigation", "Symbols", "Adjust", "Mouse", *numeric_tail
+]
+assert rust_array("TRACKBALL") == [
+    "Mouse", "1", "2", "Adjust", "4", *numeric_tail
+]
+PY
+
+standard_no_mouse_roots=(
+    keyboards/imperial44/src/central.rs
+    keyboards/k03/src/central.rs
+    keyboards/op36/src/central.rs
+    keyboards/velvet/src/central.rs
+)
+for file in "${standard_no_mouse_roots[@]}"; do
+    rg -Fq 'default_layer_names::STANDARD_NO_MOUSE' "$file" \
+        || fail "$file: standard no-Mouse layer names are missing"
+done
+
+standard_with_mouse_roots=(
+    keyboards/k04/src/central.rs
+    keyboards/k04_qube/src/qube.rs
+    keyboards/velvet_ui/src/central.rs
+)
+for file in "${standard_with_mouse_roots[@]}"; do
+    rg -Fq 'default_layer_names::STANDARD_WITH_MOUSE' "$file" \
+        || fail "$file: standard Mouse layer names are missing"
+done
+
+for file in keyboards/trackball_{royale,v30,v31}/src/keyboard.rs; do
+    rg -Fq 'default_layer_names::TRACKBALL' "$file" \
+        || fail "$file: functional trackball layer names are missing"
+done
+
+rg -Fq 'crate::default_layer_names::STANDARD_NO_MOUSE' keyboards/op36_qube/build.rs \
+    || fail "keyboards/op36_qube/build.rs: generated Qube defaults drifted"
+rg -Fq 'const STORAGE_VERSION: u8 = 2;' keyboards/common/layer_names.rs \
+    || fail "keyboards/common/layer_names.rs: default-name migration version drifted"
+for file in keyboards/{k04,k04_qube}/src/layer_names.rs; do
+    rg -Fq 'const STORAGE_VERSION: u8 = 3;' "$file" \
+        || fail "$file: K:04 default-name migration version drifted"
+    rg -Fq 'migrate_legacy_placeholders();' "$file" \
+        || fail "$file: generated layer-name migration is missing"
+done
+
 classic_user_registry='BT0,BT1,BT2,BT3,BT4,BT_NEXT,BT_PREV,BT_CLR,BT_TOG,BT_PEER'
 for file in \
     keyboards/imperial44/vial.json \

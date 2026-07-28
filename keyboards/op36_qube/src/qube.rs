@@ -5,9 +5,13 @@
 //!
 //! Build: `cargo make uf2-qube`
 
+#[path = "../../common/default_layer_names.rs"]
+mod default_layer_names;
 #[path = "../../common/layer_names.rs"]
 mod layer_names;
 mod qube_display;
+
+include!(concat!(env!("OUT_DIR"), "/qube_profile_generated.rs"));
 
 use rmk::macros::rmk_central;
 

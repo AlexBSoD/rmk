@@ -2,11 +2,15 @@
 #![no_std]
 
 mod battery_nrf;
+#[path = "../../common/default_layer_names.rs"]
+mod default_layer_names;
 mod layer_led;
 mod layer_names;
 mod module_settings;
 mod touchpad;
 mod trackball;
+
+const DEFAULT_LAYER_NAMES: [&str; 16] = default_layer_names::STANDARD_WITH_MOUSE;
 
 use rmk::macros::rmk_central;
 

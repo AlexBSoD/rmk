@@ -14,6 +14,13 @@ profiles share this software contract:
 - persistent layer names at QSID 200–215, up to 12 UTF-8 bytes each
 - firmware version 0.1.3 and manufacturer `Ergohaven`
 
+Standard keyboard profiles expose the factory layer names `Base`,
+`Navigation`, `Symbols`, and `Adjust`. Layer 4 is `Mouse` only on keyboards
+that have the pointing layer there; otherwise it is `4`. Layers 5–15 use their
+decimal indices. Standalone trackballs retain functional `Mouse` and `Adjust`
+names at their real layer positions and use numeric names for the other slots.
+User-defined names remain authoritative.
+
 Split pairing uses a 30-second window. Standalone split centrals sleep after
 120 seconds; powered Qube centrals use 900 seconds. Entropy capability metadata
 advertises separate half batteries on all split devices and time/media live

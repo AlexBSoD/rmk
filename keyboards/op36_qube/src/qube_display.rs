@@ -44,10 +44,6 @@ use rmk::processor::Processor;
 use rmk_types::battery::BatteryStatus;
 use static_cell::StaticCell;
 
-mod profile {
-    include!(concat!(env!("OUT_DIR"), "/qube_profile_generated.rs"));
-}
-
 // --- Panel geometry ---------------------------------------------------------
 
 pub const PANEL_NATIVE_W: usize = 240;
@@ -1010,7 +1006,7 @@ fn draw_bat<D: DrawTarget<Color = Rgb565>>(
 }
 
 fn layer_name(layer: u8) -> &'static str {
-    profile::DEFAULT_LAYER_NAMES
+    crate::DEFAULT_LAYER_NAMES
         .get(layer as usize)
         .copied()
         .unwrap_or("?")

@@ -2,9 +2,13 @@
 #![no_std]
 
 mod battery_nrf;
+#[path = "../../common/default_layer_names.rs"]
+mod default_layer_names;
 #[path = "../../common/layer_names.rs"]
 mod layer_names;
 mod pointing_mode;
+
+const DEFAULT_LAYER_NAMES: [&str; 16] = default_layer_names::STANDARD_WITH_MOUSE;
 
 use rmk::macros::rmk_central;
 

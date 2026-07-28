@@ -8,7 +8,8 @@ pub const LAYER_NAME_COUNT: usize = 16;
 pub const LAYER_NAME_MAX: usize = 12;
 const LAYER_NAME_QSID_BASE: u16 = 200;
 const STORAGE_MARKER: u8 = 0xE4;
-const STORAGE_VERSION: u8 = 2;
+const STORAGE_VERSION: u8 = 3;
+const PREVIOUS_STORAGE_VERSION: u8 = 2;
 const LEGACY_STORAGE_VERSION: u8 = 1;
 const STORAGE_HEADER_LEN: usize = 2;
 const MODULE_STORAGE_OFFSET: usize = STORAGE_HEADER_LEN;
@@ -254,16 +255,24 @@ fn serialize() -> VialDeviceSettingsData {
 
 fn deserialize(bytes: &[u8]) {
     if bytes.first() == Some(&STORAGE_MARKER) {
-        let layer_names_offset = match bytes.get(1).copied() {
-            Some(STORAGE_VERSION) if bytes.len() >= LAYER_NAMES_STORAGE_OFFSET => Some(LAYER_NAMES_STORAGE_OFFSET),
+        let profile = match bytes.get(1).copied() {
+            Some(STORAGE_VERSION) if bytes.len() >= LAYER_NAMES_STORAGE_OFFSET => {
+                Some((LAYER_NAMES_STORAGE_OFFSET, false))
+            }
+            Some(PREVIOUS_STORAGE_VERSION) if bytes.len() >= LAYER_NAMES_STORAGE_OFFSET => {
+                Some((LAYER_NAMES_STORAGE_OFFSET, true))
+            }
             Some(LEGACY_STORAGE_VERSION) if bytes.len() >= LEGACY_LAYER_NAMES_STORAGE_OFFSET => {
-                Some(LEGACY_LAYER_NAMES_STORAGE_OFFSET)
+                Some((LEGACY_LAYER_NAMES_STORAGE_OFFSET, true))
             }
             _ => None,
         };
-        if let Some(layer_names_offset) = layer_names_offset {
+        if let Some((layer_names_offset, migrate_placeholders)) = profile {
             deserialize_module_settings(&bytes[MODULE_STORAGE_OFFSET..layer_names_offset]);
             deserialize_compact_layer_names(&bytes[layer_names_offset..]);
+            if migrate_placeholders {
+                migrate_legacy_placeholders();
+            }
             LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
             publish_module_settings();
             return;
@@ -272,6 +281,7 @@ fn deserialize(bytes: &[u8]) {
 
     deserialize_module_settings(&[]);
     deserialize_fixed_layer_names(bytes);
+    migrate_legacy_placeholders();
     LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
     publish_module_settings();
 }
@@ -336,6 +346,20 @@ fn store_raw_layer_name(index: usize, bytes: &[u8]) {
 fn clear_layer_names() {
     for index in 0..LAYER_NAME_COUNT {
         store_raw_layer_name(index, &[]);
+    }
+}
+
+fn migrate_legacy_placeholders() {
+    let mut bytes = [0u8; LAYER_NAME_MAX];
+    for (index, default_name) in crate::DEFAULT_LAYER_NAMES.iter().enumerate() {
+        let len = LAYER_NAME_LEN[index].load(Ordering::Acquire).min(LAYER_NAME_MAX as u8) as usize;
+        let base = index * LAYER_NAME_MAX;
+        for (offset, byte) in bytes.iter_mut().enumerate() {
+            *byte = LAYER_NAME_BYTES[base + offset].load(Ordering::Relaxed);
+        }
+        if crate::default_layer_names::is_legacy_placeholder(index, &bytes[..len]) {
+            store_raw_layer_name(index, default_name.as_bytes());
+        }
     }
 }
 

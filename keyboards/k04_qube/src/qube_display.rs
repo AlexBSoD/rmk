@@ -1037,25 +1037,7 @@ fn draw_bat<D: DrawTarget<Color = Rgb565>>(
 }
 
 fn layer_name(layer: u8) -> &'static str {
-    match layer {
-        0 => "BASE",
-        1 => "NAV",
-        2 => "SYM",
-        3 => "ADJ",
-        4 => "PTR",
-        5 => "L5",
-        6 => "L6",
-        7 => "L7",
-        8 => "L8",
-        9 => "L9",
-        10 => "L10",
-        11 => "L11",
-        12 => "L12",
-        13 => "L13",
-        14 => "L14",
-        15 => "L15",
-        _ => "?",
-    }
+    crate::DEFAULT_LAYER_NAMES.get(layer as usize).copied().unwrap_or("?")
 }
 
 fn push_host_time(buffer: &mut heapless::String<16>, hour: Option<u8>, minute: Option<u8>) {

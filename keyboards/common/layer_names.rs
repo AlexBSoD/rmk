@@ -15,7 +15,8 @@ pub const LAYER_NAME_MAX: usize = 12;
 
 const LAYER_NAME_QSID_BASE: u16 = 200;
 const STORAGE_MARKER: u8 = 0xE5;
-const STORAGE_VERSION: u8 = 1;
+const STORAGE_VERSION: u8 = 2;
+const LEGACY_STORAGE_VERSION: u8 = 1;
 const STORAGE_HEADER_LEN: usize = 2;
 const STORAGE_ENTRY_LEN: usize = 1 + LAYER_NAME_MAX;
 const SERIALIZED_LEN: usize = STORAGE_HEADER_LEN + LAYER_NAME_COUNT * STORAGE_ENTRY_LEN;
@@ -119,17 +120,25 @@ fn serialize() -> VialDeviceSettingsData {
 
 fn deserialize(bytes: &[u8]) {
     clear_layer_names();
-    if bytes.len() < SERIALIZED_LEN || bytes[0] != STORAGE_MARKER || bytes[1] != STORAGE_VERSION {
+    if bytes.len() < SERIALIZED_LEN
+        || bytes[0] != STORAGE_MARKER
+        || !matches!(bytes[1], STORAGE_VERSION | LEGACY_STORAGE_VERSION)
+    {
+        load_default_layer_names();
         LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
         return;
     }
 
+    let migrate_placeholders = bytes[1] == LEGACY_STORAGE_VERSION;
     let mut pos = STORAGE_HEADER_LEN;
     for index in 0..LAYER_NAME_COUNT {
         let len = usize::from(bytes[pos]).min(LAYER_NAME_MAX);
         pos += 1;
         store_raw_layer_name(index, &bytes[pos..pos + len]);
         pos += LAYER_NAME_MAX;
+    }
+    if migrate_placeholders {
+        migrate_legacy_placeholders();
     }
     LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
 }
@@ -170,6 +179,26 @@ fn store_raw_layer_name(index: usize, bytes: &[u8]) {
 fn clear_layer_names() {
     for index in 0..LAYER_NAME_COUNT {
         store_raw_layer_name(index, &[]);
+    }
+}
+
+fn load_default_layer_names() {
+    for (index, name) in crate::DEFAULT_LAYER_NAMES.iter().enumerate() {
+        store_raw_layer_name(index, name.as_bytes());
+    }
+}
+
+fn migrate_legacy_placeholders() {
+    let mut bytes = [0u8; LAYER_NAME_MAX];
+    for (index, default_name) in crate::DEFAULT_LAYER_NAMES.iter().enumerate() {
+        let len = usize::from(LAYER_NAME_LEN[index].load(Ordering::Acquire)).min(LAYER_NAME_MAX);
+        let base = index * LAYER_NAME_MAX;
+        for (offset, byte) in bytes.iter_mut().enumerate() {
+            *byte = LAYER_NAME_BYTES[base + offset].load(Ordering::Relaxed);
+        }
+        if crate::default_layer_names::is_legacy_placeholder(index, &bytes[..len]) {
+            store_raw_layer_name(index, default_name.as_bytes());
+        }
     }
 }
 
