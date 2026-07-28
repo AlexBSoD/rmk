@@ -202,14 +202,27 @@ def check_projection(
     target_paths,
     drop_indices,
     expected_source_actions,
-    preserve_encoders,
+    encoders_per_half,
 ):
     reference_layers = layers(reference_path)[:4]
+    for layer in reference_layers:
+        reference_encoders = layer.get("encoders", [])
+        if len(reference_encoders) != 2:
+            raise SystemExit(
+                f"{reference_path}: layer {layer['name']} has "
+                f"{len(reference_encoders)} encoders, expected two"
+            )
+
     expected = [
         (
             layer["name"],
             project(layer, drop_indices, expected_source_actions),
-            layer.get("encoders") if preserve_encoders else None,
+            (
+                [layer["encoders"][0]] * encoders_per_half
+                + [layer["encoders"][1]] * encoders_per_half
+                if encoders_per_half
+                else None
+            ),
         )
         for layer in reference_layers
     ]
@@ -241,7 +254,7 @@ check_projection(
     ],
     {25, 26},
     38,
-    False,
+    0,
 )
 check_projection(
     "keyboards/k04/keyboard_mini.toml",
@@ -251,7 +264,7 @@ check_projection(
     ],
     {38, 39, 46, 47},
     48,
-    True,
+    1,
 )
 check_projection(
     "keyboards/k04/keyboard_mini.toml",
@@ -261,7 +274,17 @@ check_projection(
     ],
     {30, 31},
     48,
-    False,
+    0,
+)
+check_projection(
+    "keyboards/k04/keyboard.toml",
+    [
+        "keyboards/k03/keyboard.toml",
+        "keyboards/op36_qube/keyboard_k03.toml",
+    ],
+    set(),
+    60,
+    3,
 )
 PY
 
