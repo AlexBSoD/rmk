@@ -161,6 +161,54 @@ rg -Fq 'uses_tail_key_namespace' rmk/src/host/storage.rs \
 rg -Fq 'no_action_layer_start: #no_action_layer_start' rmk-macro/src/codegen/chip/flash.rs \
     || fail "rmk-macro: no-action boundary is not propagated to runtime storage"
 
+python3 - <<'PY' || fail "OP36 common factory layers must mirror K:04 Micro"
+import tomllib
+
+def layers(path):
+    with open(path, "rb") as source:
+        return tomllib.load(source).get("layer", [])
+
+micro = layers("keyboards/k04/keyboard_micro.toml")[:4]
+op36_profiles = [
+    "keyboards/op36/keyboard.toml",
+    "keyboards/op36_qube/keyboard.toml",
+]
+
+replacements = {
+    "User19": "User0",
+    "User20": "User1",
+    "User21": "User2",
+    "User22": "User3",
+    "User23": "User4",
+    "User26": "User7",
+    "User37": "OutputBluetooth",
+    "User38": "OutputUsb",
+    # OP36 has no K:04 status LED for the battery indication action.
+    "User39": "No",
+}
+
+def project(layer):
+    actions = layer["keys"].split()
+    if len(actions) != 38:
+        raise SystemExit(f"K:04 Micro layer {layer['name']} has {len(actions)} actions, expected 38")
+    # OP36 lacks K:04 Micro's two unused inner positions in the bottom row.
+    actions = actions[:25] + actions[27:]
+    for index, action in enumerate(actions):
+        for source, target in replacements.items():
+            action = action.replace(source, target)
+        actions[index] = action
+    return layer["name"], actions
+
+expected = [project(layer) for layer in micro]
+for path in op36_profiles:
+    actual_layers = layers(path)
+    if len(actual_layers) != 4:
+        raise SystemExit(f"{path}: expected four common factory layers, found {len(actual_layers)}")
+    actual = [(layer["name"], layer["keys"].split()) for layer in actual_layers]
+    if actual != expected:
+        raise SystemExit(f"{path}: common factory layers drifted from K:04 Micro")
+PY
+
 for file in "${non_k04_profiles[@]}"; do
     expect_toml "$file" combo_max_length 4
     expect_toml "$file" fork_max_num 8

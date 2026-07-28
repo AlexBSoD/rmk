@@ -87,17 +87,6 @@ matrix_type = "normal"
 row_pins = ["P1_09", "P0_05", "P1_10"]
 col_pins = ["P0_30", "P0_29", "P0_02", "P1_13", "P0_28", "P0_03"]
 
-[behavior.tri_layer]
-upper = 3
-lower = 4
-adjust = 5
-
-[behavior.one_shot]
-timeout = "300s"
-
-[behavior.one_shot_modifiers]
-activate_on_keypress = true
-
 [layout]
 # Unified matrix: left rows 0-2, right rows 3-5; each half 3x6
 # Left: cols 0-4 main (reversed wiring), col5 = thumbs
@@ -113,88 +102,40 @@ matrix_map = """
                 (0,5,L) (1,5,L) (2,5,L)    (5,5,R) (4,5,R) (3,5,R)
 """
 
-[aliases]
-# Universal Layout mapping
-SQuot     = "Grave"
-DQuot     = "WM(Grave, LShift)"
-Grave     = "WM(Grave, RAlt)"
-Pipe      = "WM(Backslash, LShift)"
-Backslash = "WM(Backslash, RAlt)"
-Nbsp      = "WM(Space, RAlt)"
-Comma     = "LeftBracket"
-Semicolon = "WM(LeftBracket, LShift)"
-Dot       = "RightBracket"
-Colon     = "WM(RightBracket, LShift)"
-Minus     = "Minus"
-Under     = "WM(Minus, LShift)"
-Equal     = "Equal"
-Plus      = "WM(Equal, LShift)"
-Slash     = "Backslash"
-LBracket  = "Dot"
-LBrace    = "WM(Dot, LShift)"
-RBracket  = "Slash"
-RBrace    = "WM(Slash, LShift)"
-Ampersand = "Comma"
-Tilde     = "Semicolon"
-# One-shot Modifiers mapping
-OSM_G     = "OSM(LGui)"
-OSM_A     = "OSM(LAlt)"
-OSM_C     = "OSM(LCtrl)"
-OSM_S     = "OSM(LShift)"
-# Window Management mapping
-PrevSpace = "WM(Left,  LCtrl | LGui)"
-NextSpace = "WM(Right, LCtrl | LGui)"
-# Bluetooth profiles mapping
-BT_1      = "User0"
-BT_2      = "User1"
-BT_3      = "User2"
-BT_Next   = "User3"
-BT_Prev   = "User4"
-BT_Clear  = "User5"
-BT_Toggle = "User6" # Toggle between USB and BLE
-
-
-[[layer]] # 0
-name = "base_layer"
+# Common factory layers mirror K:04 Micro. Its two unused inner bottom-row
+# positions and its hardware-specific pointing/encoder actions are omitted.
+[[layer]]
+name = "Base"
 keys = """
-Q          W          E          R          T          Y          U          I          O          P
-A          S          D          F          G          H          J          K          L          @Tilde
-Z          X          C          V          B          N          M          @Ampersand @LBracket  @RBracket
-                      CapsLock   Space      MO(3)      MO(4)      LShift     RAlt
+Q           W           E            R           T     Y     U           I            O           P
+MT(A,LGui)  MT(S,LAlt)  MT(D,LShift) MT(F,LCtrl) G     H     MT(J,RCtrl) MT(K,RShift) MT(L,RAlt) MT(Semicolon,RGui)
+Z           X           C            V           B     N     M           Comma        Dot         Quote
+                        Backspace    MO(1)         Space Enter MO(2)       Tab
 """
 
-[[layer]] # 1
-name = "gam_layer"
+[[layer]]
+name = "Nav"
 keys = """
-Tab        Q          W          E          R          No         No         Up         No         Tab
-LShift     A          S          D          F          No         Left       Down       Right      RShift
-LCtrl      Z          X          C          V          No         No         No         No         RCtrl
-                      LAlt       Space      MO(2)      TG(1)      Space      No
+Kc1            Kc2             Kc3               Kc4           Kc5          Kc6      Kc7          Kc8             Kc9         Kc0
+MT(Home,LGui)  MT(Insert,LAlt)  MT(Delete,LShift) MT(End,LCtrl) Enter        Escape   MT(Left,RCtrl) MT(Down,RShift) MT(Up,RAlt) MT(Right,RGui)
+PageUp         PageDown        _                 _             PrintScreen  _        _            _               CapsLock    CapsWordToggle
+                              _                 _             _            _        MO(3)        _
 """
 
-[[layer]] # 2
-name = "gfn_layer"
+[[layer]]
+name = "Symbols"
 keys = """
-Kc5        Kc1        Kc2        Kc3        Kc4        @BT_Toggle @BT_1      @BT_2      @BT_3      @BT_Clear
-Kc0        Kc6        Kc7        Kc8        Kc9        No         No         No         No         No
-G          J          I          M          T          NumLock    No         No         No         No
-                      Escape     Enter      ___        ___        ___        No
+SHIFTED(Kc2)       SHIFTED(Comma)          Equal                   SHIFTED(Dot)            Grave          SHIFTED(Kc6)  SHIFTED(Quote)                    SHIFTED(Minus)            Quote                  _
+MT(Backslash,LGui) MT(WM(Kc9,LShift),LAlt) MT(Minus,LShift)        MT(WM(Kc0,LShift),LCtrl) SHIFTED(Equal) SHIFTED(Kc5)  MT(WM(LeftBracket,LShift),RCtrl) MT(Semicolon,RShift)      MT(WM(RightBracket,LShift),RAlt) MT(WM(Kc1,LShift),RGui)
+SHIFTED(Kc3)       SHIFTED(Kc8)            SHIFTED(Semicolon)      Slash                   _              _            SHIFTED(Backslash)               SHIFTED(Grave)            SHIFTED(Kc7)            SHIFTED(Kc4)
+                                           _                       MO(3)                   _              _            _                                _
 """
 
-[[layer]] # 3
-name = "nav_layer"
+[[layer]]
+name = "Adjust"
 keys = """
-__         __         __         __         Escape     Escape     Home       End        Backspace  Delete
-@OSM_G     @OSM_A     @OSM_C     @OSM_S     Enter      Enter      Left       Down       Up         Right
-@PrevSpace @NextSpace TG(1)      pscr       Tab        Tab        PageUp     PageDown   Quote      NumLock
-                      ___        ___        ___        ___        ___        ___
-"""
-
-[[layer]] # 4
-name = "sym_layer"
-keys = """
-Kc1        Kc2        Kc3        Kc4        Kc5        Kc6        Kc7        Kc8        Kc9        Kc0
-@Tilde     @Grave     @SQuot     @DQuot     @Minus     @Plus      @OSM_S     @OSM_C     @OSM_A     @OSM_G
-@Backslash No         @Semicolon @Comma     @Under     @Equal     @Dot       @Colon     @Pipe      @Slash
-                      ___        ___        ___        ___        ___        ___
+Bootloader  F1             F2              F3              F4   User0            User1                   User2                  User3                 User4
+LGui        MT(F5,LAlt)    MT(F6,LShift)   MT(F7,LCtrl)    F8   OutputBluetooth  MT(AudioVolDown,RCtrl)  MT(AudioMute,RShift)  MT(AudioVolUp,RAlt)  MT(User7,RGui)
+_           F9             F10             F11             F12  OutputUsb        MediaPrevTrack          MediaPlayPause        MediaNextTrack         No
+                                        _  _               _    _                _                       _
 """
