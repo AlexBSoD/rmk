@@ -129,7 +129,7 @@ col_pins = ["P1_06", "P1_04", "P1_02", "P1_00", "P0_22", "P0_20"]
 pin_a = "P0_10"
 pin_b = "P0_09"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [[split.peripheral]]
@@ -152,7 +152,7 @@ col_pins = ["P1_06", "P1_04", "P1_02", "P1_00", "P0_22", "P0_20"]
 pin_a = "P0_10"
 pin_b = "P0_09"
 phase = "resolution"
-resolution = 2
+resolution = 4
 internal_pullup = true
 
 [rmk]
