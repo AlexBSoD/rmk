@@ -17,8 +17,9 @@ const FAST_PROBE_WINDOW: Duration = Duration::from_secs(10);
 // MOTION wakes the task immediately. A connected sensor only needs a sparse
 // identity check; reading its registers every second prevents deep rest.
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(60);
-// Match the 125 Hz report cadence used by the generic PMW3610 path.
-const REPORT_INTERVAL: Duration = Duration::from_millis(8);
+// Emit accumulated motion at 250 Hz. The sensor remains MOTION-driven, so the
+// shorter interval adds work only while there is movement to report.
+const REPORT_INTERVAL: Duration = Duration::from_millis(4);
 const MOTION_ACCUM_LIMIT: i32 = (i8::MAX as i32) * 2;
 const DEFAULT_CPI: u16 = 1000;
 
