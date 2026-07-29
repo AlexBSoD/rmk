@@ -460,6 +460,54 @@ for file in keyboards/{k04,k04_qube}/src/layer_names.rs; do
         || fail "$file: generated layer-name migration is missing"
 done
 
+k04_vial_definitions=(
+    keyboards/k04/vial.json
+    keyboards/k04/vial_micro.json
+    keyboards/k04/vial_mini.json
+    keyboards/k04_qube/vial.json
+    keyboards/k04_qube/vial_micro.json
+    keyboards/k04_qube/vial_mini.json
+)
+python3 - "${k04_vial_definitions[@]}" <<'PY' \
+    || fail "K:04 USER00..USER40 registry drifted"
+import json
+import sys
+
+expected_reserved = [f"EH_RSRV{index:02d}" for index in range(19)]
+expected_active = [
+    "BT0",
+    "BT1",
+    "BT2",
+    "BT3",
+    "BT4",
+    "BT_NEXT",
+    "BT_PREV",
+    "BT_CLR",
+    "BT_TOG",
+    "EH_SNP",
+    "EH_SCR",
+    "EH_TXT",
+    "EH_L_SNP",
+    "EH_L_SCR",
+    "EH_L_TXT",
+    "EH_USR1",
+    "EH_USR2",
+    "EH_USR3",
+    "BT_OUT",
+    "USB_OUT",
+    "BT_BATTERY",
+    "BT_CLR_PEER",
+]
+
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as source:
+        custom_keycodes = json.load(source)["customKeycodes"]
+
+    assert [entry["name"] for entry in custom_keycodes[:19]] == expected_reserved
+    assert all(entry["shortName"] == "" and entry["title"] == "" for entry in custom_keycodes[:19])
+    assert [entry["name"] for entry in custom_keycodes[19:]] == expected_active
+PY
+
 classic_user_registry='BT0,BT1,BT2,BT3,BT4,BT_NEXT,BT_PREV,BT_CLR,BT_TOG,BT_PEER'
 for file in \
     keyboards/imperial44/vial.json \
