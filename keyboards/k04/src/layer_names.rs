@@ -2,7 +2,8 @@ use core::str;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use rmk::config::{VialDeviceSettings, VialDeviceSettingsData};
-use rmk::event::{publish_event, PeripheralSettingsEvent};
+use rmk::event::{publish_event, PeripheralSettingsEvent, PeripheralSettingsRefreshEvent};
+use rmk::macros::processor;
 
 pub const LAYER_NAME_COUNT: usize = 16;
 pub const LAYER_NAME_MAX: usize = 12;
@@ -451,6 +452,25 @@ pub fn publish_module_settings() {
     publish_event(PeripheralSettingsEvent(module_settings_sync_packet()));
     publish_event(PeripheralSettingsEvent(module_profile_settings_sync_packet()));
     publish_event(PeripheralSettingsEvent(module_encoder_settings_sync_packet()));
+}
+
+/// Re-sends the settings snapshot whenever a peripheral link comes up.
+///
+/// The peripheral keeps its settings in RAM only, so a half that reboots on its
+/// own runs on hardcoded defaults — touch gestures off, encoder steps at 1 —
+/// until something republishes them. Without this the next Vial edit was the
+/// only thing that could heal it.
+#[processor(subscribe = [PeripheralSettingsRefreshEvent])]
+pub struct ModuleSettingsBroadcast;
+
+impl ModuleSettingsBroadcast {
+    pub fn new() -> Self {
+        Self
+    }
+
+    async fn on_peripheral_settings_refresh_event(&mut self, _event: PeripheralSettingsRefreshEvent) {
+        publish_module_settings();
+    }
 }
 
 fn module_profile_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
