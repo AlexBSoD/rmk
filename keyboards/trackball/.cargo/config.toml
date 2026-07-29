@@ -7,5 +7,5 @@ target = "thumbv7em-none-eabihf"
 
 [env]
 DEFMT_LOG = "info"
-KEYBOARD_TOML_PATH = { value = "keyboard.toml", relative = true }
-VIAL_JSON_PATH = { value = "vial.json", relative = true }
+KEYBOARD_TOML_PATH = { value = "keyboard_mini_v31.toml", relative = true }
+VIAL_JSON_PATH = { value = "vial_mini_v31.json", relative = true }

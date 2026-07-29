@@ -1,9 +1,9 @@
 [package]
-name = "trackball_v31"
+name = "trackball"
 version = "0.1.0"
-description = "RMK BLE firmware for Ergohaven Trackball (nRF52840)"
-homepage = "https://github.com/Yurii-Q/rmk-keyboards"
-repository = "https://github.com/Yurii-Q/rmk-keyboards"
+description = "Shared RMK BLE firmware for Ergohaven standalone trackballs (nRF52840)"
+homepage = "https://github.com/ergohaven/rmk"
+repository = "https://github.com/ergohaven/rmk"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 autotests = false

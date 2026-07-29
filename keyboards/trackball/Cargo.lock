@@ -2432,7 +2432,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "trackball_v30"
+name = "trackball"
 version = "0.1.0"
 dependencies = [
  "bt-hci",

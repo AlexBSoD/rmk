@@ -92,6 +92,18 @@ build_k04_series_profile() {
         cargo build --release "${bins[@]}"
 }
 
+build_trackball_profile() {
+    local profile="$1"
+    local keyboard_toml="$2"
+    local vial_json="$3"
+
+    run "keyboards/trackball" env \
+        "CARGO_TARGET_DIR=target/$profile" \
+        "KEYBOARD_TOML_PATH=$repo_root/keyboards/trackball/$keyboard_toml" \
+        "VIAL_JSON_PATH=$repo_root/keyboards/trackball/$vial_json" \
+        cargo build --release --bin keyboard
+}
+
 build_classic_qube_profile() {
     local profile="$1"
     local keyboard_toml="$2"
@@ -138,9 +150,9 @@ build_split op36
 build_split k03
 build_split imperial44
 build_split velvet
-run "keyboards/trackball_v30" cargo build --release --bin keyboard
-run "keyboards/trackball_v31" cargo build --release --bin keyboard
-run "keyboards/trackball_royale" cargo build --release --bin keyboard
+build_trackball_profile mini_v30 keyboard_mini_v30.toml vial_mini_v30.json
+build_trackball_profile mini_v31 keyboard_mini_v31.toml vial_mini_v31.json
+build_trackball_profile royale keyboard_royale.toml vial_royale.json
 build_classic_qube_profile op36 keyboard.toml keyboards/classic_qube/vial.json
 build_classic_qube_profile k03 keyboard_k03.toml keyboards/k03/vial.json
 build_classic_qube_profile velvet keyboard_velvet.toml keyboards/velvet/vial.json

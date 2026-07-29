@@ -146,12 +146,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - keyboard: trackball_v30
+          - keyboard: trackball
             output_name: trackball_mini_v3.0
-          - keyboard: trackball_v31
+            keyboard_toml: keyboard_mini_v30.toml
+            vial_json: vial_mini_v30.json
+          - keyboard: trackball
             output_name: trackball_mini_v3.1
-          - keyboard: trackball_royale
+            keyboard_toml: keyboard_mini_v31.toml
+            vial_json: vial_mini_v31.json
+          - keyboard: trackball
             output_name: trackball_royale
+            keyboard_toml: keyboard_royale.toml
+            vial_json: vial_royale.json
 
     steps:
       - name: Checkout
@@ -173,9 +179,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ matrix.keyboard }}-${{ hashFiles('keyboards/${{ matrix.keyboard }}/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-trackball-${{ matrix.output_name }}-${{ hashFiles('keyboards/trackball/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.keyboard }}-
+            ${{ runner.os }}-cargo-trackball-
 
       - name: Install flip-link
         run: cargo install flip-link --locked
@@ -190,6 +196,8 @@ jobs:
         env:
           BINDGEN_EXTRA_CLANG_ARGS: "--sysroot=/usr/lib/arm-none-eabi --target=arm-none-eabi -I/usr/lib/arm-none-eabi/include -I/usr/lib/gcc/arm-none-eabi/13.2.1/include"
           RUST_MIN_STACK: "33554432"
+          KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/trackball/${{ matrix.keyboard_toml }}
+          VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/trackball/${{ matrix.vial_json }}
         run: cargo build --release --bin keyboard
 
       - name: Convert to UF2

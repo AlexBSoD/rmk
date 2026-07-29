@@ -39,6 +39,10 @@ cargo build --release --bin central
 cargo build --release --bin peripheral
 ```
 
+Standalone trackballs share `keyboards/trackball`. Select a model by passing
+the matching `KEYBOARD_TOML_PATH` and `VIAL_JSON_PATH`; CI and the regression
+matrix build Mini v3.0, Mini v3.1, and Royale as separate firmware artifacts.
+
 Current K:04/OP36 regression matrix:
 
 ```sh
