@@ -4,7 +4,7 @@ use embassy_nrf::Peri;
 use embassy_time::{Duration, Instant, Timer};
 use rmk::core_traits::Runnable;
 use rmk::driver::bitbang_spi::BitBangSpiBus;
-use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, EventSubscriber, PointingEvent};
+use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, ConnectionType, EventSubscriber, PointingEvent};
 use rmk::input_device::pmw3610::{Pmw3610, Pmw3610Config};
 use rmk::input_device::pointing::PointingDriver;
 use rmk::processor::Processor;
@@ -17,9 +17,11 @@ const FAST_PROBE_WINDOW: Duration = Duration::from_secs(10);
 // MOTION wakes the task immediately. A connected sensor only needs a sparse
 // identity check; reading its registers every second prevents deep rest.
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(60);
-// Emit accumulated motion at 250 Hz. The sensor remains MOTION-driven, so the
-// shorter interval adds work only while there is movement to report.
-const REPORT_INTERVAL: Duration = Duration::from_millis(4);
+// A local central can report at 250 Hz over USB. BLE and every split
+// peripheral stay at 125 Hz so slower host/split transports cannot build a
+// FIFO of stale mouse reports.
+const USB_REPORT_INTERVAL: Duration = Duration::from_millis(4);
+const TRANSPORT_SAFE_REPORT_INTERVAL: Duration = Duration::from_millis(8);
 const MOTION_ACCUM_LIMIT: i32 = (i8::MAX as i32) * 2;
 const DEFAULT_CPI: u16 = 1000;
 
@@ -63,6 +65,7 @@ pub fn new_trackball_from_pins(
 pub struct Trackball {
     trackball: K04Trackball,
     device_id: u8,
+    is_central: bool,
     ready: bool,
     acc_x: i32,
     acc_y: i32,
@@ -74,10 +77,23 @@ pub struct Trackball {
 }
 
 impl Trackball {
-    pub fn new(trackball: K04Trackball, device_id: u8) -> Self {
+    // This source is shared by separate central and peripheral binaries, so
+    // each binary intentionally leaves one constructor unused.
+    #[allow(dead_code)]
+    pub fn new_central(trackball: K04Trackball, device_id: u8) -> Self {
+        Self::new(trackball, device_id, true)
+    }
+
+    #[allow(dead_code)]
+    pub fn new_peripheral(trackball: K04Trackball, device_id: u8) -> Self {
+        Self::new(trackball, device_id, false)
+    }
+
+    fn new(trackball: K04Trackball, device_id: u8, is_central: bool) -> Self {
         Self {
             trackball,
             device_id,
+            is_central,
             ready: false,
             acc_x: 0,
             acc_y: 0,
@@ -114,7 +130,8 @@ impl Trackball {
             }
 
             self.apply_configured_cpi().await;
-            let report_deadline = (self.acc_x != 0 || self.acc_y != 0).then_some(self.last_report + REPORT_INTERVAL);
+            let report_interval = self.report_interval();
+            let report_deadline = (self.acc_x != 0 || self.acc_y != 0).then_some(self.last_report + report_interval);
             let deadline = report_deadline
                 .map(|report| report.min(self.next_health_check))
                 .unwrap_or(self.next_health_check);
@@ -155,10 +172,23 @@ impl Trackball {
                 self.apply_configured_cpi().await;
             }
 
-            if (self.acc_x != 0 || self.acc_y != 0) && now.duration_since(self.last_report) >= REPORT_INTERVAL {
+            if (self.acc_x != 0 || self.acc_y != 0) && now.duration_since(self.last_report) >= report_interval {
                 self.send_accumulated_motion();
                 self.last_report = now;
             }
+        }
+    }
+
+    fn report_interval(&self) -> Duration {
+        if self.is_central
+            && matches!(
+                rmk::state::current_connection_status().decide_active(),
+                Some(ConnectionType::Usb)
+            )
+        {
+            USB_REPORT_INTERVAL
+        } else {
+            TRANSPORT_SAFE_REPORT_INTERVAL
         }
     }
 

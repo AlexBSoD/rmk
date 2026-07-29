@@ -35,7 +35,7 @@ mod keyboard_peripheral {
 
     #[register_processor(event)]
     fn trackball() -> crate::trackball::Trackball {
-        crate::trackball::Trackball::new(
+        crate::trackball::Trackball::new_peripheral(
             crate::trackball::new_trackball_from_pins(0, p.P0_01, p.P0_00, p.P0_05, p.P1_09),
             0,
         )
