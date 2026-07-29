@@ -35,6 +35,11 @@ mod keyboard_central {
         crate::module_settings::ModuleSettingsSync::new()
     }
 
+    #[register_processor(event)]
+    fn module_settings_broadcast() -> crate::layer_names::ModuleSettingsBroadcast {
+        crate::layer_names::ModuleSettingsBroadcast::new()
+    }
+
     #[register_processor(poll)]
     fn ergohaven_user_keys() -> ::rmk::processor::builtin::ergohaven::ErgohavenUserKeys {
         ::rmk::processor::builtin::ergohaven::ErgohavenUserKeys::new()

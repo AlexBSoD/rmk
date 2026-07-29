@@ -118,6 +118,7 @@ impl crate::KeyboardTomlConfig {
             peripheral_battery,
             peripheral_battery_refresh,
             peripheral_settings,
+            peripheral_settings_refresh,
             clear_peer,
             dfu_status,
             action,

@@ -38,6 +38,8 @@ action.subs = 2
 keyboard.subs = 4
 peripheral_battery.pubs = 2
 peripheral_battery.subs = 4
+# ModuleSettingsBroadcast answers the re-sync request raised on peripheral link-up.
+peripheral_settings_refresh.subs = 1
 layer_change.channel_size = 4
 layer_change.subs = 6
 modifier.channel_size = 8
