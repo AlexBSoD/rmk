@@ -1,5 +1,5 @@
 [package]
-name = "op36_qube"
+name = "classic_qube"
 version = "0.1.0"
 description = "Shared RMK BLE dongle firmware for Ergohaven classic splits + Qube"
 homepage = "https://github.com/ergohaven/rmk"

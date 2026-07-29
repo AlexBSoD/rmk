@@ -58,10 +58,10 @@ profiles=(
     keyboards/k04_qube/keyboard_micro.toml
     keyboards/k04_qube/keyboard_mini.toml
     keyboards/op36/keyboard.toml
-    keyboards/op36_qube/keyboard.toml
-    keyboards/op36_qube/keyboard_imperial44.toml
-    keyboards/op36_qube/keyboard_k03.toml
-    keyboards/op36_qube/keyboard_velvet.toml
+    keyboards/classic_qube/keyboard.toml
+    keyboards/classic_qube/keyboard_imperial44.toml
+    keyboards/classic_qube/keyboard_k03.toml
+    keyboards/classic_qube/keyboard_velvet.toml
     keyboards/trackball_royale/keyboard.toml
     keyboards/trackball_v30/keyboard.toml
     keyboards/trackball_v31/keyboard.toml
@@ -78,10 +78,10 @@ split_profiles=(
     keyboards/k04_qube/keyboard_micro.toml
     keyboards/k04_qube/keyboard_mini.toml
     keyboards/op36/keyboard.toml
-    keyboards/op36_qube/keyboard.toml
-    keyboards/op36_qube/keyboard_imperial44.toml
-    keyboards/op36_qube/keyboard_k03.toml
-    keyboards/op36_qube/keyboard_velvet.toml
+    keyboards/classic_qube/keyboard.toml
+    keyboards/classic_qube/keyboard_imperial44.toml
+    keyboards/classic_qube/keyboard_k03.toml
+    keyboards/classic_qube/keyboard_velvet.toml
     keyboards/velvet/keyboard.toml
 )
 
@@ -99,20 +99,20 @@ qube_profiles=(
     keyboards/k04_qube/keyboard.toml
     keyboards/k04_qube/keyboard_micro.toml
     keyboards/k04_qube/keyboard_mini.toml
-    keyboards/op36_qube/keyboard.toml
-    keyboards/op36_qube/keyboard_imperial44.toml
-    keyboards/op36_qube/keyboard_k03.toml
-    keyboards/op36_qube/keyboard_velvet.toml
+    keyboards/classic_qube/keyboard.toml
+    keyboards/classic_qube/keyboard_imperial44.toml
+    keyboards/classic_qube/keyboard_k03.toml
+    keyboards/classic_qube/keyboard_velvet.toml
 )
 
 non_k04_profiles=(
     keyboards/imperial44/keyboard.toml
     keyboards/k03/keyboard.toml
     keyboards/op36/keyboard.toml
-    keyboards/op36_qube/keyboard.toml
-    keyboards/op36_qube/keyboard_imperial44.toml
-    keyboards/op36_qube/keyboard_k03.toml
-    keyboards/op36_qube/keyboard_velvet.toml
+    keyboards/classic_qube/keyboard.toml
+    keyboards/classic_qube/keyboard_imperial44.toml
+    keyboards/classic_qube/keyboard_k03.toml
+    keyboards/classic_qube/keyboard_velvet.toml
     keyboards/trackball_royale/keyboard.toml
     keyboards/trackball_v30/keyboard.toml
     keyboards/trackball_v31/keyboard.toml
@@ -248,7 +248,7 @@ check_projection(
     "keyboards/k04/keyboard_micro.toml",
     [
         "keyboards/op36/keyboard.toml",
-        "keyboards/op36_qube/keyboard.toml",
+        "keyboards/classic_qube/keyboard.toml",
     ],
     {25, 26},
     38,
@@ -259,7 +259,7 @@ check_projection(
     "keyboards/k04/keyboard_mini.toml",
     [
         "keyboards/imperial44/keyboard.toml",
-        "keyboards/op36_qube/keyboard_imperial44.toml",
+        "keyboards/classic_qube/keyboard_imperial44.toml",
     ],
     {38, 39, 46, 47},
     48,
@@ -270,7 +270,7 @@ check_projection(
     "keyboards/k04/keyboard_mini.toml",
     [
         "keyboards/velvet/keyboard.toml",
-        "keyboards/op36_qube/keyboard_velvet.toml",
+        "keyboards/classic_qube/keyboard_velvet.toml",
     ],
     {30, 31},
     48,
@@ -281,7 +281,7 @@ check_projection(
     "keyboards/k04/keyboard.toml",
     [
         "keyboards/k03/keyboard.toml",
-        "keyboards/op36_qube/keyboard_k03.toml",
+        "keyboards/classic_qube/keyboard_k03.toml",
     ],
     set(),
     60,
@@ -322,8 +322,8 @@ memory_files=(
     keyboards/k04_qube/memory_halves.x
     keyboards/k04_qube/memory_qube.x
     keyboards/op36/memory.x
-    keyboards/op36_qube/memory_halves.x
-    keyboards/op36_qube/memory_qube.x
+    keyboards/classic_qube/memory_halves.x
+    keyboards/classic_qube/memory_qube.x
     keyboards/trackball_royale/memory.x
     keyboards/trackball_v30/memory.x
     keyboards/trackball_v31/memory.x
@@ -369,7 +369,7 @@ for file in "${vial_definitions[@]}"; do
     fi
 done
 
-for file in keyboards/op36_qube/vial.json keyboards/k04_qube/vial{,_mini,_micro}.json; do
+for file in keyboards/classic_qube/vial.json keyboards/k04_qube/vial{,_mini,_micro}.json; do
     jq -e '
         .entropy.batteryHalves == true
         and (.entropy.liveFeatures | index("time") != null)
@@ -432,10 +432,10 @@ for file in keyboards/trackball_{royale,v30,v31}/src/keyboard.rs; do
         || fail "$file: functional trackball layer names are missing"
 done
 
-rg -Fq 'crate::default_layer_names::STANDARD_NO_MOUSE' keyboards/op36_qube/build.rs \
-    || fail "keyboards/op36_qube/build.rs: generated non-pointing Qube defaults drifted"
-rg -Fq 'crate::default_layer_names::STANDARD_WITH_MOUSE' keyboards/op36_qube/build.rs \
-    || fail "keyboards/op36_qube/build.rs: generated Velvet Qube defaults drifted"
+rg -Fq 'crate::default_layer_names::STANDARD_NO_MOUSE' keyboards/classic_qube/build.rs \
+    || fail "keyboards/classic_qube/build.rs: generated non-pointing Qube defaults drifted"
+rg -Fq 'crate::default_layer_names::STANDARD_WITH_MOUSE' keyboards/classic_qube/build.rs \
+    || fail "keyboards/classic_qube/build.rs: generated Velvet Qube defaults drifted"
 rg -Fq 'const STORAGE_VERSION: u8 = 2;' keyboards/common/layer_names.rs \
     || fail "keyboards/common/layer_names.rs: default-name migration version drifted"
 for file in keyboards/{k04,k04_qube}/src/layer_names.rs; do
@@ -465,7 +465,7 @@ if find keyboards/velvet_ui -type f -print -quit 2>/dev/null | grep -q .; then
     fail "keyboards/velvet_ui: obsolete duplicate profile must stay removed"
 fi
 
-for file in keyboards/velvet/keyboard.toml keyboards/op36_qube/keyboard_velvet.toml; do
+for file in keyboards/velvet/keyboard.toml keyboards/classic_qube/keyboard_velvet.toml; do
     [[ "$(rg -c '^\[\[split\.peripheral\.input_device\.pmw3610\]\]$' "$file")" == "1" ]] \
         || fail "$file: unified Velvet must define one optional PMW3610"
     [[ "$(rg -c '^\[\[behavior\.auto_mouse_layer\]\]$' "$file")" == "1" ]] \
@@ -486,8 +486,8 @@ jq -e '
     || fail "keyboards/velvet/vial.json: unified right key/trackball layout option drifted"
 rg -Fq '#[path = "../../common/velvet_pointing_mode.rs"]' keyboards/velvet/src/central.rs \
     || fail "keyboards/velvet/src/central.rs: shared Velvet pointing-mode owner is missing"
-rg -Fq '#[cfg(velvet_pointing)]' keyboards/op36_qube/src/qube.rs \
-    || fail "keyboards/op36_qube/src/qube.rs: Velvet-only Qube pointing-mode registration is missing"
+rg -Fq '#[cfg(velvet_pointing)]' keyboards/classic_qube/src/qube.rs \
+    || fail "keyboards/classic_qube/src/qube.rs: Velvet-only Qube pointing-mode registration is missing"
 
 reset_source=tools/settings_reset/src/main.rs
 rg -Fq 'const STORAGE_RANGE: (u32, u32) = (0xCC000, 0xEC000);' "$reset_source" \

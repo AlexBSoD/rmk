@@ -1,6 +1,6 @@
 # Known issue: split battery on Qube dongle
 
-This target uses the same temporary battery path as `op36_qube`:
+This target uses the same temporary battery path as `classic_qube`:
 
 - `src/battery_nrf.rs` samples `P0_31` / AIN7 without `calibrate().await`.
 - `left` and `right` re-publish `BatteryStatusEvent` periodically.

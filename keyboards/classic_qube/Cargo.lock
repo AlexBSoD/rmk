@@ -257,6 +257,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "classic_qube"
+version = "0.1.0"
+dependencies = [
+ "bt-hci",
+ "const-gen",
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.1.1",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-nrf",
+ "embassy-time",
+ "embassy-usb-driver",
+ "embedded-graphics",
+ "embedded-hal-bus",
+ "heapless 0.9.3",
+ "json",
+ "lcd-async",
+ "nrf-mpsl",
+ "nrf-sdc",
+ "panic-probe",
+ "rand",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "rmk",
+ "rmk-types",
+ "static_cell",
+ "xz2",
+]
+
+[[package]]
 name = "cmac"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1632,38 +1664,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "op36_qube"
-version = "0.1.0"
-dependencies = [
- "bt-hci",
- "const-gen",
- "cortex-m",
- "cortex-m-rt",
- "defmt 1.1.1",
- "defmt-rtt",
- "embassy-executor",
- "embassy-futures",
- "embassy-nrf",
- "embassy-time",
- "embassy-usb-driver",
- "embedded-graphics",
- "embedded-hal-bus",
- "heapless 0.9.3",
- "json",
- "lcd-async",
- "nrf-mpsl",
- "nrf-sdc",
- "panic-probe",
- "rand",
- "rand_chacha",
- "rand_core 0.6.4",
- "rmk",
- "rmk-types",
- "static_cell",
- "xz2",
-]
 
 [[package]]
 name = "ordered-multimap"

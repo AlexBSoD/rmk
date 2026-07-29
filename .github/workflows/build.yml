@@ -215,19 +215,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - keyboard: op36_qube
+          - keyboard: classic_qube
             output_name: op36_qube
             keyboard_toml: keyboard.toml
             vial_json: vial.json
-          - keyboard: op36_qube
+          - keyboard: classic_qube
             output_name: k03_qube
             keyboard_toml: keyboard_k03.toml
             vial_json: ../k03/vial.json
-          - keyboard: op36_qube
+          - keyboard: classic_qube
             output_name: velvet_qube
             keyboard_toml: keyboard_velvet.toml
             vial_json: ../velvet/vial.json
-          - keyboard: op36_qube
+          - keyboard: classic_qube
             output_name: imperial44_qube
             keyboard_toml: keyboard_imperial44.toml
             vial_json: ../imperial44/vial.json
