@@ -450,16 +450,17 @@ fn module_set_setting(qsid: u16, data: &[u8]) -> bool {
 
 pub fn publish_module_settings() {
     publish_event(PeripheralSettingsEvent(module_settings_sync_packet()));
+    #[cfg(not(feature = "qube"))]
     publish_event(PeripheralSettingsEvent(module_profile_settings_sync_packet()));
     publish_event(PeripheralSettingsEvent(module_encoder_settings_sync_packet()));
 }
 
-/// Re-sends the settings snapshot whenever a peripheral link comes up.
+/// Re-sends the settings snapshot whenever a half's link comes up.
 ///
-/// The peripheral keeps its settings in RAM only, so a half that reboots on its
-/// own runs on hardcoded defaults — touch gestures off, encoder steps at 1 —
-/// until something republishes them. Without this the next Vial edit was the
-/// only thing that could heal it.
+/// The halves keep their settings in RAM only, so one that reboots on its own
+/// runs on hardcoded defaults — touch gestures off, encoder steps at 1 — until
+/// something republishes them. Without this the next Vial edit was the only
+/// thing that could heal it.
 #[processor(subscribe = [PeripheralSettingsRefreshEvent])]
 pub struct ModuleSettingsBroadcast;
 
@@ -473,6 +474,7 @@ impl ModuleSettingsBroadcast {
     }
 }
 
+#[cfg(not(feature = "qube"))]
 fn module_profile_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
     let mut data = [0u8; MODULE_SETTINGS_SYNC_LEN];
     data[0] = MODULE_SETTINGS_VERSION | 0x80;

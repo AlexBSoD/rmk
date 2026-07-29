@@ -2,12 +2,10 @@
 #![no_std]
 
 mod battery_nrf;
+#[path = "qube_layer_led.rs"]
 mod layer_led;
-#[path = "../../k04/src/module_settings.rs"]
 mod module_settings;
-#[path = "../../k04/src/touchpad.rs"]
 mod touchpad;
-#[path = "../../k04/src/trackball.rs"]
 mod trackball;
 
 use rmk::macros::rmk_peripheral;
@@ -60,7 +58,7 @@ mod keyboard_peripheral {
     }
 
     #[register_processor(event)]
-    fn battery() -> crate::battery_nrf::K04Battery {
-        crate::battery_nrf::K04Battery::new(p.SAADC, p.P0_31)
+    fn battery() -> crate::battery_nrf::K04QubeBattery {
+        crate::battery_nrf::K04QubeBattery::new(p.SAADC, p.P0_31)
     }
 }

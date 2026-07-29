@@ -1,3 +1,7 @@
+[env]
+KEYBOARD_TOML_PATH = "${CARGO_MAKE_WORKING_DIRECTORY}/keyboard_qube.toml"
+VIAL_JSON_PATH = "${CARGO_MAKE_WORKING_DIRECTORY}/vial_qube.json"
+
 [tasks.install-llvm-tools]
 install_crate = { rustup_component_name = "llvm-tools" }
 
@@ -8,14 +12,32 @@ install_crate = { crate_name = "flip-link", binary = "flip-link", test_arg = ["-
 command = "mkdir"
 args = ["-p", "firmware"]
 
-[tasks.build]
+[tasks.build-halves]
 command = "cargo"
-args = ["build", "--release"]
+args = [
+    "build",
+    "--release",
+    "--no-default-features",
+    "--bin",
+    "left",
+    "--bin",
+    "right",
+    "--features",
+    "qube-half",
+]
 dependencies = ["install-llvm-tools", "flip-link"]
 
 [tasks.build-qube]
 command = "cargo"
-args = ["build", "--release", "--bin", "qube", "--features", "qube"]
+args = [
+    "build",
+    "--release",
+    "--no-default-features",
+    "--bin",
+    "qube",
+    "--features",
+    "qube",
+]
 dependencies = ["install-llvm-tools", "flip-link"]
 
 [tasks.objcopy-qube]
@@ -27,6 +49,7 @@ command = "cargo"
 args = [
     "objcopy",
     "--release",
+    "--no-default-features",
     "--bin",
     "qube",
     "--features",
@@ -47,14 +70,17 @@ command = "cargo"
 args = [
     "objcopy",
     "--release",
+    "--no-default-features",
     "--bin",
     "left",
+    "--features",
+    "qube-half",
     "--",
     "-O",
     "ihex",
     "firmware/k04-left.hex",
 ]
-dependencies = ["build", "make-firmware-dir"]
+dependencies = ["build-halves", "make-firmware-dir"]
 
 [tasks.objcopy-right]
 install_crate = { crate_name = "cargo-binutils", binary = "cargo", test_arg = [
@@ -65,14 +91,17 @@ command = "cargo"
 args = [
     "objcopy",
     "--release",
+    "--no-default-features",
     "--bin",
     "right",
+    "--features",
+    "qube-half",
     "--",
     "-O",
     "ihex",
     "firmware/k04-right.hex",
 ]
-dependencies = ["build", "make-firmware-dir"]
+dependencies = ["build-halves", "make-firmware-dir"]
 
 [tasks.uf2-qube]
 install_crate = { crate_name = "cargo-hex-to-uf2", binary = "cargo", test_arg = [

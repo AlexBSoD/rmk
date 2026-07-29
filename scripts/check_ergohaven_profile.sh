@@ -54,9 +54,9 @@ profiles=(
     keyboards/k04/keyboard.toml
     keyboards/k04/keyboard_micro.toml
     keyboards/k04/keyboard_mini.toml
-    keyboards/k04_qube/keyboard.toml
-    keyboards/k04_qube/keyboard_micro.toml
-    keyboards/k04_qube/keyboard_mini.toml
+    keyboards/k04/keyboard_qube.toml
+    keyboards/k04/keyboard_qube_micro.toml
+    keyboards/k04/keyboard_qube_mini.toml
     keyboards/op36/keyboard.toml
     keyboards/classic_qube/keyboard.toml
     keyboards/classic_qube/keyboard_imperial44.toml
@@ -74,9 +74,9 @@ split_profiles=(
     keyboards/k04/keyboard.toml
     keyboards/k04/keyboard_micro.toml
     keyboards/k04/keyboard_mini.toml
-    keyboards/k04_qube/keyboard.toml
-    keyboards/k04_qube/keyboard_micro.toml
-    keyboards/k04_qube/keyboard_mini.toml
+    keyboards/k04/keyboard_qube.toml
+    keyboards/k04/keyboard_qube_micro.toml
+    keyboards/k04/keyboard_qube_mini.toml
     keyboards/op36/keyboard.toml
     keyboards/classic_qube/keyboard.toml
     keyboards/classic_qube/keyboard_imperial44.toml
@@ -96,9 +96,9 @@ standalone_split_profiles=(
 )
 
 qube_profiles=(
-    keyboards/k04_qube/keyboard.toml
-    keyboards/k04_qube/keyboard_micro.toml
-    keyboards/k04_qube/keyboard_mini.toml
+    keyboards/k04/keyboard_qube.toml
+    keyboards/k04/keyboard_qube_micro.toml
+    keyboards/k04/keyboard_qube_mini.toml
     keyboards/classic_qube/keyboard.toml
     keyboards/classic_qube/keyboard_imperial44.toml
     keyboards/classic_qube/keyboard_k03.toml
@@ -151,6 +151,35 @@ for keyboard_path, vial_path, expected_product_id in profiles:
     assert keyboard["keyboard"]["product_id"] == expected_product_id
     assert int(vial["productId"], 16) == expected_product_id
 PY
+
+python3 - <<'PY' || fail "shared K:04 crate must keep all topology and model identities"
+import json
+import tomllib
+
+profiles = [
+    ("keyboards/k04/keyboard.toml", "keyboards/k04/vial.json", 0x0074, 5, 1),
+    ("keyboards/k04/keyboard_mini.toml", "keyboards/k04/vial_mini.json", 0x0075, 4, 1),
+    ("keyboards/k04/keyboard_micro.toml", "keyboards/k04/vial_micro.json", 0x0076, 4, 1),
+    ("keyboards/k04/keyboard_qube.toml", "keyboards/k04/vial_qube.json", 0x0071, 0, 2),
+    ("keyboards/k04/keyboard_qube_mini.toml", "keyboards/k04/vial_qube_mini.json", 0x0072, 0, 2),
+    ("keyboards/k04/keyboard_qube_micro.toml", "keyboards/k04/vial_qube_micro.json", 0x0073, 0, 2),
+]
+
+for keyboard_path, vial_path, expected_product_id, central_rows, peripheral_count in profiles:
+    with open(keyboard_path, "rb") as source:
+        keyboard = tomllib.load(source)
+    with open(vial_path, encoding="utf-8") as source:
+        vial = json.load(source)
+
+    assert keyboard["keyboard"]["product_id"] == expected_product_id
+    assert int(vial["productId"], 16) == expected_product_id
+    assert keyboard["split"]["central"]["rows"] == central_rows
+    assert len(keyboard["split"]["peripheral"]) == peripheral_count
+PY
+
+if git ls-files 'keyboards/k04_qube/**' | rg -q .; then
+    fail "keyboards/k04_qube must remain consolidated into keyboards/k04"
+fi
 
 python3 - "${profiles[@]}" <<'PY' || fail "factory keymaps must leave layers 5-15 for generated No actions"
 import sys
@@ -337,15 +366,22 @@ done
 memory_files=(
     keyboards/imperial44/memory.x
     keyboards/k03/memory.x
-    keyboards/k04/memory.x
-    keyboards/k04_qube/memory_halves.x
-    keyboards/k04_qube/memory_qube.x
+    keyboards/k04/memory_halves.x
+    keyboards/k04/memory_qube.x
     keyboards/op36/memory.x
     keyboards/classic_qube/memory_halves.x
     keyboards/classic_qube/memory_qube.x
     keyboards/trackball/memory.x
     keyboards/velvet/memory.x
 )
+
+if [[ -e keyboards/k04/memory.x ]]; then
+    fail "keyboards/k04/memory.x: source file would shadow the generated topology linker script"
+fi
+rg -Fq 'include_bytes!("memory_halves.x")' keyboards/k04/build.rs \
+    || fail "keyboards/k04/build.rs: Standalone halves must use memory_halves.x"
+rg -Fq 'include_bytes!("memory_qube.x")' keyboards/k04/build.rs \
+    || fail "keyboards/k04/build.rs: Qube dongle must use memory_qube.x"
 for file in "${memory_files[@]}"; do
     rg -Fq 'Reserve 0xCC000..0xEC000 for RMK storage.' "$file" \
         || fail "$file: unified storage reservation is missing"
@@ -386,7 +422,7 @@ for file in "${vial_definitions[@]}"; do
     fi
 done
 
-for file in keyboards/classic_qube/vial.json keyboards/k04_qube/vial{,_mini,_micro}.json; do
+for file in keyboards/classic_qube/vial.json keyboards/k04/vial_qube{,_mini,_micro}.json; do
     jq -e '
         .entropy.batteryHalves == true
         and (.entropy.liveFeatures | index("time") != null)
@@ -436,7 +472,7 @@ done
 
 standard_with_mouse_roots=(
     keyboards/k04/src/central.rs
-    keyboards/k04_qube/src/qube.rs
+    keyboards/k04/src/qube.rs
     keyboards/velvet/src/central.rs
 )
 for file in "${standard_with_mouse_roots[@]}"; do
@@ -453,7 +489,7 @@ rg -Fq 'crate::default_layer_names::STANDARD_WITH_MOUSE' keyboards/classic_qube/
     || fail "keyboards/classic_qube/build.rs: generated Velvet Qube defaults drifted"
 rg -Fq 'const STORAGE_VERSION: u8 = 2;' keyboards/common/layer_names.rs \
     || fail "keyboards/common/layer_names.rs: default-name migration version drifted"
-for file in keyboards/{k04,k04_qube}/src/layer_names.rs; do
+for file in keyboards/k04/src/layer_names.rs; do
     rg -Fq 'const STORAGE_VERSION: u8 = 3;' "$file" \
         || fail "$file: K:04 default-name migration version drifted"
     rg -Fq 'migrate_legacy_placeholders();' "$file" \
@@ -464,9 +500,9 @@ k04_vial_definitions=(
     keyboards/k04/vial.json
     keyboards/k04/vial_micro.json
     keyboards/k04/vial_mini.json
-    keyboards/k04_qube/vial.json
-    keyboards/k04_qube/vial_micro.json
-    keyboards/k04_qube/vial_mini.json
+    keyboards/k04/vial_qube.json
+    keyboards/k04/vial_qube_micro.json
+    keyboards/k04/vial_qube_mini.json
 )
 python3 - "${k04_vial_definitions[@]}" <<'PY' \
     || fail "K:04 USER00..USER40 registry drifted"

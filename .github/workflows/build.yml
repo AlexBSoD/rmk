@@ -239,18 +239,24 @@ jobs:
             output_name: imperial44_qube
             keyboard_toml: keyboard_imperial44.toml
             vial_json: ../imperial44/vial.json
-          - keyboard: k04_qube
+          - keyboard: k04
             output_name: k04_qube_k04
-            keyboard_toml: keyboard.toml
-            vial_json: vial.json
-          - keyboard: k04_qube
+            keyboard_toml: keyboard_qube.toml
+            vial_json: vial_qube.json
+            half_no_default: "--no-default-features"
+            half_features: "--features qube-half"
+          - keyboard: k04
             output_name: k04_qube_mini
-            keyboard_toml: keyboard_mini.toml
-            vial_json: vial_mini.json
-          - keyboard: k04_qube
+            keyboard_toml: keyboard_qube_mini.toml
+            vial_json: vial_qube_mini.json
+            half_no_default: "--no-default-features"
+            half_features: "--features qube-half"
+          - keyboard: k04
             output_name: k04_qube_micro
-            keyboard_toml: keyboard_micro.toml
-            vial_json: vial_micro.json
+            keyboard_toml: keyboard_qube_micro.toml
+            vial_json: vial_qube_micro.json
+            half_no_default: "--no-default-features"
+            half_features: "--features qube-half"
 
     steps:
       - name: Checkout
@@ -303,7 +309,7 @@ jobs:
           KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
           VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
-        run: cargo build --release --bin qube --features qube
+        run: cargo build --release --bin qube --no-default-features --features qube
 
       - name: Build left half
         working-directory: keyboards/${{ matrix.keyboard }}
@@ -313,7 +319,7 @@ jobs:
           KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
           VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
-        run: cargo build --release --bin left
+        run: cargo build --release --bin left ${{ matrix.half_no_default }} ${{ matrix.half_features }}
 
       - name: Build right half
         working-directory: keyboards/${{ matrix.keyboard }}
@@ -323,7 +329,7 @@ jobs:
           KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.keyboard_toml }}
           RUST_MIN_STACK: "33554432"
           VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/${{ matrix.keyboard }}/${{ matrix.vial_json }}
-        run: cargo build --release --bin right
+        run: cargo build --release --bin right ${{ matrix.half_no_default }} ${{ matrix.half_features }}
 
       - name: Convert to UF2
         working-directory: keyboards/${{ matrix.keyboard }}

@@ -93,8 +93,8 @@ firmware release is `v0.1.3`.
 Based on [RMK](https://github.com/HaoboGu/rmk) 0.8.2 with nRF52840 BLE support.
 
 The root `rmk`, `rmk-macro`, `rmk-types`, and `rmk-config` crates are the
-source of truth for firmware targets in this repository. K:04 without Qube
-and K:04 with Qube each build K:04, Mini, and Micro profiles from one shared
-crate. They use the same BLE split connection engine; only the central topology
-differs: a central with a local matrix and one peripheral, or a matrix-less
-Qube central with two peripheral halves.
+source of truth for firmware targets in this repository. All six K:04 Series
+profiles live in `keyboards/k04`: Standalone and Qube builds for K:04, Mini,
+and Micro. The selected binary and TOML profile keep the connection topologies
+separate: a central half with a local matrix and one peripheral, or a
+matrix-less Qube central with two peripheral halves.
