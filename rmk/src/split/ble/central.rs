@@ -38,8 +38,10 @@ static SPLIT_WINDOW_DONE: Signal<crate::RawMutex, u32> = Signal::new();
 static SPLIT_WINDOW_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 static LAST_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
+static LAST_POINTING_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
 static SPLIT_SLEEP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+const SPLIT_POINTING_ACTIVE_WINDOW_MS: u32 = 500;
 const SPLIT_ACTIVE_WINDOW_MS: u32 = 2_000;
 const SPLIT_POWER_POLL_MS: u64 = 100;
 
@@ -532,6 +534,18 @@ fn defaul_central_conn_param() -> RequestedConnParams {
     }
 }
 
+fn pointing_central_conn_param() -> RequestedConnParams {
+    RequestedConnParams {
+        min_connection_interval: Duration::from_micros(7_500),
+        max_connection_interval: Duration::from_micros(7_500),
+        // Pointing reports are latency-sensitive and arrive continuously, so
+        // keep the peripheral present at every connection event.
+        max_latency: 0,
+        supervision_timeout: Duration::from_secs(5),
+        ..Default::default()
+    }
+}
+
 fn idle_central_conn_param() -> RequestedConnParams {
     RequestedConnParams {
         min_connection_interval: Duration::from_millis(30),
@@ -743,10 +757,16 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
         let message = postcard::from_bytes(data.as_ref()).map_err(|_| SplitDriverError::DeserializeError)?;
         info!("Received split message: {:?}", message);
 
-        // Update last activity time when receiving key events from peripheral
-        if matches!(message, SplitMessage::Key(_) | SplitMessage::Pointing(_)) {
-            debug!("Activity {:?} detected from peripheral", &message);
-            update_activity_time();
+        match &message {
+            SplitMessage::Pointing(_) => {
+                debug!("Pointing activity {:?} detected from peripheral", &message);
+                update_pointing_activity_time();
+            }
+            SplitMessage::Key(_) => {
+                debug!("Key activity {:?} detected from peripheral", &message);
+                update_activity_time();
+            }
+            _ => {}
         }
 
         Ok(message)
@@ -796,18 +816,28 @@ pub(crate) async fn wait_for_stack_started() {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SplitPowerMode {
+    Pointing,
     Active,
     Idle,
     Sleeping,
 }
 
-fn desired_split_power_mode(now_ms: u32, last_activity_ms: u32, sleep_requested: bool) -> SplitPowerMode {
+fn desired_split_power_mode(
+    now_ms: u32,
+    last_activity_ms: u32,
+    last_pointing_activity_ms: u32,
+    sleep_requested: bool,
+) -> SplitPowerMode {
     let inactive_ms = now_ms.wrapping_sub(last_activity_ms);
     if sleep_requested
         || (SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS != 0
             && inactive_ms >= u32::from(SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS).saturating_mul(1_000))
     {
         SplitPowerMode::Sleeping
+    } else if last_pointing_activity_ms != 0
+        && now_ms.wrapping_sub(last_pointing_activity_ms) < SPLIT_POINTING_ACTIVE_WINDOW_MS
+    {
+        SplitPowerMode::Pointing
     } else if inactive_ms >= SPLIT_ACTIVE_WINDOW_MS {
         SplitPowerMode::Idle
     } else {
@@ -832,6 +862,7 @@ pub async fn run_split_power_state_manager() -> ! {
     let mut sleeping = desired_split_power_mode(
         now_ms,
         LAST_ACTIVITY_MS.load(Ordering::Acquire),
+        LAST_POINTING_ACTIVITY_MS.load(Ordering::Acquire),
         SPLIT_SLEEP_REQUESTED.load(Ordering::Acquire),
     ) == SplitPowerMode::Sleeping;
 
@@ -844,6 +875,7 @@ pub async fn run_split_power_state_manager() -> ! {
         let next_sleeping = desired_split_power_mode(
             Instant::now().as_millis() as u32,
             LAST_ACTIVITY_MS.load(Ordering::Acquire),
+            LAST_POINTING_ACTIVITY_MS.load(Ordering::Acquire),
             SPLIT_SLEEP_REQUESTED.load(Ordering::Acquire),
         ) == SplitPowerMode::Sleeping;
         if next_sleeping == sleeping {
@@ -881,6 +913,7 @@ async fn sleep_manager_task<
         let next_mode = desired_split_power_mode(
             Instant::now().as_millis() as u32,
             LAST_ACTIVITY_MS.load(Ordering::Acquire),
+            LAST_POINTING_ACTIVITY_MS.load(Ordering::Acquire),
             SPLIT_SLEEP_REQUESTED.load(Ordering::Acquire),
         );
         if next_mode == current_mode {
@@ -888,6 +921,10 @@ async fn sleep_manager_task<
         }
 
         let conn_params = match next_mode {
+            SplitPowerMode::Pointing => {
+                info!("Split link entering pointing mode");
+                pointing_central_conn_param()
+            }
             SplitPowerMode::Active => {
                 info!("Split link entering active mode");
                 defaul_central_conn_param()
@@ -926,6 +963,15 @@ pub(crate) fn update_activity_time() {
     LAST_ACTIVITY_MS.store(Instant::now().as_millis() as u32, Ordering::Release);
     SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
     debug!("Activity detected, restoring active split link");
+}
+
+/// Record pointing motion so the split link can temporarily use a 7.5 ms interval.
+pub(crate) fn update_pointing_activity_time() {
+    let now_ms = Instant::now().as_millis() as u32;
+    LAST_POINTING_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    LAST_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
+    debug!("Pointing activity detected, restoring low-latency split link");
 }
 
 /// Request deep split-link sleep from a host suspend or transport timeout.
@@ -985,14 +1031,34 @@ mod advertisement_tests {
 
     #[test]
     fn split_power_mode_tracks_activity_and_sleep_timeout() {
-        assert_eq!(desired_split_power_mode(1_999, 0, false), SplitPowerMode::Active);
-        assert_eq!(desired_split_power_mode(2_000, 0, false), SplitPowerMode::Idle);
+        assert_eq!(desired_split_power_mode(1_999, 0, 0, false), SplitPowerMode::Active);
+        assert_eq!(desired_split_power_mode(2_000, 0, 0, false), SplitPowerMode::Idle);
+        assert_eq!(
+            desired_split_power_mode(2_100, 2_000, 2_000, false),
+            SplitPowerMode::Pointing
+        );
+        assert_eq!(
+            desired_split_power_mode(2_500, 2_000, 2_000, false),
+            SplitPowerMode::Active
+        );
 
         if SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS != 0 {
             let timeout_ms = u32::from(SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS) * 1_000;
-            assert_eq!(desired_split_power_mode(timeout_ms, 0, false), SplitPowerMode::Sleeping);
+            assert_eq!(
+                desired_split_power_mode(timeout_ms, 0, 0, false),
+                SplitPowerMode::Sleeping
+            );
         }
-        assert_eq!(desired_split_power_mode(1, 0, true), SplitPowerMode::Sleeping);
+        assert_eq!(desired_split_power_mode(1, 0, 0, true), SplitPowerMode::Sleeping);
+    }
+
+    #[test]
+    fn pointing_split_link_uses_7_5_ms_without_slave_latency() {
+        let params = pointing_central_conn_param();
+
+        assert_eq!(params.min_connection_interval, Duration::from_micros(7_500));
+        assert_eq!(params.max_connection_interval, Duration::from_micros(7_500));
+        assert_eq!(params.max_latency, 0);
     }
 
     #[test]

@@ -32,8 +32,8 @@ const REG_HOLD_TIME: u16 = 0x06bd;
 const REG_SCROLL_INITIAL_DISTANCE: u16 = 0x06c8;
 const REG_END_COMMS: u16 = 0xeeee;
 
-const REPORT_RATE_ACTIVE_MS: u16 = 15;
-const REPORT_RATE_IDLE_TOUCH_MS: u16 = 15;
+const REPORT_RATE_ACTIVE_MS: u16 = 8;
+const REPORT_RATE_IDLE_TOUCH_MS: u16 = 8;
 const REPORT_RATE_IDLE_MS: u16 = 40;
 const REPORT_RATE_LP1_MS: u16 = 160;
 const REPORT_RATE_LP2_MS: u16 = 320;
@@ -53,7 +53,9 @@ const TOUCH_SLOW_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 const TOUCH_FAST_PROBE_WINDOW: Duration = Duration::from_secs(10);
 const TOUCH_READ_FAILURE_REINIT_THRESHOLD: u8 = 4;
 const TOUCH_MOTION_ACCUM_LIMIT: i32 = (i8::MAX as i32) * 2;
-const TOUCH_REPORT_INTERVAL: Duration = Duration::from_millis(16);
+// Keep sampling and report pacing aligned so continuous motion is emitted on
+// every active sample instead of falling into an alternating 15/30 ms cadence.
+const TOUCH_REPORT_INTERVAL: Duration = Duration::from_millis(8);
 const SCROLL_DIVISOR: i16 = 8;
 const BUTTON_LEFT: u8 = 1 << 0;
 const BUTTON_RIGHT: u8 = 1 << 1;
