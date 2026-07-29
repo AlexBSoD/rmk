@@ -46,7 +46,7 @@ name = "Nav"
 keys = """
 Kc1            Kc2             Kc3               Kc4           Kc5          Kc6      Kc7          Kc8             Kc9         Kc0
 MT(Home,LGui)  MT(Insert,LAlt)  MT(Delete,LShift) MT(End,LCtrl) Enter        Escape   MT(Left,RCtrl) MT(Down,RShift) MT(Up,RAlt) MT(Right,RGui)
-PageUp         PageDown        _                 _             PrintScreen  _        _            _               CapsLock    CapsWordToggle
+PageDown       PageUp          _                 _             PrintScreen  _        _            _               CapsLock    CapsWordToggle
                               _                 _             _            _        MO(3)        _
 """
 
