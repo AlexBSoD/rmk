@@ -167,3 +167,15 @@ pub struct PointingProcessorEvent {
     pub device_id: u8,
     pub mode: PointingMode,
 }
+
+/// Runtime transform applied by a pointing processor after its static hardware
+/// transform and before mode-specific processing.
+#[event(channel_size = 8, pubs = 2, subs = 2)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct PointingTransformEvent {
+    pub device_id: u8,
+    /// Quarter-turns clockwise in the logical coordinate space (`0..=3`).
+    pub rotation: u8,
+    pub acceleration: bool,
+}

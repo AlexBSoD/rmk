@@ -63,7 +63,7 @@ pub use connection::{ConnectionStatus, ConnectionStatusChangeEvent, ConnectionTy
 pub use dfu::DfuStatusEvent;
 pub use input::{
     Axis, AxisEvent, AxisValType, KeyPos, KeyboardEvent, KeyboardEventPos, ModifierEvent, PointingEvent,
-    PointingProcessorEvent, PointingSetCpiEvent, RotaryEncoderPos,
+    PointingProcessorEvent, PointingSetCpiEvent, PointingTransformEvent, RotaryEncoderPos,
 };
 #[cfg(feature = "split")]
 pub use split::{

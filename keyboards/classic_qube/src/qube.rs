@@ -7,12 +7,17 @@
 
 #[path = "../../common/default_layer_names.rs"]
 mod default_layer_names;
+#[allow(dead_code)]
 #[path = "../../common/layer_names.rs"]
 mod layer_names;
-#[cfg(velvet_pointing)]
-#[path = "../../common/velvet_pointing_mode.rs"]
-mod pointing_mode;
 mod qube_display;
+#[cfg(velvet_pointing)]
+#[path = "../../common/velvet_device_settings.rs"]
+mod velvet_device_settings;
+#[cfg(velvet_pointing)]
+#[allow(dead_code)]
+#[path = "../../common/velvet_pointing.rs"]
+mod velvet_pointing;
 
 include!(concat!(env!("OUT_DIR"), "/qube_profile_generated.rs"));
 
@@ -33,8 +38,14 @@ mod keyboard_central {
 
     #[cfg(velvet_pointing)]
     #[register_processor(event)]
-    fn pointing_mode() -> crate::pointing_mode::VelvetPointingMode {
-        crate::pointing_mode::VelvetPointingMode::new()
+    fn pointing_mode() -> crate::velvet_pointing::VelvetPointingMode<'static> {
+        crate::velvet_pointing::VelvetPointingMode::new(&keymap)
+    }
+
+    #[cfg(velvet_pointing)]
+    #[register_processor(event)]
+    fn settings_broadcast() -> crate::velvet_device_settings::VelvetSettingsBroadcast {
+        crate::velvet_device_settings::VelvetSettingsBroadcast::new()
     }
 
     #[register_processor(poll)]

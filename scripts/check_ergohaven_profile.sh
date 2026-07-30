@@ -619,8 +619,9 @@ done
 for file in keyboards/velvet/keyboard.toml keyboards/classic_qube/keyboard_velvet.toml; do
     [[ "$(rg -c '^\[\[split\.peripheral\.input_device\.pmw3610\]\]$' "$file")" == "1" ]] \
         || fail "$file: unified Velvet must define one optional PMW3610"
-    [[ "$(rg -c '^\[\[behavior\.auto_mouse_layer\]\]$' "$file")" == "1" ]] \
-        || fail "$file: unified Velvet must define one auto Mouse layer"
+    if rg -q '^\[\[behavior\.auto_mouse_layer\]\]$' "$file"; then
+        fail "$file: static auto Mouse behavior must not shadow persistent Velvet settings"
+    fi
     [[ "$(rg -c '^name = "Mouse"$' "$file")" == "1" ]] \
         || fail "$file: unified Velvet must define one Mouse factory layer"
 done
@@ -633,10 +634,19 @@ jq -e '
     .productId == "0x00BE"
     and .layouts.labels == ["Right trackball instead of key"]
     and ([.layouts.keymap[][] | select(type == "string")] | index("7,1\n\n\n0,0") != null)
+    and ([.settings[].fields[].qsid] | sort == [
+        121, 127, 128, 129, 131, 135, 138, 139, 141, 142, 143, 144, 145, 146, 148, 328, 330
+    ])
 ' keyboards/velvet/vial.json >/dev/null \
-    || fail "keyboards/velvet/vial.json: unified right key/trackball layout option drifted"
-rg -Fq '#[path = "../../common/velvet_pointing_mode.rs"]' keyboards/velvet/src/central.rs \
-    || fail "keyboards/velvet/src/central.rs: shared Velvet pointing-mode owner is missing"
+    || fail "keyboards/velvet/vial.json: unified layout or backed trackball settings drifted"
+rg -Fq '#[path = "../../common/velvet_pointing.rs"]' keyboards/velvet/src/central.rs \
+    || fail "keyboards/velvet/src/central.rs: shared Velvet pointing owner is missing"
+rg -Fq '#[path = "../../common/velvet_device_settings.rs"]' keyboards/velvet/src/central.rs \
+    || fail "keyboards/velvet/src/central.rs: persistent Velvet settings owner is missing"
+rg -Fq 'crate::velvet_device_settings::vial_device_settings' keyboards/velvet/build.rs \
+    || fail "keyboards/velvet/build.rs: standalone Velvet settings provider is missing"
+rg -Fq 'crate::velvet_device_settings::vial_device_settings' keyboards/classic_qube/build.rs \
+    || fail "keyboards/classic_qube/build.rs: Qube Velvet settings provider is missing"
 rg -Fq '#[cfg(velvet_pointing)]' keyboards/classic_qube/src/qube.rs \
     || fail "keyboards/classic_qube/src/qube.rs: Velvet-only Qube pointing-mode registration is missing"
 

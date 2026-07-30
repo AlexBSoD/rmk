@@ -13,7 +13,9 @@ use usbd_hid::descriptor::MouseReport;
 use crate::channel::send_hid_report;
 #[cfg(feature = "split")]
 use crate::event::{ActionEvent, KeyboardEvent, PeripheralSettingsEvent};
-use crate::event::{Axis, AxisEvent, AxisValType, PointingEvent, PointingProcessorEvent, PointingSetCpiEvent};
+use crate::event::{
+    Axis, AxisEvent, AxisValType, PointingEvent, PointingProcessorEvent, PointingSetCpiEvent, PointingTransformEvent,
+};
 use crate::hid::{KeyboardReport, Report};
 use crate::keymap::KeyMap;
 
@@ -1154,6 +1156,15 @@ fn accelerate_axis(value: i16) -> i16 {
     }
 }
 
+fn apply_runtime_transform(x: i16, y: i16, rotation: u8, acceleration: bool) -> (i16, i16) {
+    let (mut x, mut y) = rotate_motion(x, y, rotation);
+    if acceleration {
+        x = accelerate_axis(x);
+        y = accelerate_axis(y);
+    }
+    (x, y)
+}
+
 fn now_ms_u32() -> u32 {
     embassy_time::Instant::now().as_millis() as u32
 }
@@ -1179,7 +1190,7 @@ async fn send_mouse_report_unchecked(buttons: u8, x: i16, y: i16, wheel: i16, pa
 }
 
 /// PointingProcessor that converts motion events to mouse reports
-#[processor(subscribe = [PointingEvent, PointingProcessorEvent])]
+#[processor(subscribe = [PointingEvent, PointingProcessorEvent, PointingTransformEvent])]
 pub struct PointingProcessor<'a> {
     /// Reference to the keymap (used for mouse_buttons)
     keymap: &'a KeyMap<'a>,
@@ -1188,6 +1199,8 @@ pub struct PointingProcessor<'a> {
     accumulator: MotionAccumulator,
     /// current active mode
     current_mode: PointingMode,
+    runtime_rotation: u8,
+    runtime_acceleration: bool,
 }
 
 impl<'a> PointingProcessor<'a> {
@@ -1198,6 +1211,8 @@ impl<'a> PointingProcessor<'a> {
             config,
             accumulator: MotionAccumulator::default(),
             current_mode: PointingMode::default(),
+            runtime_rotation: 0,
+            runtime_acceleration: false,
         }
     }
 
@@ -1241,6 +1256,7 @@ impl<'a> PointingProcessor<'a> {
         if self.config.swap_xy {
             (x, y) = (y, x);
         }
+        (x, y) = apply_runtime_transform(x, y, self.runtime_rotation, self.runtime_acceleration);
 
         let buttons = self.keymap.mouse_buttons();
         match self.current_mode {
@@ -1326,6 +1342,17 @@ impl<'a> PointingProcessor<'a> {
                 self.config.device_id, event.mode
             );
             self.set_pointing_mode(event.mode);
+        }
+    }
+
+    pub async fn on_pointing_transform_event(&mut self, event: PointingTransformEvent) {
+        if self.config.device_id == ALL_POINTING_DEVICES || self.config.device_id == event.device_id {
+            let rotation = event.rotation.min(3);
+            if self.runtime_rotation != rotation || self.runtime_acceleration != event.acceleration {
+                self.accumulator.reset();
+                self.runtime_rotation = rotation;
+                self.runtime_acceleration = event.acceleration;
+            }
         }
     }
 }
@@ -1467,6 +1494,19 @@ mod tests {
         assert_eq!(qube_touch_gesture_buttons(0), 0);
         assert_eq!(qube_touch_gesture_buttons(3), 0);
         assert_eq!(qube_touch_gesture_buttons(-1), 0);
+    }
+
+    #[test]
+    fn runtime_pointing_transform_rotates_and_accelerates_motion() {
+        assert_eq!(apply_runtime_transform(12, -4, 0, false), (12, -4));
+        assert_eq!(apply_runtime_transform(12, -4, 1, false), (-4, -12));
+        assert_eq!(apply_runtime_transform(12, -4, 2, false), (-12, 4));
+        assert_eq!(apply_runtime_transform(12, -4, 3, false), (4, 12));
+        assert_eq!(apply_runtime_transform(12, -4, 0, true), (24, -4));
+        assert_eq!(
+            apply_runtime_transform(i16::MAX, i16::MIN, 0, true),
+            (i16::MAX, i16::MIN)
+        );
     }
 
     struct DummyDriver {

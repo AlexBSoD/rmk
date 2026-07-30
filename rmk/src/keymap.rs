@@ -463,7 +463,7 @@ impl<'a> KeyMap<'a> {
     /// layer was already active (or the index is out of range). Folds the
     /// "check then activate" sequence into a single borrow so callers can't
     /// accidentally race against other layer mutations.
-    pub(crate) fn activate_layer_if_inactive(&self, layer_num: u8) -> bool {
+    pub fn activate_layer_if_inactive(&self, layer_num: u8) -> bool {
         let mut inner = self.inner.borrow_mut();
         let idx = layer_num as usize;
         if idx >= inner.num_layer || inner.layer_state[idx] {
@@ -478,7 +478,7 @@ impl<'a> KeyMap<'a> {
     /// deactivates when the layer is currently active. Skips the
     /// `update_tri_layer` call (which would publish a `LayerChangeEvent`) when
     /// the layer is already inactive, avoiding a redundant event publish.
-    pub(crate) fn deactivate_layer_if_active(&self, layer_num: u8) {
+    pub fn deactivate_layer_if_active(&self, layer_num: u8) {
         let mut inner = self.inner.borrow_mut();
         let idx = layer_num as usize;
         if idx >= inner.num_layer || !inner.layer_state[idx] {

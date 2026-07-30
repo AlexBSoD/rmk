@@ -153,9 +153,3 @@ _  User11 MouseBtn3  MouseBtn2  MouseBtn1  User10  User10  MouseBtn1  MouseBtn2 
 _  _      _          _          _          User12  User12  _          _          _          _       _
         _  _  _  _  _  _  _  _  _  _
 """
-
-[[behavior.auto_mouse_layer]]
-device_id = 0
-target_layer = 4
-timeout = "350ms"
-threshold = 1

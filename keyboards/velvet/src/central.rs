@@ -4,10 +4,14 @@
 mod battery_nrf;
 #[path = "../../common/default_layer_names.rs"]
 mod default_layer_names;
+#[allow(dead_code)]
 #[path = "../../common/layer_names.rs"]
 mod layer_names;
-#[path = "../../common/velvet_pointing_mode.rs"]
-mod pointing_mode;
+#[path = "../../common/velvet_device_settings.rs"]
+mod velvet_device_settings;
+#[allow(dead_code)]
+#[path = "../../common/velvet_pointing.rs"]
+mod velvet_pointing;
 
 const DEFAULT_LAYER_NAMES: [&str; 16] = default_layer_names::STANDARD_WITH_MOUSE;
 
@@ -21,8 +25,13 @@ mod keyboard_central {
     }
 
     #[register_processor(event)]
-    fn pointing_mode() -> crate::pointing_mode::VelvetPointingMode {
-        crate::pointing_mode::VelvetPointingMode::new()
+    fn pointing_mode() -> crate::velvet_pointing::VelvetPointingMode<'static> {
+        crate::velvet_pointing::VelvetPointingMode::new(&keymap)
+    }
+
+    #[register_processor(event)]
+    fn settings_broadcast() -> crate::velvet_device_settings::VelvetSettingsBroadcast {
+        crate::velvet_device_settings::VelvetSettingsBroadcast::new()
     }
 
     #[register_processor(poll)]

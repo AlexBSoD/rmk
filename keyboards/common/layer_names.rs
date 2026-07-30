@@ -19,7 +19,7 @@ const STORAGE_VERSION: u8 = 2;
 const LEGACY_STORAGE_VERSION: u8 = 1;
 const STORAGE_HEADER_LEN: usize = 2;
 const STORAGE_ENTRY_LEN: usize = 1 + LAYER_NAME_MAX;
-const SERIALIZED_LEN: usize = STORAGE_HEADER_LEN + LAYER_NAME_COUNT * STORAGE_ENTRY_LEN;
+pub(crate) const SERIALIZED_LEN: usize = STORAGE_HEADER_LEN + LAYER_NAME_COUNT * STORAGE_ENTRY_LEN;
 const SETTING_KEYS: [u16; LAYER_NAME_COUNT] = [
     200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215,
 ];
@@ -67,7 +67,7 @@ pub fn copy_layer_name(layer: u8, out: &mut [u8; LAYER_NAME_MAX]) -> Option<usiz
     str::from_utf8(&out[..len]).ok().map(|_| len)
 }
 
-fn get_setting(qsid: u16, out: &mut [u8]) -> Option<usize> {
+pub(crate) fn get_setting(qsid: u16, out: &mut [u8]) -> Option<usize> {
     let index = layer_index(qsid)?;
     let len = usize::from(LAYER_NAME_LEN[index].load(Ordering::Acquire)).min(LAYER_NAME_MAX);
     let copy_len = len.min(out.len().saturating_sub(1));
@@ -83,7 +83,7 @@ fn get_setting(qsid: u16, out: &mut [u8]) -> Option<usize> {
     }
 }
 
-fn set_setting(qsid: u16, value: &[u8]) -> bool {
+pub(crate) fn set_setting(qsid: u16, value: &[u8]) -> bool {
     let Some(index) = layer_index(qsid) else {
         return false;
     };
@@ -98,7 +98,7 @@ fn set_setting(qsid: u16, value: &[u8]) -> bool {
     true
 }
 
-fn serialize() -> VialDeviceSettingsData {
+pub(crate) fn serialize() -> VialDeviceSettingsData {
     let mut data = VialDeviceSettingsData::empty();
     data.data[0] = STORAGE_MARKER;
     data.data[1] = STORAGE_VERSION;
@@ -118,7 +118,7 @@ fn serialize() -> VialDeviceSettingsData {
     data
 }
 
-fn deserialize(bytes: &[u8]) {
+pub(crate) fn deserialize(bytes: &[u8]) {
     clear_layer_names();
     if bytes.len() < SERIALIZED_LEN
         || bytes[0] != STORAGE_MARKER
