@@ -558,12 +558,13 @@ fn idle_central_conn_param() -> RequestedConnParams {
 
 fn sleeping_central_conn_param() -> RequestedConnParams {
     RequestedConnParams {
-        min_connection_interval: Duration::from_millis(200),
-        max_connection_interval: Duration::from_millis(200),
-        // A sleeping peripheral must still attend every 200ms connection
-        // event. Allowing 25 skipped events delayed the first key or pointing
-        // packet from a split peripheral by up to five seconds.
-        max_latency: 0,
+        // Keep a short base interval so a peripheral with queued key events
+        // can attend the next connection event and drain the burst promptly.
+        // Slave latency retains an effective idle cadence of about 210 ms
+        // (30 ms * 7) while avoiding the old 200 ms-per-event wake backlog.
+        min_connection_interval: Duration::from_millis(30),
+        max_connection_interval: Duration::from_millis(30),
+        max_latency: 6,
         supervision_timeout: Duration::from_secs(11),
         ..Default::default()
     }
@@ -1062,11 +1063,15 @@ mod advertisement_tests {
     }
 
     #[test]
-    fn sleeping_split_link_bounds_first_peripheral_event_latency() {
+    fn sleeping_split_link_keeps_short_burst_interval() {
         let params = sleeping_central_conn_param();
 
-        assert_eq!(params.min_connection_interval, Duration::from_millis(200));
-        assert_eq!(params.max_connection_interval, Duration::from_millis(200));
-        assert_eq!(params.max_latency, 0);
+        assert_eq!(params.min_connection_interval, Duration::from_millis(30));
+        assert_eq!(params.max_connection_interval, Duration::from_millis(30));
+        assert_eq!(params.max_latency, 6);
+        assert_eq!(
+            params.max_connection_interval.as_millis() * (u64::from(params.max_latency) + 1),
+            210
+        );
     }
 }
