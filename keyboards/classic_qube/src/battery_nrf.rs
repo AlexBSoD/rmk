@@ -13,10 +13,8 @@ use embassy_nrf::saadc::{self, Input as _, Saadc};
 use embassy_nrf::{bind_interrupts, Peri};
 use embassy_time::{with_timeout, Duration, Timer};
 use rmk::core_traits::Runnable;
-use rmk::event::{
-    publish_event, BatteryStatusEvent, EventSubscriber, PeripheralBatteryRefreshEvent,
-    SubscribableEvent,
-};
+use rmk::event::{EventSubscriber, PeripheralBatteryRefreshEvent, SubscribableEvent};
+use rmk::input_device::battery::publish_battery_status;
 use rmk::processor::Processor;
 use rmk::types::battery::{BatteryStatus, ChargeState};
 
@@ -53,18 +51,17 @@ impl SplitBattery {
 
     async fn publish_sample(&mut self) {
         let mut buf = [0i16; 1];
-        let level =
-            match with_timeout(Duration::from_millis(200), self.saadc.sample(&mut buf)).await {
-                Ok(()) => {
-                    let raw = if buf[0] < 0 { 0 } else { buf[0] as u16 };
-                    percent(raw)
-                }
-                Err(_) => 0,
-            };
-        publish_event(BatteryStatusEvent(BatteryStatus::Available {
+        let level = match with_timeout(Duration::from_millis(200), self.saadc.sample(&mut buf)).await {
+            Ok(()) => {
+                let raw = if buf[0] < 0 { 0 } else { buf[0] as u16 };
+                percent(raw)
+            }
+            Err(_) => 0,
+        };
+        publish_battery_status(BatteryStatus::Available {
             charge_state: ChargeState::Unknown,
             level: Some(level),
-        }));
+        });
     }
 }
 
@@ -84,11 +81,7 @@ impl Runnable for SplitBattery {
         let mut refresh_sub = PeripheralBatteryRefreshEvent::subscriber();
         loop {
             self.publish_sample().await;
-            let _ = select(
-                Timer::after(Duration::from_secs(2)),
-                refresh_sub.next_event(),
-            )
-            .await;
+            let _ = select(Timer::after(Duration::from_secs(2)), refresh_sub.next_event()).await;
         }
     }
 }

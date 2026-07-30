@@ -105,6 +105,22 @@ qube_profiles=(
     keyboards/classic_qube/keyboard_velvet.toml
 )
 
+live_matrix_cargo_manifests=(
+    keyboards/imperial44/Cargo.toml
+    keyboards/k03/Cargo.toml
+    keyboards/op36/Cargo.toml
+    keyboards/velvet/Cargo.toml
+    keyboards/classic_qube/Cargo.toml
+)
+
+battery_reader_sources=(
+    keyboards/imperial44/src/battery_nrf.rs
+    keyboards/k03/src/battery_nrf.rs
+    keyboards/op36/src/battery_nrf.rs
+    keyboards/velvet/src/battery_nrf.rs
+    keyboards/classic_qube/src/battery_nrf.rs
+)
+
 non_k04_profiles=(
     keyboards/imperial44/keyboard.toml
     keyboards/k03/keyboard.toml
@@ -118,6 +134,16 @@ non_k04_profiles=(
     keyboards/trackball/keyboard_royale.toml
     keyboards/velvet/keyboard.toml
 )
+
+for file in "${live_matrix_cargo_manifests[@]}"; do
+    rg -Fq '"vial_lock"' "$file" \
+        || fail "$file: Vial live matrix support requires vial_lock/host_security"
+done
+
+for file in "${battery_reader_sources[@]}"; do
+    rg -Fq 'publish_battery_status(' "$file" \
+        || fail "$file: custom battery reader must update the synchronous host cache"
+done
 
 for file in "${profiles[@]}"; do
     expect_toml "$file" manufacturer Ergohaven
