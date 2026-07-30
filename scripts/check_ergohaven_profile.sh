@@ -222,6 +222,26 @@ for path in sys.argv[1:]:
         )
 PY
 
+python3 - <<'PY' || fail "K:04 Micro and OP36 Adjust layers must use direct key actions"
+import tomllib
+
+profiles = [
+    "keyboards/k04/keyboard_micro.toml",
+    "keyboards/k04/keyboard_qube_micro.toml",
+    "keyboards/op36/keyboard.toml",
+    "keyboards/classic_qube/keyboard.toml",
+]
+
+for path in profiles:
+    with open(path, "rb") as source:
+        layers = tomllib.load(source).get("layer", [])
+    adjust = next((layer for layer in layers if layer.get("name") == "Adjust"), None)
+    if adjust is None:
+        raise SystemExit(f"{path}: Adjust layer is missing")
+    if any(action.startswith("MT(") for action in adjust["keys"].split()):
+        raise SystemExit(f"{path}: Adjust layer must not contain Mod-Tap actions")
+PY
+
 rg -Fq 'KeymapTailV3' rmk/src/storage/mod.rs \
     || fail "rmk/src/storage/mod.rs: separate keymap tail namespace is missing"
 rg -Fq 'EncoderTailV3' rmk/src/storage/mod.rs \

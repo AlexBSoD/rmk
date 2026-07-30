@@ -63,7 +63,7 @@ SHIFTED(Kc3)       SHIFTED(Kc8)            SHIFTED(Semicolon)      Slash        
 name = "Adjust"
 keys = """
 Bootloader  F1             F2              F3              F4   User0            User1                   User2                  User3                 User4
-LGui        MT(F5,LAlt)    MT(F6,LShift)   MT(F7,LCtrl)    F8   OutputBluetooth  MT(AudioVolDown,RCtrl)  MT(AudioMute,RShift)  MT(AudioVolUp,RAlt)  MT(User7,RGui)
+LGui        F5             F6              F7              F8   OutputBluetooth  AudioVolDown            AudioMute             AudioVolUp          User7
 _           F9             F10             F11             F12  OutputUsb        MediaPrevTrack          MediaPlayPause        MediaNextTrack         No
                                         _  _               _    _                _                       _
 """

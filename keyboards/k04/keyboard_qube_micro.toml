@@ -141,7 +141,7 @@ encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
 name = "Adjust"
 keys = """
 Bootloader  F1             F2              F3              F4   User19  User20                User21              User22            User23
-LGui        MT(F5,LAlt)    MT(F6,LShift)   MT(F7,LCtrl)    F8   User37  MT(AudioVolDown,RCtrl) MT(AudioMute,RShift) MT(AudioVolUp,RAlt) MT(User26,RGui)
+LGui        F5             F6              F7              F8   User37  AudioVolDown           AudioMute             AudioVolUp          User26
 _           F9             F10             F11             F12  _       _                     User38              MediaPrevTrack    MediaPlayPause  MediaNextTrack User39
                   _   _    _    _      _      _
 """
