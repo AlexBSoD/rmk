@@ -319,7 +319,9 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
     let hid_control_point = server.hid_service.hid_control_point;
     let input_keyboard = server.hid_service.input_keyboard;
     #[cfg(feature = "host")]
-    let (output_host, input_host) = (server.hid_service.vial_output, server.hid_service.vial_input);
+    let (hid_output_host, hid_input_host) = (server.hid_service.vial_output, server.hid_service.vial_input);
+    #[cfg(feature = "host")]
+    let (gatt_output_host, gatt_input_host) = (server.vial_gatt_service.output, server.vial_gatt_service.input);
     let mouse = server.hid_service.mouse_report;
     let media = server.hid_service.media_report;
     let system_control = server.hid_service.system_report;
@@ -431,15 +433,26 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                             }
                         } else {
                             #[cfg(feature = "host")]
-                            if event.handle() == output_host.handle {
+                            if event.handle() == hid_output_host.handle || event.handle() == gatt_output_host.handle {
                                 debug!("Got host packet: {:?}", data);
                                 if data_len == 32 {
                                     VIAL_BLE_ACTIVITY.signal(());
-                                    crate::channel::enqueue_host_request(ConnectionType::Ble, data_buf).await;
+                                    let endpoint = if event.handle() == gatt_output_host.handle {
+                                        crate::channel::BleHostTransport::VendorGatt
+                                    } else {
+                                        crate::channel::BleHostTransport::Hid
+                                    };
+                                    crate::channel::enqueue_host_request(
+                                        crate::channel::HostTransport::Ble(endpoint),
+                                        data_buf,
+                                    )
+                                    .await;
                                 } else {
                                     warn!("Wrong host packet data: {:?}", data);
                                 }
-                            } else if event.handle() == input_host.cccd_handle.expect("No CCCD for input host") {
+                            } else if event.handle() == hid_input_host.cccd_handle.expect("No CCCD for HID input host")
+                                || event.handle() == gatt_input_host.cccd_handle.expect("No CCCD for GATT input host")
+                            {
                                 cccd_updated = true;
                             } else {
                                 debug!("Write GATT Event to Unknown: {:?}", event.handle());
@@ -902,7 +915,7 @@ async fn run_ble_keyboard<
     let led_task = run_led_reader(&mut ble_led_reader, ConnectionType::Ble);
 
     #[cfg(feature = "host")]
-    let host_task = crate::host::ble::run_ble_host(server.hid_service.vial_input, conn);
+    let host_task = crate::host::ble::run_ble_host(server.hid_service.vial_input, server.vial_gatt_service.input, conn);
     #[cfg(not(feature = "host"))]
     let host_task = core::future::pending::<()>();
 

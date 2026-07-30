@@ -100,8 +100,30 @@ pub(crate) static BLE_PROFILE_CHANNEL: Channel<RawMutex, BleProfileAction, 1> = 
 /// transport (e.g. flash-bound `process_vial`) blocks queries from the other transport
 /// queued behind it until it completes.
 #[cfg(feature = "host")]
-pub(crate) static HOST_REQUEST_CHANNEL: Channel<RawMutex, (ConnectionType, [u8; 32]), VIAL_CHANNEL_SIZE> =
+pub(crate) static HOST_REQUEST_CHANNEL: Channel<RawMutex, (HostTransport, [u8; 32]), VIAL_CHANNEL_SIZE> =
     Channel::new();
+
+/// BLE endpoint that originated a Vial request. The tag travels through
+/// `HostService` with the packet so the reply reaches the matching
+/// characteristic even when HOGP and vendor GATT are both exposed.
+#[cfg(all(feature = "host", feature = "_ble"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub(crate) enum BleHostTransport {
+    Hid,
+    VendorGatt,
+}
+
+/// Physical Vial endpoint that originated a host request.
+#[cfg(feature = "host")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub(crate) enum HostTransport {
+    #[cfg(not(feature = "_no_usb"))]
+    Usb,
+    #[cfg(feature = "_ble")]
+    Ble(BleHostTransport),
+}
 
 /// Per-transport reply for USB. Capacity matches the request queue so bursts of
 /// host requests can keep their replies queued until the transport drains them.
@@ -110,18 +132,18 @@ pub(crate) static HOST_USB_REPLY: Channel<RawMutex, [u8; 32], VIAL_CHANNEL_SIZE>
 
 /// Per-transport reply for BLE. See `HOST_USB_REPLY` for the sizing/draining rationale.
 #[cfg(all(feature = "host", feature = "_ble"))]
-pub(crate) static HOST_BLE_REPLY: Channel<RawMutex, [u8; 32], VIAL_CHANNEL_SIZE> = Channel::new();
+pub(crate) static HOST_BLE_REPLY: Channel<RawMutex, (BleHostTransport, [u8; 32]), VIAL_CHANNEL_SIZE> = Channel::new();
 
 /// Routes a Vial reply back to the channel owned by the originating transport.
 /// Drops with a warning when the destination queue already has a pending reply
 /// (the `HostService` produced faster than the transport drained it).
 #[cfg(feature = "host")]
-pub(crate) fn try_send_host_reply(transport: ConnectionType, reply: [u8; 32]) {
+pub(crate) fn try_send_host_reply(transport: HostTransport, reply: [u8; 32]) {
     let ok = match transport {
         #[cfg(not(feature = "_no_usb"))]
-        ConnectionType::Usb => HOST_USB_REPLY.try_send(reply).is_ok(),
+        HostTransport::Usb => HOST_USB_REPLY.try_send(reply).is_ok(),
         #[cfg(feature = "_ble")]
-        ConnectionType::Ble => HOST_BLE_REPLY.try_send(reply).is_ok(),
+        HostTransport::Ble(endpoint) => HOST_BLE_REPLY.try_send((endpoint, reply)).is_ok(),
         #[allow(unreachable_patterns)]
         _ => false,
     };
@@ -133,6 +155,6 @@ pub(crate) fn try_send_host_reply(transport: ConnectionType, reply: [u8; 32]) {
 /// Enqueues a Vial request from a transport into `HOST_REQUEST_CHANNEL`,
 /// back-pressuring the transport task when the queue is full.
 #[cfg(feature = "host")]
-pub(crate) async fn enqueue_host_request(transport: ConnectionType, data: [u8; 32]) {
+pub(crate) async fn enqueue_host_request(transport: HostTransport, data: [u8; 32]) {
     HOST_REQUEST_CHANNEL.send((transport, data)).await;
 }
