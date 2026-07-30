@@ -1,5 +1,7 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use embassy_time::Instant;
+use postcard::experimental::max_size::MaxSize;
+use rmk_types::action::KeyAction;
 use rmk_types::battery::BatteryStatus;
 use rmk_types::protocol::vial::{VIA_PROTOCOL_VERSION, ViaCommand, ViaKeyboardInfo};
 use vial::process_vial;
@@ -25,6 +27,22 @@ const HOST_DATA_MEDIA_TITLE: u8 = 0xAE;
 const ERGOHAVEN_CUSTOM_NAMESPACE: u8 = 0xE8;
 const ERGOHAVEN_CUSTOM_BATTERY_HALVES: u8 = 0x01;
 const ERGOHAVEN_BATTERY_HALVES_VERSION: u8 = 0x01;
+const ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS: u8 = 0x02;
+const ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION: u8 = 0x03;
+const ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION: u8 = 0x04;
+const ERGOHAVEN_NATIVE_KEY_ACTION_VERSION: u8 = 0x01;
+const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET: u16 = 0x0001;
+const NATIVE_KEY_ACTION_STATUS_OK: u8 = 0x00;
+const NATIVE_KEY_ACTION_STATUS_END: u8 = 0x01;
+const NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION: u8 = 0x02;
+const NATIVE_KEY_ACTION_STATUS_INVALID_POSITION: u8 = 0x03;
+const NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD: u8 = 0x04;
+const NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET: usize = 6;
+const NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET: usize = 8;
+const NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET: usize = 8;
+const NATIVE_KEY_ACTION_MAX_PAYLOAD: usize = 32 - NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET;
+
+const _: () = core::assert!(KeyAction::POSTCARD_MAX_SIZE <= NATIVE_KEY_ACTION_MAX_PAYLOAD);
 
 fn process_host_data_packet(data: &[u8; 32]) -> bool {
     match data[0] {
@@ -63,6 +81,98 @@ fn battery_level_byte(status: rmk_types::battery::BatteryStatus) -> Option<u8> {
         rmk_types::battery::BatteryStatus::Available { level: Some(level), .. } if level <= 100 => Some(level),
         _ => None,
     }
+}
+
+fn init_native_key_action_response(report: &mut ViaReport, subcommand: u8) {
+    let command = report.output_data[0];
+    report.input_data.fill(0);
+    report.input_data[0] = command;
+    report.input_data[1] = ERGOHAVEN_CUSTOM_NAMESPACE;
+    report.input_data[2] = subcommand;
+    report.input_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+}
+
+fn native_key_position_valid(ctx: &KeyboardContext<'_>, layer: u8, row: u8, col: u8) -> bool {
+    let (rows, cols, layers) = ctx.keymap_dimensions();
+    (layer as usize) < layers && (row as usize) < rows && (col as usize) < cols
+}
+
+fn encode_native_key_action(report: &mut ViaReport, payload_offset: usize, action: KeyAction) -> bool {
+    let mut encoded = [0u8; NATIVE_KEY_ACTION_MAX_PAYLOAD];
+    let Ok(bytes) = postcard::to_slice(&action, &mut encoded) else {
+        return false;
+    };
+    if payload_offset + bytes.len() > report.input_data.len() {
+        return false;
+    }
+    report.input_data[payload_offset - 1] = bytes.len() as u8;
+    report.input_data[payload_offset..payload_offset + bytes.len()].copy_from_slice(bytes);
+    true
+}
+
+fn process_native_key_action_get(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION);
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let (layer, row, col) = (report.output_data[4], report.output_data[5], report.output_data[6]);
+    if !native_key_position_valid(ctx, layer, row, col) {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_POSITION;
+        return;
+    }
+    let action = ctx.get_action(layer, row, col);
+    if !encode_native_key_action(report, NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET, action) {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+    }
+}
+
+async fn process_native_key_action_set(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION);
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let (layer, row, col) = (report.output_data[4], report.output_data[5], report.output_data[6]);
+    if !native_key_position_valid(ctx, layer, row, col) {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_POSITION;
+        return;
+    }
+    let payload_len = report.output_data[7] as usize;
+    if payload_len == 0 || payload_len > NATIVE_KEY_ACTION_MAX_PAYLOAD {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+        return;
+    }
+    let payload =
+        &report.output_data[NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET + payload_len];
+    let Ok(action) = postcard::from_bytes::<KeyAction>(payload) else {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+        return;
+    };
+    ctx.set_action(layer, row, col, action).await;
+}
+
+fn process_next_native_key_action_get(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION);
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let start = LittleEndian::read_u16(&report.output_data[4..6]) as usize;
+    let (rows, cols, layers) = ctx.keymap_dimensions();
+    let total = rows.saturating_mul(cols).saturating_mul(layers);
+    for flat_index in start..total.min(u16::MAX as usize) {
+        let action = ctx.get_action_flat(flat_index);
+        if action != KeyAction::No && to_via_keycode(action) == 0 {
+            LittleEndian::write_u16(&mut report.input_data[5..7], flat_index as u16);
+            if !encode_native_key_action(report, NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET, action) {
+                report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+            }
+            return;
+        }
+    }
+    report.input_data[4] = NATIVE_KEY_ACTION_STATUS_END;
+    LittleEndian::write_u16(&mut report.input_data[5..7], u16::MAX);
 }
 
 fn battery_halves_for_split(
@@ -178,8 +288,14 @@ impl<'a> VialService<'a> {
                 warn!("Dynamic keymap reset -- not supported")
             }
             ViaCommand::CustomSetValue => {
-                // backlight/rgblight/rgb matrix/led matrix/audio settings here
-                warn!("Custom set value -- not supported")
+                if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION
+                {
+                    process_native_key_action_set(report, self.ctx).await;
+                } else {
+                    // backlight/rgblight/rgb matrix/led matrix/audio settings here
+                    warn!("Custom set value -- not supported")
+                }
             }
             ViaCommand::CustomGetValue => {
                 if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
@@ -210,6 +326,19 @@ impl<'a> VialService<'a> {
                             report.input_data[6] = level;
                         }
                     }
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS
+                {
+                    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS);
+                    LittleEndian::write_u16(&mut report.input_data[4..6], ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET);
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION
+                {
+                    process_native_key_action_get(report, self.ctx);
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION
+                {
+                    process_next_native_key_action_get(report, self.ctx);
                 } else {
                     // backlight/rgblight/rgb matrix/led matrix/audio settings here
                     warn!("Custom get value -- not supported")
@@ -350,8 +479,10 @@ impl Runnable for VialService<'_> {
 #[cfg(test)]
 mod tests {
     use embassy_futures::block_on;
-    use rmk_types::action::KeyAction;
+    use rmk_types::action::{Action, KeyAction};
     use rmk_types::battery::ChargeState;
+    use rmk_types::keycode::{HidKeyCode, KeyCode};
+    use rmk_types::modifier::ModifierCombination;
 
     use super::*;
     use crate::config::{BehaviorConfig, PositionalConfig};
@@ -380,6 +511,54 @@ mod tests {
             input_data: output_data,
             output_data,
         }
+    }
+
+    fn custom_report(command: ViaCommand, subcommand: u8) -> ViaReport {
+        let mut output_data = [0u8; 32];
+        output_data[0] = command as u8;
+        output_data[1] = ERGOHAVEN_CUSTOM_NAMESPACE;
+        output_data[2] = subcommand;
+        ViaReport {
+            input_data: output_data,
+            output_data,
+        }
+    }
+
+    fn rich_mod_tap() -> KeyAction {
+        KeyAction::TapHold(
+            Action::KeyWithModifier(HidKeyCode::Kc0, ModifierCombination::LSHIFT),
+            Action::Modifier(ModifierCombination::LCTRL),
+            Default::default(),
+        )
+    }
+
+    #[test]
+    fn k04_micro_factory_mod_actions_keep_their_lossless_transport_path() {
+        let standard_left_shift = KeyAction::TapHold(
+            Action::Key(KeyCode::Hid(HidKeyCode::Minus)),
+            Action::Modifier(ModifierCombination::LSHIFT),
+            Default::default(),
+        );
+        let rich_left_ctrl = rich_mod_tap();
+        let shifted_equal = KeyAction::Single(Action::KeyWithModifier(HidKeyCode::Equal, ModifierCombination::LSHIFT));
+        let shifted_five = KeyAction::Single(Action::KeyWithModifier(HidKeyCode::Kc5, ModifierCombination::LSHIFT));
+        let rich_right_ctrl = KeyAction::TapHold(
+            Action::KeyWithModifier(HidKeyCode::LeftBracket, ModifierCombination::LSHIFT),
+            Action::Modifier(ModifierCombination::RCTRL),
+            Default::default(),
+        );
+        let standard_right_shift = KeyAction::TapHold(
+            Action::Key(KeyCode::Hid(HidKeyCode::Semicolon)),
+            Action::Modifier(ModifierCombination::RSHIFT),
+            Default::default(),
+        );
+
+        assert_eq!(to_via_keycode(standard_left_shift), 0x222D);
+        assert_eq!(to_via_keycode(rich_left_ctrl), 0);
+        assert_eq!(to_via_keycode(shifted_equal), 0x022E);
+        assert_eq!(to_via_keycode(shifted_five), 0x0222);
+        assert_eq!(to_via_keycode(rich_right_ctrl), 0);
+        assert_eq!(to_via_keycode(standard_right_shift), 0x3233);
     }
 
     #[test]
@@ -429,6 +608,81 @@ mod tests {
             let mut report = macro_set_buffer_report(29);
             block_on(service.process_via_packet(&mut report));
             assert_eq!(report.input_data[0], 0xFF);
+        });
+    }
+
+    #[test]
+    fn native_key_action_capability_is_versioned() {
+        with_service(|service| {
+            let mut report = custom_report(ViaCommand::CustomGetValue, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS);
+            block_on(service.process_via_packet(&mut report));
+            assert_eq!(report.input_data[3], ERGOHAVEN_NATIVE_KEY_ACTION_VERSION);
+            assert_eq!(
+                LittleEndian::read_u16(&report.input_data[4..6]),
+                ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET
+            );
+        });
+    }
+
+    #[test]
+    fn native_key_action_set_and_get_round_trip() {
+        with_service(|service| {
+            let action = rich_mod_tap();
+            let mut encoded = [0u8; NATIVE_KEY_ACTION_MAX_PAYLOAD];
+            let payload = postcard::to_slice(&action, &mut encoded).unwrap();
+            let mut set_report = custom_report(ViaCommand::CustomSetValue, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION);
+            set_report.output_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+            set_report.output_data[7] = payload.len() as u8;
+            set_report.output_data
+                [NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET + payload.len()]
+                .copy_from_slice(payload);
+            block_on(service.process_via_packet(&mut set_report));
+            assert_eq!(set_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+
+            let mut get_report = custom_report(ViaCommand::CustomGetValue, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION);
+            get_report.output_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+            block_on(service.process_via_packet(&mut get_report));
+            assert_eq!(get_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+            let len = get_report.input_data[5] as usize;
+            let decoded: KeyAction = postcard::from_bytes(
+                &get_report.input_data
+                    [NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET + len],
+            )
+            .unwrap();
+            assert_eq!(decoded, action);
+        });
+    }
+
+    #[test]
+    fn native_key_action_scan_returns_only_vial_lossy_actions() {
+        with_service(|service| {
+            let action = rich_mod_tap();
+            let mut encoded = [0u8; NATIVE_KEY_ACTION_MAX_PAYLOAD];
+            let payload = postcard::to_slice(&action, &mut encoded).unwrap();
+            let mut set_report = custom_report(ViaCommand::CustomSetValue, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION);
+            set_report.output_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+            set_report.output_data[7] = payload.len() as u8;
+            set_report.output_data
+                [NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET + payload.len()]
+                .copy_from_slice(payload);
+            block_on(service.process_via_packet(&mut set_report));
+
+            let mut scan_report = custom_report(ViaCommand::CustomGetValue, ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION);
+            scan_report.output_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+            block_on(service.process_via_packet(&mut scan_report));
+            assert_eq!(scan_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+            assert_eq!(LittleEndian::read_u16(&scan_report.input_data[5..7]), 0);
+            let len = scan_report.input_data[7] as usize;
+            let decoded: KeyAction = postcard::from_bytes(
+                &scan_report.input_data
+                    [NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET + len],
+            )
+            .unwrap();
+            assert_eq!(decoded, action);
+
+            LittleEndian::write_u16(&mut scan_report.output_data[4..6], 1);
+            block_on(service.process_via_packet(&mut scan_report));
+            assert_eq!(scan_report.input_data[4], NATIVE_KEY_ACTION_STATUS_END);
         });
     }
 
