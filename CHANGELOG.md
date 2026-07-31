@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.1.4
+
+### Features
+
+- Added unified Velvet UI firmware for Standalone and Qube, with the right half as the Standalone central and optional PMW3610 trackball support
+- Added persistent Velvet trackball enable and Mouse auto-layer timeout controls for Entropy
+- Added left/right battery telemetry, live Qube display data, and consistent factory layouts across the unified Ergohaven profiles
+- Embedded the Ergohaven firmware version `0.1.4` in every released keyboard definition and exposed it through VIA `id_firmware_version`
+
+### Fixes
+
+- Fixed Velvet startup and split-runtime panics caused by exhausted settings and layer subscribers
+- Fixed PMW3610 report starvation, idle jitter, auto-layer timeouts, and stale-motion accumulation
+- Fixed split BLE framing, link cadence, HCI command serialization, reconnect synchronization, and wake responsiveness
+- Fixed Qube display redraws blocking pointer reports; Shift and Command indicators now update atomically without cursor freezes
+- Fixed K:04 encoder detents and USB layer indication, classic keyboard defaults, and live split status reporting
+
 ## v0.1.3
 
 ### Features

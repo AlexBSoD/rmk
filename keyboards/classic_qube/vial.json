@@ -4,9 +4,9 @@
     "vendorId": "0xE126",
     "productId": "0x0036",
     "firmware": {
-        "version": "0.1.3"
+        "version": "0.1.4"
     },
-    "firmwareVersion": "0.1.3",
+    "firmwareVersion": "0.1.4",
     "entropy": {
         "liveFeatures": ["time", "media"],
         "batteryHalves": true
