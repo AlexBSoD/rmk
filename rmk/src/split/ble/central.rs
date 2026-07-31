@@ -11,7 +11,7 @@ use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::VecView;
 use trouble_host::prelude::*;
 
-use crate::ble::{SLEEPING_STATE, update_ble_phy, update_conn_params};
+use crate::ble::{replace_sleeping_state, update_ble_phy, update_conn_params};
 use crate::channel::FLASH_CHANNEL;
 use crate::event::{
     PeripheralConnectedEvent, PointingEvent, SleepStateEvent, SplitConnectionState, SplitConnectionStateEvent,
@@ -32,11 +32,11 @@ static START_SCANNING: Signal<crate::RawMutex, ()> = Signal::new();
 static STOP_SCANNING: Signal<crate::RawMutex, ()> = Signal::new();
 static SCANNING_MUTEX: Mutex<crate::RawMutex, ()> = Mutex::new(());
 static UNCOMMITTED_PEER_CANDIDATES: BlockingMutex<crate::RawMutex, Cell<u32>> = BlockingMutex::new(Cell::new(0));
-static CONNECTED_PERIPHERALS: AtomicU32 = AtomicU32::new(0);
+static CONNECTED_PERIPHERALS: BlockingMutex<crate::RawMutex, Cell<u32>> = BlockingMutex::new(Cell::new(0));
 static PERIPHERAL_CONNECTION_CHANGED: Signal<crate::RawMutex, ()> = Signal::new();
 static SPLIT_WINDOW_RESTART: Signal<crate::RawMutex, u32> = Signal::new();
 static SPLIT_WINDOW_DONE: Signal<crate::RawMutex, u32> = Signal::new();
-static SPLIT_WINDOW_GENERATION: AtomicU32 = AtomicU32::new(0);
+static SPLIT_WINDOW_GENERATION: BlockingMutex<crate::RawMutex, Cell<u32>> = BlockingMutex::new(Cell::new(0));
 
 static LAST_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
 static LAST_POINTING_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
@@ -71,16 +71,19 @@ fn required_peripheral_mask() -> u32 {
 }
 
 fn all_peripherals_connected() -> bool {
-    CONNECTED_PERIPHERALS.load(Ordering::Acquire) & required_peripheral_mask() == required_peripheral_mask()
+    CONNECTED_PERIPHERALS.lock(Cell::get) & required_peripheral_mask() == required_peripheral_mask()
 }
 
 fn publish_peripheral_connection(id: usize, connected: bool) {
     let bit = bit_for_peri(id);
-    if connected {
-        CONNECTED_PERIPHERALS.fetch_or(bit, Ordering::AcqRel);
-    } else {
-        CONNECTED_PERIPHERALS.fetch_and(!bit, Ordering::AcqRel);
-    }
+    CONNECTED_PERIPHERALS.lock(|state| {
+        let next = if connected {
+            state.get() | bit
+        } else {
+            state.get() & !bit
+        };
+        state.set(next);
+    });
     publish_event(PeripheralConnectedEvent { id, connected });
     PERIPHERAL_CONNECTION_CHANGED.signal(());
 }
@@ -98,7 +101,7 @@ fn publish_split_connection_state(state: SplitConnectionState, generation: u32, 
 /// owns the visible `Searching -> Connected/Idle` state and its timeout.
 pub async fn run_split_connection_supervisor() {
     let timeout = Duration::from_secs(u64::from(SPLIT_PAIRING_TIMEOUT_SECONDS));
-    let mut generation = SPLIT_WINDOW_GENERATION.load(Ordering::Acquire);
+    let mut generation = SPLIT_WINDOW_GENERATION.lock(Cell::get);
     let mut state = if all_peripherals_connected() {
         SplitConnectionState::Connected
     } else {
@@ -210,7 +213,11 @@ pub(crate) async fn wait_for_split_connection_window() {
         return;
     }
 
-    let generation = SPLIT_WINDOW_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+    let generation = SPLIT_WINDOW_GENERATION.lock(|state| {
+        let next = state.get().wrapping_add(1);
+        state.set(next);
+        next
+    });
     SPLIT_WINDOW_RESTART.signal(generation);
     loop {
         if SPLIT_WINDOW_DONE.wait().await == generation {
@@ -828,10 +835,8 @@ fn split_link_should_sleep(now_ms: u32, last_activity_ms: u32, sleep_requested: 
 /// link is missing, reconnecting, or changing its connection parameters.
 pub async fn run_split_power_state_manager() -> ! {
     let now_ms = Instant::now().as_millis() as u32;
-    if LAST_ACTIVITY_MS
-        .compare_exchange(0, now_ms, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
+    if LAST_ACTIVITY_MS.load(Ordering::Acquire) == 0 {
+        LAST_ACTIVITY_MS.store(now_ms, Ordering::Release);
         SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
     }
 
@@ -841,7 +846,7 @@ pub async fn run_split_power_state_manager() -> ! {
         SPLIT_SLEEP_REQUESTED.load(Ordering::Acquire),
     );
 
-    if sleeping && !SLEEPING_STATE.swap(true, Ordering::AcqRel) {
+    if sleeping && !replace_sleeping_state(true) {
         publish_event(SleepStateEvent::new(true));
     }
 
@@ -857,7 +862,7 @@ pub async fn run_split_power_state_manager() -> ! {
         }
 
         sleeping = next_sleeping;
-        if SLEEPING_STATE.swap(sleeping, Ordering::AcqRel) != sleeping {
+        if replace_sleeping_state(sleeping) != sleeping {
             publish_event(SleepStateEvent::new(sleeping));
         }
     }
@@ -909,10 +914,10 @@ async fn sleep_manager_task<
         // link's sleep transition.
         if crate::SPLIT_PERIPHERALS_NUM == 1 {
             if next_sleeping {
-                if !SLEEPING_STATE.swap(true, Ordering::AcqRel) {
+                if !replace_sleeping_state(true) {
                     publish_event(SleepStateEvent::new(true));
                 }
-            } else if sleeping && SLEEPING_STATE.swap(false, Ordering::AcqRel) {
+            } else if sleeping && replace_sleeping_state(false) {
                 publish_event(SleepStateEvent::new(false));
             }
         }

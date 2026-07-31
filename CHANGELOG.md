@@ -14,6 +14,7 @@
 - Fixed Velvet startup and split-runtime panics caused by exhausted settings and layer subscribers
 - Fixed PMW3610 report starvation, idle jitter, auto-layer timeouts, and stale-motion accumulation
 - Fixed split BLE framing, link cadence, HCI command serialization, reconnect synchronization, and wake responsiveness
+- Restored RP2040/Pico split compatibility by avoiding unsupported ARMv6-M atomic read-modify-write operations
 - Fixed Qube display redraws blocking pointer reports; Shift and Command indicators now update atomically without cursor freezes
 - Fixed K:04 encoder detents and USB layer indication, classic keyboard defaults, and live split status reporting
 

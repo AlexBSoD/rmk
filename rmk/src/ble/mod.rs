@@ -1,9 +1,10 @@
-use core::sync::atomic::AtomicBool;
+use core::cell::Cell;
 
 use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeReadPhy, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::mutex::Mutex;
 #[cfg(feature = "host")]
 use embassy_sync::signal::Signal;
@@ -44,7 +45,19 @@ pub(crate) mod profile;
 /// Global state of sleep management
 /// - `true`: Indicates central is sleeping
 /// - `false`: Indicates central is awake
-pub(crate) static SLEEPING_STATE: AtomicBool = AtomicBool::new(false);
+static SLEEPING_STATE: BlockingMutex<crate::RawMutex, Cell<bool>> = BlockingMutex::new(Cell::new(false));
+
+pub(crate) fn is_sleeping() -> bool {
+    SLEEPING_STATE.lock(Cell::get)
+}
+
+pub(crate) fn replace_sleeping_state(next: bool) -> bool {
+    SLEEPING_STATE.lock(|state| {
+        let previous = state.get();
+        state.set(next);
+        previous
+    })
+}
 
 /// Max number of connections
 pub(crate) const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + 1;
