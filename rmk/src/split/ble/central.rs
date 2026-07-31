@@ -641,7 +641,7 @@ async fn run_central_manager_task<
     // first key or settings packet is delivered.
     update_activity_time();
 
-    let result = match select3(
+    match select3(
         ble_central_task(&client, conn),
         run_peripheral_manager::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(id, peer_address, &client, peer_validated),
         sleep_manager_task(stack, conn, profile),
@@ -651,9 +651,7 @@ async fn run_central_manager_task<
         Either3::First(e) => e,
         Either3::Second(e) => e,
         Either3::Third(e) => e,
-    };
-
-    result
+    }
 }
 
 async fn ble_central_task<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(
@@ -825,7 +823,7 @@ fn split_link_should_sleep(now_ms: u32, last_activity_ms: u32, sleep_requested: 
     let inactive_ms = now_ms.wrapping_sub(last_activity_ms);
     sleep_requested
         || (SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS != 0
-            && inactive_ms >= u32::from(SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS).saturating_mul(1_000))
+            && inactive_ms >= SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS.saturating_mul(1_000))
 }
 
 /// Own the split central's global sleep state.
