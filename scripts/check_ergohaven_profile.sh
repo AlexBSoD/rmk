@@ -626,6 +626,21 @@ for file in keyboards/velvet/keyboard.toml keyboards/classic_qube/keyboard_velve
         || fail "$file: unified Velvet must define one Mouse factory layer"
 done
 
+python3 - <<'PY' || fail "Velvet persistent-settings refresh subscriber capacity drifted"
+import tomllib
+
+for path in (
+    "keyboards/velvet/keyboard.toml",
+    "keyboards/classic_qube/keyboard_velvet.toml",
+):
+    with open(path, "rb") as source:
+        config = tomllib.load(source)
+    actual = config["event"]["peripheral_settings_refresh"]["subs"]
+    assert actual == 1, (
+        f"{path}: event.peripheral_settings_refresh.subs={actual}, expected 1"
+    )
+PY
+
 actual_velvet_modes="$(jq -r '.customKeycodes[10:13] | map(.name) | join(",")' keyboards/velvet/vial.json)"
 if [[ "$actual_velvet_modes" != "EH_SNP,EH_SCR,EH_TXT" ]]; then
     fail "keyboards/velvet/vial.json: Velvet pointing USER10..USER12 registry drifted"

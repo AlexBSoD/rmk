@@ -44,6 +44,9 @@ layer_change.channel_size = 4
 layer_change.subs = 6
 modifier.channel_size = 8
 modifier.subs = 6
+# VelvetSettingsBroadcast owns the persistent pointing snapshot and listens for
+# a refresh whenever the right half reconnects. This event is opt-in in RMK.
+peripheral_settings_refresh.subs = 1
 
 [split]
 connection = "ble"
