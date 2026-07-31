@@ -27,8 +27,7 @@ use crate::AUTO_MOUSE_LAYER_MAX_NUM;
 use crate::config::AutoMouseLayerConfig;
 use crate::core_traits::Runnable;
 use crate::event::{
-    ActionEvent, AutoMouseLayerConfigEvent, Axis, AxisValType, EventSubscriber, LayerChangeEvent, PointingEvent,
-    SubscribableEvent,
+    ActionEvent, AutoMouseLayerConfigEvent, EventSubscriber, LayerChangeEvent, PointingEvent, SubscribableEvent,
 };
 use crate::keymap::KeyMap;
 use crate::processor::Processor;
@@ -423,22 +422,18 @@ fn extend_deadline(entry: &mut EntryState, now: Instant, timeout: Duration) {
 /// Only relative X/Y axis deltas count as cursor motion. Scroll-only events
 /// (Z/H/V) do not activate the layer.
 ///
-/// Absolute-position axes ([`AxisValType::Abs`], e.g. analogue joysticks) are
+/// Absolute-position axes ([`crate::event::AxisValType::Abs`], e.g. analogue joysticks) are
 /// also ignored here: their `value` reports the current position rather than a
 /// delta, so a stick held off-centre would keep the layer pinned on forever.
 /// Absolute pointing devices need to be converted to relative deltas upstream.
 fn is_cursor_motion(event: &PointingEvent, threshold: u16) -> bool {
-    event.axes.iter().any(|axis| {
-        matches!(axis.typ, AxisValType::Rel)
-            && matches!(axis.axis, Axis::X | Axis::Y)
-            && axis.value.unsigned_abs() >= threshold
-    })
+    event.has_relative_xy_motion(threshold)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{AxisEvent, AxisValType};
+    use crate::event::{Axis, AxisEvent, AxisValType};
 
     fn axis(axis: Axis, value: i16) -> AxisEvent {
         AxisEvent {

@@ -116,6 +116,18 @@ pub struct PointingEvent {
     pub axes: [AxisEvent; 3],
 }
 
+impl PointingEvent {
+    /// Whether this event contains relative X/Y cursor motion at or above
+    /// `threshold`. Absolute axes and scroll-only reports do not count.
+    pub fn has_relative_xy_motion(&self, threshold: u16) -> bool {
+        self.axes.iter().any(|axis| {
+            matches!(axis.typ, AxisValType::Rel)
+                && matches!(axis.axis, Axis::X | Axis::Y)
+                && axis.value.unsigned_abs() >= threshold
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Copy, MaxSize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct AxisEvent {

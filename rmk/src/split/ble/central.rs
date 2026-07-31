@@ -14,7 +14,8 @@ use trouble_host::prelude::*;
 use crate::ble::{SLEEPING_STATE, update_ble_phy, update_conn_params};
 use crate::channel::FLASH_CHANNEL;
 use crate::event::{
-    PeripheralConnectedEvent, SleepStateEvent, SplitConnectionState, SplitConnectionStateEvent, publish_event,
+    PeripheralConnectedEvent, PointingEvent, SleepStateEvent, SplitConnectionState, SplitConnectionStateEvent,
+    publish_event,
 };
 #[cfg(feature = "storage")]
 use crate::split::ble::PeerAddress;
@@ -42,16 +43,19 @@ static LAST_POINTING_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
 static SPLIT_SLEEP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 const SPLIT_POWER_POLL_MS: u64 = 100;
+// PMW3610 may emit background +/-1 reports while settling. Velvet's
+// auto-mouse layer uses the same threshold so UI work does not remain deferred
+// after meaningful cursor movement has stopped.
+const POINTING_ACTIVITY_THRESHOLD: u16 = 2;
 
 const SPLIT_SERVICE_UUID: [u8; 16] = [70, 153, 101, 152, 54, 53, 10, 191, 7, 75, 229, 24, 170, 251, 213, 77];
 const SPLIT_COMPANY_ID: u16 = 0xe118;
 
 /// Active connection cadence for a generated split keyboard.
 ///
-/// Pointing capability is evaluated across the complete keyboard and the same
-/// profile is applied to every link. A uniform 7.5 ms schedule lets the BLE
-/// controller place multiple Qube links without a recurring 7.5/15 ms radio
-/// collision, while key-only keyboards retain the lower-power 15 ms cadence.
+/// Generated split keyboards apply the low-latency profile only to a
+/// peripheral that owns a pointing device. Key-only links retain the
+/// lower-power 15 ms cadence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitLinkProfile {
     Keyboard,
@@ -759,7 +763,7 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
         trace!("Received split message: {:?}", message);
 
         match &message {
-            SplitMessage::Pointing(_) => update_pointing_activity_time(),
+            SplitMessage::Pointing(event) => update_pointing_activity_time(event),
             SplitMessage::Key(_) => update_activity_time(),
             _ => {}
         }
@@ -935,9 +939,11 @@ fn quiet_period_remaining(now_ms: u32, last_activity_ms: u32, quiet_period: Dura
 
 /// Record motion separately from general split activity so status-only work
 /// can yield until the real-time pointing path is quiet.
-fn update_pointing_activity_time() {
+fn update_pointing_activity_time(event: &PointingEvent) {
     let now_ms = Instant::now().as_millis() as u32;
-    LAST_POINTING_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    if event.has_relative_xy_motion(POINTING_ACTIVITY_THRESHOLD) {
+        LAST_POINTING_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    }
     LAST_ACTIVITY_MS.store(now_ms, Ordering::Release);
     SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
 }
@@ -1047,6 +1053,35 @@ mod advertisement_tests {
             Duration::from_millis(50)
         );
         assert_eq!(quiet_period_remaining(1_100, 1_000, quiet_period), Duration::MIN);
+    }
+
+    #[test]
+    fn pointing_activity_threshold_ignores_pmw3610_settling_noise() {
+        use crate::event::{Axis, AxisEvent, AxisValType};
+
+        let event = |x, y| PointingEvent {
+            device_id: 0,
+            axes: [
+                AxisEvent {
+                    typ: AxisValType::Rel,
+                    axis: Axis::X,
+                    value: x,
+                },
+                AxisEvent {
+                    typ: AxisValType::Rel,
+                    axis: Axis::Y,
+                    value: y,
+                },
+                AxisEvent {
+                    typ: AxisValType::Rel,
+                    axis: Axis::Z,
+                    value: 0,
+                },
+            ],
+        };
+
+        assert!(!event(1, -1).has_relative_xy_motion(POINTING_ACTIVITY_THRESHOLD));
+        assert!(event(2, 0).has_relative_xy_motion(POINTING_ACTIVITY_THRESHOLD));
     }
 
     #[test]
