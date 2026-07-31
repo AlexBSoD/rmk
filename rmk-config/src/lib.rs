@@ -980,8 +980,8 @@ pub struct InputDeviceConfig {
 
 impl InputDeviceConfig {
     /// Whether this board contains a device whose reports need a low-latency
-    /// split transport. The generated central uses this capability for the
-    /// whole split keyboard so every BLE link has the same connection cadence.
+    /// split transport. The generated central applies the low-latency profile
+    /// only to the peripheral board that owns this capability.
     pub fn has_pointing_device(&self) -> bool {
         self.pointing.as_ref().is_some_and(|devices| !devices.is_empty())
             || self.pmw3610.as_ref().is_some_and(|devices| !devices.is_empty())

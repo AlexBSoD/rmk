@@ -74,6 +74,10 @@ const HEADER_DIRTY: DirtyRegion = DirtyRegion::range(12, 44);
 const LAYER_DIRTY: DirtyRegion = DirtyRegion::range(50, 138);
 const MODIFIER_DIRTY: DirtyRegion = DirtyRegion::range(144, 166);
 const BATTERY_DIRTY: DirtyRegion = DirtyRegion::range(174, 224);
+// Display state may be a few frames late, but cursor motion must never wait
+// behind framebuffer rendering or SPI. Apply pending UI changes once the
+// pointing stream has been quiet for this window.
+const POINTING_REDRAW_QUIET_PERIOD: Duration = Duration::from_millis(100);
 
 const COL_BG: Rgb565 = Rgb565::new(0, 2, 4);
 const COL_FG: Rgb565 = Rgb565::new(29, 61, 30);
@@ -440,11 +444,25 @@ where
         > + Copy
         + 'static,
 {
+    fn redraw_wait(&self) -> Duration {
+        let rate_limit_wait = self
+            .min_interval
+            .checked_sub(self.last_render.elapsed())
+            .unwrap_or(Duration::MIN);
+        let pointing_wait = rmk::split::ble::central::pointing_quiet_period_remaining(
+            POINTING_REDRAW_QUIET_PERIOD,
+        );
+        if pointing_wait > rate_limit_wait {
+            pointing_wait
+        } else {
+            rate_limit_wait
+        }
+    }
+
     async fn redraw(&mut self) {
         self.sync_host_data();
         self.sync_layer_names();
-        let now = Instant::now();
-        if now.duration_since(self.last_render) < self.min_interval {
+        if self.redraw_wait() != Duration::MIN {
             self.pending = true;
             return;
         }
@@ -521,10 +539,7 @@ where
         loop {
             // Wait for at least one event (or deferred redraw timer).
             if self.pending {
-                let wait = self
-                    .min_interval
-                    .checked_sub(self.last_render.elapsed())
-                    .unwrap_or(Duration::MIN);
+                let wait = self.redraw_wait();
                 match select(
                     Timer::after(wait),
                     Self::next_any_or_host_tick(

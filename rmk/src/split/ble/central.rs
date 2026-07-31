@@ -38,6 +38,7 @@ static SPLIT_WINDOW_DONE: Signal<crate::RawMutex, u32> = Signal::new();
 static SPLIT_WINDOW_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 static LAST_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
+static LAST_POINTING_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
 static SPLIT_SLEEP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 const SPLIT_POWER_POLL_MS: u64 = 100;
@@ -757,8 +758,10 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
         let message = postcard::from_bytes(data.as_ref()).map_err(|_| SplitDriverError::DeserializeError)?;
         trace!("Received split message: {:?}", message);
 
-        if matches!(message, SplitMessage::Pointing(_) | SplitMessage::Key(_)) {
-            update_activity_time();
+        match &message {
+            SplitMessage::Pointing(_) => update_pointing_activity_time(),
+            SplitMessage::Key(_) => update_activity_time(),
+            _ => {}
         }
 
         Ok(message)
@@ -920,6 +923,37 @@ pub(crate) fn update_activity_time() {
     trace!("Activity detected, waking split links");
 }
 
+fn quiet_period_remaining(now_ms: u32, last_activity_ms: u32, quiet_period: Duration) -> Duration {
+    if last_activity_ms == 0 {
+        return Duration::MIN;
+    }
+
+    quiet_period
+        .checked_sub(Duration::from_millis(u64::from(now_ms.wrapping_sub(last_activity_ms))))
+        .unwrap_or(Duration::MIN)
+}
+
+/// Record motion separately from general split activity so status-only work
+/// can yield until the real-time pointing path is quiet.
+fn update_pointing_activity_time() {
+    let now_ms = Instant::now().as_millis() as u32;
+    LAST_POINTING_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    LAST_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
+}
+
+/// Return the time remaining before pointing has been idle for `quiet_period`.
+///
+/// Qube's display uses this to defer SPI rendering while relative motion is
+/// arriving; it does not alter the connection cadence or sleep policy.
+pub fn pointing_quiet_period_remaining(quiet_period: Duration) -> Duration {
+    quiet_period_remaining(
+        Instant::now().as_millis() as u32,
+        LAST_POINTING_ACTIVITY_MS.load(Ordering::Acquire),
+        quiet_period,
+    )
+}
+
 /// Request deep split-link sleep from a host suspend or transport timeout.
 pub(crate) fn request_sleep() {
     SPLIT_SLEEP_REQUESTED.store(true, Ordering::Release);
@@ -1001,6 +1035,29 @@ mod advertisement_tests {
         assert_eq!(params.min_connection_interval, Duration::from_millis(15));
         assert_eq!(params.max_connection_interval, Duration::from_millis(15));
         assert_eq!(params.max_latency, 0);
+    }
+
+    #[test]
+    fn pointing_quiet_period_waits_only_for_recent_motion() {
+        let quiet_period = Duration::from_millis(100);
+
+        assert_eq!(quiet_period_remaining(1_000, 0, quiet_period), Duration::MIN);
+        assert_eq!(
+            quiet_period_remaining(1_050, 1_000, quiet_period),
+            Duration::from_millis(50)
+        );
+        assert_eq!(quiet_period_remaining(1_100, 1_000, quiet_period), Duration::MIN);
+    }
+
+    #[test]
+    fn pointing_quiet_period_handles_millisecond_counter_wrap() {
+        let quiet_period = Duration::from_millis(100);
+        let last = u32::MAX - 20;
+
+        assert_eq!(
+            quiet_period_remaining(29, last, quiet_period),
+            Duration::from_millis(50)
+        );
     }
 
     #[test]
