@@ -4,6 +4,7 @@ use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeReadPhy, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_sync::mutex::Mutex;
 #[cfg(feature = "host")]
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
@@ -58,6 +59,14 @@ const HOST_PHY_UPDATE_SETTLE_MS: u64 = 80;
 const HOST_IDLE_MAX_LATENCY: u16 = 30;
 const HOST_INTERACTIVE_MAX_LATENCY: u16 = 0;
 const VIAL_LINK_IDLE_TIMEOUT_SECS: u64 = 30;
+const HCI_LINK_UPDATE_ATTEMPTS: u8 = 12;
+const HCI_LINK_UPDATE_RETRY_MS: u64 = 20;
+
+// The controller accepts only one link-control procedure at a time. Host PHY
+// updates and one or more split links share it, so serialize our commands
+// before handling controller-level collisions from procedures started by the
+// peer or stack itself.
+static BLE_HCI_LINK_UPDATE_MUTEX: Mutex<crate::RawMutex, ()> = Mutex::new(());
 
 #[cfg(feature = "host")]
 static VIAL_BLE_ACTIVITY: Signal<crate::RawMutex, ()> = Signal::new();
@@ -1013,12 +1022,20 @@ pub(crate) async fn update_ble_phy<P: PacketPool>(
     stack: &Stack<'_, impl Controller + ControllerCmdAsync<LeSetPhy>, P>,
     conn: &Connection<'_, P>,
 ) {
-    loop {
+    let _guard = BLE_HCI_LINK_UPDATE_MUTEX.lock().await;
+    for attempt in 1..=HCI_LINK_UPDATE_ATTEMPTS {
+        if !conn.is_connected() {
+            return;
+        }
+
         match conn.set_phy(stack, PhyKind::Le2M).await {
             Err(BleHostError::BleHost(Error::Hci(error))) => {
-                if 0x2A == error.to_status().into_inner() {
-                    // Busy, retry
-                    info!("[update_ble_phy] HCI busy: {:?}", error);
+                if is_hci_link_update_busy(error.to_status().into_inner()) && attempt < HCI_LINK_UPDATE_ATTEMPTS {
+                    info!(
+                        "[update_ble_phy] HCI busy, retry {}/{}: {:?}",
+                        attempt, HCI_LINK_UPDATE_ATTEMPTS, error
+                    );
+                    Timer::after_millis(HCI_LINK_UPDATE_RETRY_MS).await;
                     continue;
                 } else {
                     error!("[update_ble_phy] HCI error: {:?}", error);
@@ -1033,7 +1050,7 @@ pub(crate) async fn update_ble_phy<P: PacketPool>(
                 info!("[update_ble_phy] PHY updated");
             }
         }
-        break;
+        return;
     }
 }
 
@@ -1048,13 +1065,20 @@ pub(crate) async fn update_conn_params<
     conn: &Connection<'b, P>,
     params: &RequestedConnParams,
 ) {
-    loop {
+    let _guard = BLE_HCI_LINK_UPDATE_MUTEX.lock().await;
+    for attempt in 1..=HCI_LINK_UPDATE_ATTEMPTS {
+        if !conn.is_connected() {
+            return;
+        }
+
         match conn.update_connection_params(stack, params).await {
             Err(BleHostError::BleHost(Error::Hci(error))) => {
-                if 0x3A == error.to_status().into_inner() {
-                    // Busy, retry
-                    info!("[update_conn_params] HCI busy: {:?}", error);
-                    embassy_time::Timer::after_millis(100).await;
+                if is_hci_link_update_busy(error.to_status().into_inner()) && attempt < HCI_LINK_UPDATE_ATTEMPTS {
+                    info!(
+                        "[update_conn_params] HCI busy, retry {}/{}: {:?}",
+                        attempt, HCI_LINK_UPDATE_ATTEMPTS, error
+                    );
+                    Timer::after_millis(HCI_LINK_UPDATE_RETRY_MS).await;
                     continue;
                 } else {
                     error!("[update_conn_params] HCI error: {:?}", error);
@@ -1067,8 +1091,14 @@ pub(crate) async fn update_conn_params<
             }
             _ => (),
         }
-        break;
+        return;
     }
+}
+
+fn is_hci_link_update_busy(status: u8) -> bool {
+    // 0x2a: Different Transaction Collision
+    // 0x3a: Controller Busy
+    matches!(status, 0x2a | 0x3a)
 }
 
 #[cfg(test)]
@@ -1085,7 +1115,7 @@ mod tests {
 
     use super::{
         HostPhyUpdateState, Server, advertising_mode, directed_reconnect_should_fallback, host_phy_update_state,
-        seed_battery_level,
+        is_hci_link_update_busy, seed_battery_level,
     };
     use crate::event::{
         Axis, AxisEvent, AxisValType, BleAdvertisingMode, KeyboardEvent, PointingEvent, SubscribableEvent,
@@ -1099,6 +1129,14 @@ mod tests {
     fn ble_status_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn only_transaction_collision_and_controller_busy_retry_link_updates() {
+        assert!(is_hci_link_update_busy(0x2a));
+        assert!(is_hci_link_update_busy(0x3a));
+        assert!(!is_hci_link_update_busy(0x00));
+        assert!(!is_hci_link_update_busy(0x08));
     }
 
     #[test]

@@ -254,7 +254,11 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                     }
                 },
                 Either::Second(e) => {
-                    debug!("Writing split message {:?} to central", e);
+                    if matches!(e, SplitMessage::Pointing(_)) {
+                        trace!("Writing split pointing message to central");
+                    } else {
+                        debug!("Writing split message {:?} to central", e);
+                    }
                     self.split_driver.write(&e).await.ok();
                 }
             }

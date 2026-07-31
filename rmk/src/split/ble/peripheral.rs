@@ -120,7 +120,9 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitWriter for BleSplitPeripheralDrive
             error!("Postcard serialize split message error: {}", e);
             SplitDriverError::SerializeError
         })?;
-        info!("Writing split message to central: {:?}", message);
+        // Pointing messages can run at 125 Hz. Keep per-packet diagnostics at
+        // trace level so USB logging cannot stall the split transport.
+        trace!("Writing split message to central: {:?}", message);
         self.message_to_central
             .notify_raw(self.conn, encoded, false)
             .await

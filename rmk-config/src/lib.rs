@@ -978,6 +978,18 @@ pub struct InputDeviceConfig {
     pub iqs5xx: Option<Vec<Iqs5xxConfig>>,
 }
 
+impl InputDeviceConfig {
+    /// Whether this board contains a device whose reports need a low-latency
+    /// split transport. The generated central uses this capability for the
+    /// whole split keyboard so every BLE link has the same connection cadence.
+    pub fn has_pointing_device(&self) -> bool {
+        self.pointing.as_ref().is_some_and(|devices| !devices.is_empty())
+            || self.pmw3610.as_ref().is_some_and(|devices| !devices.is_empty())
+            || self.pmw33xx.as_ref().is_some_and(|devices| !devices.is_empty())
+            || self.iqs5xx.as_ref().is_some_and(|devices| !devices.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JoystickConfig {
@@ -1262,6 +1274,21 @@ impl KeyboardTomlConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointing_capability_requires_a_configured_pointing_device() {
+        let empty = InputDeviceConfig {
+            pmw3610: Some(Vec::new()),
+            ..Default::default()
+        };
+        let pointing = InputDeviceConfig {
+            pmw3610: Some(vec![Pmw3610Config::default()]),
+            ..Default::default()
+        };
+
+        assert!(!empty.has_pointing_device());
+        assert!(pointing.has_pointing_device());
+    }
 
     #[test]
     fn test_event_config_default_values() {

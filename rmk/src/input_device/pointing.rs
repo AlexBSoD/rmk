@@ -155,11 +155,14 @@ impl<S: PointingDriver> PointingDevice<S> {
             return None;
         }
 
-        let dx = self.accumulated_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let dy = self.accumulated_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        // A HID mouse report can carry only i8 motion. Emit one transport-safe
+        // chunk and preserve the residual for subsequent 125 Hz reports; zeroing
+        // the full accumulator here silently discarded fast PMW3610 movement.
+        let dx = self.accumulated_x.clamp(i8::MIN as i32, i8::MAX as i32) as i16;
+        let dy = self.accumulated_y.clamp(i8::MIN as i32, i8::MAX as i32) as i16;
 
-        self.accumulated_x = 0;
-        self.accumulated_y = 0;
+        self.accumulated_x -= i32::from(dx);
+        self.accumulated_y -= i32::from(dy);
 
         Some(PointingEvent {
             device_id: self.id,
@@ -1838,6 +1841,41 @@ mod tests {
             !device.sensor.read_called,
             "a due report must be emitted before another immediate MOTION poll"
         );
+    }
+
+    #[test]
+    fn report_preserves_motion_that_does_not_fit_one_hid_frame() {
+        let driver = DummyDriver {
+            motion_pending: false,
+            motion: MotionData { dx: 0, dy: 0 },
+            init_called: true,
+            fails_init: false,
+            motion_gpio: None,
+            read_called: false,
+        };
+        let mut device = PointingDevice {
+            sensor: driver,
+            init_state: InitState::Ready,
+            poll_interval: Duration::from_millis(1),
+            report_interval: Duration::from_millis(8),
+            last_poll: Instant::MIN,
+            last_report: Instant::MIN,
+            accumulated_x: 300,
+            accumulated_y: -300,
+            id: 1,
+        };
+
+        let first = device.take_report_event().unwrap();
+        assert_eq!(first.axes[0].value, 127);
+        assert_eq!(first.axes[1].value, -128);
+        assert_eq!(device.accumulated_x, 173);
+        assert_eq!(device.accumulated_y, -172);
+
+        let second = device.take_report_event().unwrap();
+        assert_eq!(second.axes[0].value, 127);
+        assert_eq!(second.axes[1].value, -128);
+        assert_eq!(device.accumulated_x, 46);
+        assert_eq!(device.accumulated_y, -44);
     }
 
     // === MotionAccumulator tests ===
