@@ -67,6 +67,14 @@ const PANEL_RADIUS: u32 = 14;
 const CHIP_RADIUS: u32 = 7;
 const BAR_RADIUS: u32 = 5;
 
+// Keep status-only redraws away from the split/USB critical path. A complete
+// 280x240 RGB565 transfer at 8 MHz takes over 130 ms before render overhead;
+// these bands match the fixed vertical zones rendered below.
+const HEADER_DIRTY: DirtyRegion = DirtyRegion::range(12, 44);
+const LAYER_DIRTY: DirtyRegion = DirtyRegion::range(50, 138);
+const MODIFIER_DIRTY: DirtyRegion = DirtyRegion::range(144, 166);
+const BATTERY_DIRTY: DirtyRegion = DirtyRegion::range(174, 224);
+
 const COL_BG: Rgb565 = Rgb565::new(0, 2, 4);
 const COL_FG: Rgb565 = Rgb565::new(29, 61, 30);
 const COL_MUTED: Rgb565 = Rgb565::new(11, 24, 20);
@@ -86,6 +94,28 @@ const COL_BORDER_DIM: Rgb565 = Rgb565::new(3, 8, 11);
 type SpiDev = ExclusiveDevice<Spim<'static>, Output<'static>, NoDelay>;
 type Di = SpiInterface<SpiDev, Output<'static>>;
 type Panel = LcdDisplay<Di, ST7789, Output<'static>>;
+
+#[derive(Clone, Copy)]
+enum DirtyRegion {
+    Full,
+    Range { y0: u16, y1: u16 },
+}
+
+impl DirtyRegion {
+    const fn range(y0: u16, y1: u16) -> Self {
+        Self::Range { y0, y1 }
+    }
+
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Full, _) | (_, Self::Full) => Self::Full,
+            (Self::Range { y0: a0, y1: a1 }, Self::Range { y0: b0, y1: b1 }) => Self::Range {
+                y0: a0.min(b0),
+                y1: a1.max(b1),
+            },
+        }
+    }
+}
 
 // --- Stripe framebuffer (clip window into full screen) ----------------------
 
@@ -255,16 +285,21 @@ where
         }
     }
 
-    /// Full-screen redraw via stripe multipass.
-    async fn present(&mut self, renderer: &mut QubeStatusRenderer, ctx: &RenderContext) {
+    /// Redraw the requested vertical region via stripe multipass.
+    async fn present_dirty(&mut self, renderer: &mut QubeStatusRenderer, ctx: &RenderContext, dirty: DirtyRegion) {
         self.ensure_init().await;
         let LcdState::Active(lcd) = &mut self.state else {
             return;
         };
 
-        let mut y: u16 = 0;
-        while (y as usize) < SCREEN_H {
-            let remaining = (SCREEN_H as u16).saturating_sub(y);
+        let (y0, y1) = match dirty {
+            DirtyRegion::Full => (0, SCREEN_H as u16),
+            DirtyRegion::Range { y0, y1 } => (y0.min(SCREEN_H as u16), y1.min(SCREEN_H as u16)),
+        };
+
+        let mut y = y0;
+        while y < y1 {
+            let remaining = y1.saturating_sub(y);
             let h = remaining.min(STRIPE_H as u16);
             lcd.set_band(y, h);
             lcd.clear_stripe(COL_BG);
@@ -342,6 +377,7 @@ where
     last_layer_names_version: u8,
     last_render: Instant,
     pending: bool,
+    dirty: DirtyRegion,
     min_interval: Duration,
 }
 
@@ -391,6 +427,7 @@ where
         last_layer_names_version: crate::layer_names::version(),
         last_render: Instant::from_ticks(0),
         pending: true,
+        dirty: DirtyRegion::Full,
         min_interval: Duration::from_millis(80),
     }
 }
@@ -411,13 +448,20 @@ where
             self.pending = true;
             return;
         }
-        self.lcd.present(&mut self.renderer, &self.ctx).await;
+        self.lcd.present_dirty(&mut self.renderer, &self.ctx, self.dirty).await;
         self.ctx.key_press_latch = false;
         self.pending = false;
+        self.dirty = DirtyRegion::Full;
         self.last_render = Instant::now();
     }
 
     fn request_redraw(&mut self) {
+        self.pending = true;
+        self.dirty = DirtyRegion::Full;
+    }
+
+    fn request_redraw_region(&mut self, dirty: DirtyRegion) {
+        self.dirty = if self.pending { self.dirty.union(dirty) } else { dirty };
         self.pending = true;
     }
 
@@ -426,7 +470,7 @@ where
         if host_data != self.last_host_data {
             self.last_host_data = host_data.clone();
             self.renderer.host_data = host_data;
-            self.request_redraw();
+            self.request_redraw_region(HEADER_DIRTY);
         }
     }
 
@@ -434,7 +478,7 @@ where
         let version = crate::layer_names::version();
         if version != self.last_layer_names_version {
             self.last_layer_names_version = version;
-            self.request_redraw();
+            self.request_redraw_region(LAYER_DIRTY);
         }
     }
 }
@@ -652,13 +696,26 @@ where
         // keys — skip redraw for those so multipass can keep up with layer/mod.
         let mut need_redraw = true;
         match ev {
-            UiEv::Layer(e) => self.ctx.layer = e.0,
-            UiEv::Wpm(e) => self.ctx.wpm = e.0,
+            UiEv::Layer(e) => {
+                self.ctx.layer = e.0;
+                self.request_redraw_region(LAYER_DIRTY);
+                need_redraw = false;
+            }
+            UiEv::Wpm(e) => {
+                self.ctx.wpm = e.0;
+                need_redraw = false;
+            }
             UiEv::Led(e) => {
                 self.ctx.caps_lock = e.0.caps_lock();
                 self.ctx.num_lock = e.0.num_lock();
+                self.request_redraw_region(MODIFIER_DIRTY);
+                need_redraw = false;
             }
-            UiEv::Mod(e) => self.ctx.modifiers = e.modifier,
+            UiEv::Mod(e) => {
+                self.ctx.modifiers = e.modifier;
+                self.request_redraw_region(MODIFIER_DIRTY);
+                need_redraw = false;
+            }
             UiEv::Key(e) => {
                 self.ctx.key_pressed = e.pressed;
                 if e.pressed {
@@ -667,7 +724,11 @@ where
                 need_redraw = false;
             }
             UiEv::Sleep(e) => self.ctx.sleeping = e.0,
-            UiEv::Bat(e) => self.ctx.battery = e,
+            UiEv::Bat(e) => {
+                self.ctx.battery = e;
+                self.request_redraw_region(BATTERY_DIRTY);
+                need_redraw = false;
+            }
             UiEv::Conn(e) => self.ctx.ble_status = e.0.ble,
             UiEv::PeriConn(e) => {
                 if let Some(slot) = self.ctx.peripherals_connected.get_mut(e.id) {
@@ -678,13 +739,15 @@ where
                 if let Some(slot) = self.ctx.peripheral_batteries.get_mut(e.id) {
                     *slot = e.state;
                 }
+                self.request_redraw_region(BATTERY_DIRTY);
+                need_redraw = false;
             }
             UiEv::Central(e) => self.ctx.central_connected = e.connected,
             UiEv::HostDataTick => {
                 self.sync_host_data();
                 self.sync_layer_names();
                 if self.renderer.media_needs_marquee() {
-                    self.request_redraw();
+                    self.request_redraw_region(HEADER_DIRTY);
                 }
                 need_redraw = false;
             }
