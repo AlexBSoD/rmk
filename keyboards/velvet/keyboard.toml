@@ -14,6 +14,10 @@ unlock_keys = [[0, 0], [0, 1]]
 action.channel_size = 16
 action.subs = 2
 keyboard.subs = 4
+# AutoMouseLayerRunner and VelvetPointingMode subscribe before the split link
+# comes up; PeripheralManager adds the third subscriber on connection.
+layer_change.channel_size = 4
+layer_change.subs = 3
 # VelvetSettingsBroadcast owns the persistent pointing snapshot and listens for
 # a refresh whenever the right half reconnects. This event is opt-in in RMK.
 peripheral_settings_refresh.subs = 1

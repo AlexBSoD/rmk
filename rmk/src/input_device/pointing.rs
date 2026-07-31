@@ -11,10 +11,12 @@ use rmk_types::keycode::HidKeyCode;
 use usbd_hid::descriptor::MouseReport;
 
 use crate::channel::send_hid_report;
+use crate::core_traits::Runnable;
 #[cfg(feature = "split")]
 use crate::event::{ActionEvent, KeyboardEvent, PeripheralSettingsEvent};
 use crate::event::{
-    Axis, AxisEvent, AxisValType, PointingEvent, PointingProcessorEvent, PointingSetCpiEvent, PointingTransformEvent,
+    Axis, AxisEvent, AxisValType, EventSubscriber, PointingEvent, PointingProcessorEvent, PointingSetCpiEvent,
+    PointingTransformEvent, SubscribableEvent, publish_event,
 };
 use crate::hid::{KeyboardReport, Report};
 use crate::keymap::KeyMap;
@@ -75,6 +77,7 @@ pub enum InitState {
 /// This device publishes `PointingEvent` events with relative X/Y movement.
 #[processor(subscribe = [PointingSetCpiEvent])]
 #[input_device(publish = PointingEvent)]
+#[::rmk::macros::runnable_generated]
 pub struct PointingDevice<S: PointingDriver> {
     pub sensor: S,
     pub init_state: InitState,
@@ -85,6 +88,25 @@ pub struct PointingDevice<S: PointingDriver> {
     pub last_report: Instant,
     pub accumulated_x: i32,
     pub accumulated_y: i32,
+}
+
+// Pointing motion is real-time state, not a lossless command stream. Using the
+// generic input-device backpressure path lets a temporarily busy BLE split
+// sender build a FIFO of stale 125 Hz samples. K:04 deliberately publishes its
+// PMW3610 motion immediately for the same reason: keep the newest motion and
+// let lagging subscribers skip obsolete samples.
+impl<S: PointingDriver> Runnable for PointingDevice<S> {
+    async fn run(&mut self) -> ! {
+        use embassy_futures::select::{Either, select};
+
+        let mut cpi_sub = PointingSetCpiEvent::subscriber();
+        loop {
+            match select(self.read_pointing_event(), cpi_sub.next_event()).await {
+                Either::First(event) => publish_event(event),
+                Either::Second(event) => self.on_pointing_set_cpi_event(event).await,
+            }
+        }
+    }
 }
 
 impl<S: PointingDriver> PointingDevice<S> {

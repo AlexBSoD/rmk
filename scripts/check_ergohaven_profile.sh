@@ -641,6 +641,11 @@ for path in (
         f"{path}: event.peripheral_settings_refresh.subs={refresh_subs}, expected 1"
     )
     if path == "keyboards/velvet/keyboard.toml":
+        layer_subs = config["event"]["layer_change"]["subs"]
+        assert layer_subs >= 3, (
+            f"{path}: event.layer_change.subs={layer_subs}, expected at least 3 "
+            "for auto Mouse, Velvet mode, and the split manager"
+        )
         central = config["split"]["central"]
         peripheral = config["split"]["peripheral"][0]
         assert central["row_offset"] == 4, f"{path}: right half must be central"

@@ -128,37 +128,20 @@ pub(crate) fn rmk_entry_select(
                 if !processors.is_empty() {
                     tasks.push(processors_task);
                 };
-                // A pointing link at 125 Hz needs a stable 7.5 ms schedule.
-                // Apply that cadence to every link in the keyboard: mixing
-                // 7.5 and 15 ms links makes their radio events repeatedly
-                // coincide and introduces periodic cursor stalls on a Qube.
-                let has_pointing_device = split_config
-                    .central
-                    .input_device
-                    .as_ref()
-                    .is_some_and(|devices| devices.has_pointing_device())
-                    || split_config.peripheral.iter().any(|peripheral| {
-                        peripheral
-                            .input_device
-                            .as_ref()
-                            .is_some_and(|devices| devices.has_pointing_device())
-                    });
-                let split_link_profile = if has_pointing_device {
-                    quote! { ::rmk::split::ble::central::SplitLinkProfile::Pointing }
-                } else {
-                    quote! { ::rmk::split::ble::central::SplitLinkProfile::Keyboard }
-                };
+                // Keep generated split links on RMK's proven 15 ms cadence.
+                // K:04 carries 125 Hz pointing reports over this profile; a
+                // forced 7.5 ms event on every Qube link only doubles radio
+                // contention and competes with the host connection.
                 split_config.peripheral.iter().enumerate().for_each(|(idx, p)| {
                     let row = p.rows;
                     let col = p.cols;
                     let row_offset = p.row_offset;
                     let col_offset = p.col_offset;
                     tasks.push(quote! {
-                        ::rmk::split::central::run_peripheral_manager_with_profile::<#row, #col, #row_offset, #col_offset, _>(
+                        ::rmk::split::central::run_peripheral_manager::<#row, #col, #row_offset, #col_offset, _>(
                             #idx,
                             &peripheral_addrs,
                             &stack,
-                            #split_link_profile,
                         )
                     });
                 });
