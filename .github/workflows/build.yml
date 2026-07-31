@@ -56,6 +56,8 @@ jobs:
             output_name: velvet
             keyboard_toml: keyboard.toml
             vial_json: vial.json
+            central_output_name: velvet_standalone_right_main.uf2
+            peripheral_output_name: velvet_standalone_left_peripheral.uf2
 
     steps:
       - name: Checkout
@@ -125,21 +127,21 @@ jobs:
             target/thumbv7em-none-eabihf/release/central left.bin
           python3 ../../uf2conv.py left.bin \
             --base 0x26000 --family 0xADA52840 \
-            --output ${{ matrix.output_name }}_left.uf2
+            --output ${{ matrix.central_output_name || format('{0}_left.uf2', matrix.output_name) }}
 
           arm-none-eabi-objcopy -O binary \
             target/thumbv7em-none-eabihf/release/peripheral right.bin
           python3 ../../uf2conv.py right.bin \
             --base 0x26000 --family 0xADA52840 \
-            --output ${{ matrix.output_name }}_right.uf2
+            --output ${{ matrix.peripheral_output_name || format('{0}_right.uf2', matrix.output_name) }}
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output_name }}
           path: |
-            keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}_left.uf2
-            keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}_right.uf2
+            keyboards/${{ matrix.keyboard }}/${{ matrix.central_output_name || format('{0}_left.uf2', matrix.output_name) }}
+            keyboards/${{ matrix.keyboard }}/${{ matrix.peripheral_output_name || format('{0}_right.uf2', matrix.output_name) }}
           retention-days: 30
 
   build-trackball:
