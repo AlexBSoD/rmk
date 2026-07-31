@@ -231,7 +231,7 @@ impl<S: PointingDriver> PointingDevice<S> {
     // ¦                 >- Event returned  ¦
     // +------------------------------------+
     async fn read_pointing_event(&mut self) -> PointingEvent {
-        use embassy_futures::select::{select, Either};
+        use embassy_futures::select::{Either, select};
 
         if self.last_poll == Instant::MIN {
             self.last_poll = Instant::now();
@@ -1492,11 +1492,7 @@ fn compute_caret_taps(
         MovementAxis::Y => accumulator.reset_x(),
     }
 
-    if count == 0 {
-        None
-    } else {
-        Some((keycode, count))
-    }
+    if count == 0 { None } else { Some((keycode, count)) }
 }
 
 #[cfg(test)]
@@ -2229,7 +2225,7 @@ mod tests {
         // 3 calls of (20, 20): total grows (20,20)→(40,40)→(60,60)
         assert!(compute_caret_taps(20, 20, &mut a, &cfg()).is_none()); // 40
         assert!(compute_caret_taps(20, 20, &mut a, &cfg()).is_none()); // 80
-                                                                       // 3rd call: |60|+|60|=120 > 100 → tap
+        // 3rd call: |60|+|60|=120 > 100 → tap
         assert_eq!(compute_caret_taps(20, 20, &mut a, &cfg()), Some((HidKeyCode::Right, 1)));
     }
 
