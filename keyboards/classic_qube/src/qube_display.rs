@@ -15,6 +15,7 @@ use core::fmt::Write as _;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
+use embassy_futures::yield_now;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::peripherals::{P0_02, P0_03, P0_28, P1_10, P1_11, P1_13, SPI3};
 use embassy_nrf::spim::{self, Spim};
@@ -78,6 +79,11 @@ const BATTERY_DIRTY: DirtyRegion = DirtyRegion::range(174, 224);
 // behind framebuffer rendering or SPI. Apply pending UI changes once the
 // pointing stream has been quiet for this window.
 const POINTING_REDRAW_QUIET_PERIOD: Duration = Duration::from_millis(100);
+// Modifier chips are interactive feedback and must remain responsive while
+// the trackball is moving. Transfer them in short rows and yield between SPI
+// transactions so the 125 Hz pointing path keeps running.
+const INTERACTIVE_STRIPE_H: u16 = 2;
+const MODIFIER_REDRAW_MIN_INTERVAL: Duration = Duration::from_millis(16);
 
 const COL_BG: Rgb565 = Rgb565::new(0, 2, 4);
 const COL_FG: Rgb565 = Rgb565::new(29, 61, 30);
@@ -291,6 +297,29 @@ where
 
     /// Redraw the requested vertical region via stripe multipass.
     async fn present_dirty(&mut self, renderer: &mut QubeStatusRenderer, ctx: &RenderContext, dirty: DirtyRegion) {
+        self.present_dirty_striped(renderer, ctx, dirty, STRIPE_H as u16, false)
+            .await;
+    }
+
+    /// Redraw latency-sensitive feedback without monopolising the executor.
+    async fn present_interactive_dirty(
+        &mut self,
+        renderer: &mut QubeStatusRenderer,
+        ctx: &RenderContext,
+        dirty: DirtyRegion,
+    ) {
+        self.present_dirty_striped(renderer, ctx, dirty, INTERACTIVE_STRIPE_H, true)
+            .await;
+    }
+
+    async fn present_dirty_striped(
+        &mut self,
+        renderer: &mut QubeStatusRenderer,
+        ctx: &RenderContext,
+        dirty: DirtyRegion,
+        stripe_h: u16,
+        cooperative: bool,
+    ) {
         self.ensure_init().await;
         let LcdState::Active(lcd) = &mut self.state else {
             return;
@@ -304,13 +333,16 @@ where
         let mut y = y0;
         while y < y1 {
             let remaining = y1.saturating_sub(y);
-            let h = remaining.min(STRIPE_H as u16);
+            let h = remaining.min(stripe_h);
             lcd.set_band(y, h);
             lcd.clear_stripe(COL_BG);
             // Re-run full UI; DrawTarget keeps only this stripe's pixels.
             renderer.render(ctx, lcd);
             lcd.flush_band().await;
             y = y.saturating_add(h);
+            if cooperative && y < y1 {
+                yield_now().await;
+            }
         }
     }
 }
@@ -380,7 +412,9 @@ where
     last_host_data: rmk::host_data::HostData,
     last_layer_names_version: u8,
     last_render: Instant,
+    last_modifier_render: Instant,
     pending: bool,
+    modifier_pending: bool,
     dirty: DirtyRegion,
     min_interval: Duration,
 }
@@ -430,7 +464,9 @@ where
         last_host_data: host_data,
         last_layer_names_version: crate::layer_names::version(),
         last_render: Instant::from_ticks(0),
+        last_modifier_render: Instant::from_ticks(0),
         pending: true,
+        modifier_pending: false,
         dirty: DirtyRegion::Full,
         min_interval: Duration::from_millis(80),
     }
@@ -459,6 +495,21 @@ where
         }
     }
 
+    fn modifier_redraw_wait(&self) -> Duration {
+        MODIFIER_REDRAW_MIN_INTERVAL
+            .checked_sub(self.last_modifier_render.elapsed())
+            .unwrap_or(Duration::MIN)
+    }
+
+    fn next_redraw_wait(&self) -> Option<Duration> {
+        match (self.pending, self.modifier_pending) {
+            (true, true) => Some(self.redraw_wait().min(self.modifier_redraw_wait())),
+            (true, false) => Some(self.redraw_wait()),
+            (false, true) => Some(self.modifier_redraw_wait()),
+            (false, false) => None,
+        }
+    }
+
     async fn redraw(&mut self) {
         self.sync_host_data();
         self.sync_layer_names();
@@ -473,6 +524,17 @@ where
         self.last_render = Instant::now();
     }
 
+    async fn redraw_modifiers(&mut self) {
+        if self.modifier_redraw_wait() != Duration::MIN {
+            return;
+        }
+        self.lcd
+            .present_interactive_dirty(&mut self.renderer, &self.ctx, MODIFIER_DIRTY)
+            .await;
+        self.modifier_pending = false;
+        self.last_modifier_render = Instant::now();
+    }
+
     fn request_redraw(&mut self) {
         self.pending = true;
         self.dirty = DirtyRegion::Full;
@@ -481,6 +543,10 @@ where
     fn request_redraw_region(&mut self, dirty: DirtyRegion) {
         self.dirty = if self.pending { self.dirty.union(dirty) } else { dirty };
         self.pending = true;
+    }
+
+    fn request_modifier_redraw(&mut self) {
+        self.modifier_pending = true;
     }
 
     fn sync_host_data(&mut self) {
@@ -538,8 +604,7 @@ where
 
         loop {
             // Wait for at least one event (or deferred redraw timer).
-            if self.pending {
-                let wait = self.redraw_wait();
+            if let Some(wait) = self.next_redraw_wait() {
                 match select(
                     Timer::after(wait),
                     Self::next_any_or_host_tick(
@@ -607,6 +672,9 @@ where
                 }
             }
 
+            if self.modifier_pending {
+                self.redraw_modifiers().await;
+            }
             if self.pending {
                 self.redraw().await;
             }
@@ -723,12 +791,12 @@ where
             UiEv::Led(e) => {
                 self.ctx.caps_lock = e.0.caps_lock();
                 self.ctx.num_lock = e.0.num_lock();
-                self.request_redraw_region(MODIFIER_DIRTY);
+                self.request_modifier_redraw();
                 need_redraw = false;
             }
             UiEv::Mod(e) => {
                 self.ctx.modifiers = e.modifier;
-                self.request_redraw_region(MODIFIER_DIRTY);
+                self.request_modifier_redraw();
                 need_redraw = false;
             }
             UiEv::Key(e) => {
