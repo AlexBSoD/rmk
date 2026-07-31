@@ -94,6 +94,9 @@ spi.miso = "P0_17"
 spi.cs = "P0_13"
 motion = "P0_15"
 cpi = 1000
+# Keep the same proven PMW3610 tracking path as Velvet Standalone.
+smart_mode = true
+report_hz = 125
 swap_xy = true
 invert_x = true
 invert_y = true

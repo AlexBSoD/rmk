@@ -216,6 +216,17 @@ impl<S: PointingDriver> PointingDevice<S> {
         }
 
         loop {
+            // `wait_for_low()` completes immediately while MOTION remains
+            // asserted. Check the report deadline before polling again so a
+            // continuously moving sensor cannot starve its own reports.
+            if (self.accumulated_x != 0 || self.accumulated_y != 0)
+                && self.last_report.elapsed() >= self.report_interval
+                && let Some(event) = self.take_report_event()
+            {
+                self.last_report = Instant::now();
+                return event;
+            }
+
             let poll_wait = async {
                 if let Some(gpio) = self.sensor.motion_gpio() {
                     let _ = gpio.wait_for_low().await;
@@ -1589,6 +1600,9 @@ mod tests {
         }
 
         async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
+            if !self.state.get() {
+                return Ok(());
+            }
             embassy_time::Timer::after(Duration::from_millis(500)).await;
             Ok(())
         }
@@ -1785,6 +1799,42 @@ mod tests {
         );
 
         assert!(device.sensor.read_called);
+    }
+
+    #[test]
+    fn test_due_report_is_not_starved_by_asserted_motion_pin() {
+        let motion_pin = DummyMotionPin::new();
+        motion_pin.set_low();
+
+        let driver = DummyDriver {
+            motion_pending: true,
+            motion: MotionData { dx: 7, dy: -4 },
+            init_called: true,
+            fails_init: false,
+            motion_gpio: Some(motion_pin),
+            read_called: false,
+        };
+
+        let mut device = PointingDevice {
+            sensor: driver,
+            init_state: InitState::Ready,
+            poll_interval: Duration::from_millis(1),
+            report_interval: Duration::from_millis(0),
+            last_poll: Instant::now(),
+            last_report: Instant::now(),
+            accumulated_x: 12,
+            accumulated_y: -8,
+            id: 1,
+        };
+
+        let event = block_on(device.read_event());
+
+        assert_eq!(event.axes[0].value, 12);
+        assert_eq!(event.axes[1].value, -8);
+        assert!(
+            !device.sensor.read_called,
+            "a due report must be emitted before another immediate MOTION poll"
+        );
     }
 
     // === MotionAccumulator tests ===

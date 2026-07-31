@@ -626,7 +626,7 @@ for file in keyboards/velvet/keyboard.toml keyboards/classic_qube/keyboard_velve
         || fail "$file: unified Velvet must define one Mouse factory layer"
 done
 
-python3 - <<'PY' || fail "Velvet persistent-settings refresh subscriber capacity drifted"
+python3 - <<'PY' || fail "Velvet pointing runtime contract drifted"
 import tomllib
 
 for path in (
@@ -635,10 +635,19 @@ for path in (
 ):
     with open(path, "rb") as source:
         config = tomllib.load(source)
-    actual = config["event"]["peripheral_settings_refresh"]["subs"]
-    assert actual == 1, (
-        f"{path}: event.peripheral_settings_refresh.subs={actual}, expected 1"
+    refresh_subs = config["event"]["peripheral_settings_refresh"]["subs"]
+    assert refresh_subs == 1, (
+        f"{path}: event.peripheral_settings_refresh.subs={refresh_subs}, expected 1"
     )
+    devices = config["split"]["peripheral"]
+    pointing = [
+        sensor
+        for peripheral in devices
+        for sensor in peripheral.get("input_device", {}).get("pmw3610", [])
+    ]
+    assert len(pointing) == 1, f"{path}: expected one PMW3610, found {len(pointing)}"
+    assert pointing[0]["smart_mode"] is True, f"{path}: PMW3610 smart_mode must be true"
+    assert pointing[0]["report_hz"] == 125, f"{path}: PMW3610 report_hz must be 125"
 PY
 
 actual_velvet_modes="$(jq -r '.customKeycodes[10:13] | map(.name) | join(",")' keyboards/velvet/vial.json)"

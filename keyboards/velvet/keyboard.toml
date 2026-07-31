@@ -116,6 +116,10 @@ spi.miso = "P0_17"
 spi.cs = "P0_13"
 motion = "P0_15"
 cpi = 1000
+# The glossy ball needs the PMW3610 shutter-based tracking mode; without it,
+# idle micro-motion can keep the auto Mouse layer active.
+smart_mode = true
+report_hz = 125
 swap_xy = true
 invert_x = true
 invert_y = true
