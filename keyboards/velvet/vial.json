@@ -90,7 +90,8 @@
                     "type": "boolean",
                     "title": "Trackball enabled",
                     "qsid": 334,
-                    "bit": 0
+                    "bit": 0,
+                    "layoutOption": 0
                 },
                 {
                     "type": "select",

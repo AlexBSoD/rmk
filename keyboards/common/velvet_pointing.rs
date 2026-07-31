@@ -5,7 +5,9 @@ use rmk::event::{
     ActionEvent, Axis, KeyboardEvent, LayerChangeEvent, PeripheralSettingsEvent, PointingEvent, PointingProcessorEvent,
     PointingSetCpiEvent, PointingTransformEvent, publish_event_async,
 };
-use rmk::input_device::pointing::{CaretConfig, CursorConfig, PointingMode, ScrollConfig, SniperConfig};
+use rmk::input_device::pointing::{
+    CaretConfig, CursorConfig, PointingMode, RelativeMotionActivity, ScrollConfig, SniperConfig,
+};
 use rmk::keymap::KeyMap;
 use rmk::macros::processor;
 use rmk::types::action::Action;
@@ -51,6 +53,8 @@ const USER_TEXT: u8 = 12;
 const AUTO_LAYER_NONE: u8 = 0xff;
 const MODE_KEY_TAP_MS: u32 = 220;
 const AUTO_LAYER_TIMEOUT_MS_TABLE: [u32; 6] = [250, 500, 750, 1000, 1250, 1500];
+const AUTO_LAYER_ACTIVITY_WINDOW_MS: u32 = 64;
+const AUTO_LAYER_ACTIVITY_THRESHOLD: u16 = 3;
 
 const DPI_TABLE: [u16; 16] = [
     200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000, 3200,
@@ -221,6 +225,7 @@ pub struct VelvetPointingMode<'a> {
     active_auto_layer: u8,
     auto_layer_held_keys: u8,
     last_auto_motion_ms: u32,
+    auto_layer_motion: RelativeMotionActivity,
 }
 
 impl<'a> VelvetPointingMode<'a> {
@@ -238,6 +243,7 @@ impl<'a> VelvetPointingMode<'a> {
             active_auto_layer: AUTO_LAYER_NONE,
             auto_layer_held_keys: 0,
             last_auto_motion_ms: 0,
+            auto_layer_motion: RelativeMotionActivity::new(),
         }
     }
 
@@ -305,13 +311,26 @@ impl<'a> VelvetPointingMode<'a> {
     }
 
     async fn on_pointing_event(&mut self, event: PointingEvent) {
-        if !self.settings.trackball_enabled()
-            || event.device_id != TRACKBALL_DEVICE_ID
-            || !event
-                .axes
-                .iter()
-                .any(|axis| matches!(axis.axis, Axis::X | Axis::Y) && axis.value != 0)
-        {
+        if !self.settings.trackball_enabled() || event.device_id != TRACKBALL_DEVICE_ID {
+            return;
+        }
+
+        let mut x = 0;
+        let mut y = 0;
+        for axis in event.axes {
+            match axis.axis {
+                Axis::X => x = axis.value,
+                Axis::Y => y = axis.value,
+                _ => {}
+            }
+        }
+        if !self.auto_layer_motion.observe(
+            x,
+            y,
+            now_ms_u32(),
+            AUTO_LAYER_ACTIVITY_WINDOW_MS,
+            AUTO_LAYER_ACTIVITY_THRESHOLD,
+        ) {
             return;
         }
         self.sync_auto_layer_for_motion();
@@ -382,6 +401,7 @@ impl<'a> VelvetPointingMode<'a> {
         let previous = self.active_auto_layer;
         self.active_auto_layer = AUTO_LAYER_NONE;
         self.auto_layer_held_keys = 0;
+        self.auto_layer_motion.reset();
         if previous != AUTO_LAYER_NONE && previous != 0 {
             self.keymap.deactivate_layer_if_active(previous);
         }
