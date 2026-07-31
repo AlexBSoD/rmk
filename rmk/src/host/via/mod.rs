@@ -180,9 +180,14 @@ fn battery_halves_for_split(
     peripheral_0: BatteryStatus,
     peripheral_1: BatteryStatus,
     peripheral_count: usize,
+    central_is_left: bool,
 ) -> (BatteryStatus, BatteryStatus) {
     if peripheral_count == 1 {
-        (central, peripheral_0)
+        if central_is_left {
+            (central, peripheral_0)
+        } else {
+            (peripheral_0, central)
+        }
     } else {
         (peripheral_0, peripheral_1)
     }
@@ -316,6 +321,7 @@ impl<'a> VialService<'a> {
                             self.ctx.peripheral_battery_status(0),
                             self.ctx.peripheral_battery_status(1),
                             crate::SPLIT_PERIPHERALS_NUM,
+                            crate::SPLIT_CENTRAL_IS_LEFT,
                         );
                         if let Some(level) = battery_level_byte(left) {
                             report.input_data[4] |= 0x01;
@@ -696,15 +702,23 @@ mod tests {
     #[test]
     fn no_qube_split_uses_central_and_first_peripheral_batteries() {
         assert_eq!(
-            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1),
+            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, true,),
             (battery(80), battery(55))
+        );
+    }
+
+    #[test]
+    fn right_central_split_reports_physical_battery_order() {
+        assert_eq!(
+            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, false,),
+            (battery(55), battery(80))
         );
     }
 
     #[test]
     fn qube_split_uses_both_peripheral_batteries() {
         assert_eq!(
-            battery_halves_for_split(battery(100), battery(80), battery(55), 2),
+            battery_halves_for_split(battery(100), battery(80), battery(55), 2, true),
             (battery(80), battery(55))
         );
     }

@@ -12,14 +12,14 @@ use rmk::macros::processor;
 
 use crate::velvet_pointing::{
     FLAG_ACCELERATION, FLAG_INVERT_SCROLL_X, FLAG_INVERT_SCROLL_Y, FLAG_INVERT_TEXT_X, FLAG_INVERT_TEXT_Y, FLAG_STICKY,
-    IDX_AUTO_FLAGS, IDX_AUTO_LAYER, IDX_AXIS, IDX_DPI, IDX_FLAGS, IDX_MODE, IDX_SCROLL_SENS, IDX_SNIPER_SENS,
-    IDX_TEXT_SENS, IDX_VERSION, SETTINGS_STORAGE_LEN, SETTINGS_VERSION, default_settings_packet,
-    sanitize_settings_packet,
+    FLAG_TRACKBALL_DISABLED, IDX_AUTO_FLAGS, IDX_AUTO_LAYER, IDX_AUTO_LAYER_TIMEOUT, IDX_AXIS, IDX_DPI, IDX_FLAGS,
+    IDX_MODE, IDX_SCROLL_SENS, IDX_SNIPER_SENS, IDX_TEXT_SENS, IDX_VERSION, LEGACY_SETTINGS_STORAGE_LEN,
+    SETTINGS_STORAGE_LEN, SETTINGS_VERSION, default_settings_packet, sanitize_settings_packet,
 };
 
-const SETTING_KEYS: [u16; 33] = [
+const SETTING_KEYS: [u16; 35] = [
     121, 127, 128, 129, 131, 135, 138, 139, 141, 142, 143, 144, 145, 146, 148, 200, 201, 202, 203, 204, 205, 206, 207,
-    208, 209, 210, 211, 212, 213, 214, 215, 328, 330,
+    208, 209, 210, 211, 212, 213, 214, 215, 324, 328, 330, 334,
 ];
 const STORAGE_OFFSET: usize = crate::layer_names::SERIALIZED_LEN;
 const SERIALIZED_LEN: usize = STORAGE_OFFSET + SETTINGS_STORAGE_LEN;
@@ -59,8 +59,10 @@ fn get_setting(qsid: u16, out: &mut [u8]) -> Option<usize> {
         145 => auto_flag(2) as u8,
         146 => auto_flag(3) as u8,
         148 => flag(FLAG_INVERT_TEXT_Y) as u8,
+        324 => setting(IDX_AUTO_LAYER_TIMEOUT).min(5),
         328 => flag(FLAG_INVERT_SCROLL_X) as u8,
         330 => flag(FLAG_INVERT_TEXT_X) as u8,
+        334 => (!flag(FLAG_TRACKBALL_DISABLED)) as u8,
         _ => return None,
     };
     Some(1)
@@ -89,8 +91,10 @@ fn set_setting(qsid: u16, value: &[u8]) -> bool {
         145 => set_auto_flag(2, value != 0),
         146 => set_auto_flag(3, value != 0),
         148 => set_flag(FLAG_INVERT_TEXT_Y, value != 0),
+        324 => set_byte(IDX_AUTO_LAYER_TIMEOUT, value.min(5)),
         328 => set_flag(FLAG_INVERT_SCROLL_X, value != 0),
         330 => set_flag(FLAG_INVERT_TEXT_X, value != 0),
+        334 => set_flag(FLAG_TRACKBALL_DISABLED, value == 0),
         _ => return false,
     }
     publish_settings();
@@ -107,8 +111,9 @@ fn serialize() -> VialDeviceSettingsData {
 
 fn deserialize(bytes: &[u8]) {
     crate::layer_names::deserialize(bytes);
-    let packet = if bytes.len() >= SERIALIZED_LEN {
-        sanitize_settings_packet(&bytes[STORAGE_OFFSET..SERIALIZED_LEN])
+    let available = bytes.len().saturating_sub(STORAGE_OFFSET).min(SETTINGS_STORAGE_LEN);
+    let packet = if available >= LEGACY_SETTINGS_STORAGE_LEN {
+        sanitize_settings_packet(&bytes[STORAGE_OFFSET..STORAGE_OFFSET + available])
     } else {
         default_settings_packet()
     };

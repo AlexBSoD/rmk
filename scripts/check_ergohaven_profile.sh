@@ -616,9 +616,11 @@ for directory in keyboards/trackball_v30 keyboards/trackball_v31 keyboards/track
     fi
 done
 
+[[ "$(rg -c '^\[\[split\.central\.input_device\.pmw3610\]\]$' keyboards/velvet/keyboard.toml)" == "1" ]] \
+    || fail "keyboards/velvet/keyboard.toml: right central must own one optional PMW3610"
+[[ "$(rg -c '^\[\[split\.peripheral\.input_device\.pmw3610\]\]$' keyboards/classic_qube/keyboard_velvet.toml)" == "1" ]] \
+    || fail "keyboards/classic_qube/keyboard_velvet.toml: right peripheral must own one optional PMW3610"
 for file in keyboards/velvet/keyboard.toml keyboards/classic_qube/keyboard_velvet.toml; do
-    [[ "$(rg -c '^\[\[split\.peripheral\.input_device\.pmw3610\]\]$' "$file")" == "1" ]] \
-        || fail "$file: unified Velvet must define one optional PMW3610"
     if rg -q '^\[\[behavior\.auto_mouse_layer\]\]$' "$file"; then
         fail "$file: static auto Mouse behavior must not shadow persistent Velvet settings"
     fi
@@ -639,7 +641,14 @@ for path in (
     assert refresh_subs == 1, (
         f"{path}: event.peripheral_settings_refresh.subs={refresh_subs}, expected 1"
     )
-    devices = config["split"]["peripheral"]
+    if path == "keyboards/velvet/keyboard.toml":
+        central = config["split"]["central"]
+        peripheral = config["split"]["peripheral"][0]
+        assert central["row_offset"] == 4, f"{path}: right half must be central"
+        assert peripheral["row_offset"] == 0, f"{path}: left half must be peripheral"
+        devices = [central]
+    else:
+        devices = config["split"]["peripheral"]
     pointing = [
         sensor
         for peripheral in devices
@@ -659,7 +668,7 @@ jq -e '
     and .layouts.labels == ["Right trackball instead of key"]
     and ([.layouts.keymap[][] | select(type == "string")] | index("7,1\n\n\n0,0") != null)
     and ([.settings[].fields[].qsid] | sort == [
-        121, 127, 128, 129, 131, 135, 138, 139, 141, 142, 143, 144, 145, 146, 148, 328, 330
+        121, 127, 128, 129, 131, 135, 138, 139, 141, 142, 143, 144, 145, 146, 148, 324, 328, 330, 334
     ])
 ' keyboards/velvet/vial.json >/dev/null \
     || fail "keyboards/velvet/vial.json: unified layout or backed trackball settings drifted"
@@ -667,6 +676,11 @@ rg -Fq '#[path = "../../common/velvet_pointing.rs"]' keyboards/velvet/src/centra
     || fail "keyboards/velvet/src/central.rs: shared Velvet pointing owner is missing"
 rg -Fq '#[path = "../../common/velvet_device_settings.rs"]' keyboards/velvet/src/central.rs \
     || fail "keyboards/velvet/src/central.rs: persistent Velvet settings owner is missing"
+rg -Fq 'crate::velvet_pointing::VelvetPointingSettingsSync' keyboards/velvet/src/central.rs \
+    || fail "keyboards/velvet/src/central.rs: right-central PMW3610 settings sync is missing"
+if rg -q 'VelvetPointingSettingsSync|velvet_pointing.rs' keyboards/velvet/src/peripheral.rs; then
+    fail "keyboards/velvet/src/peripheral.rs: left peripheral must not own PMW3610 settings"
+fi
 rg -Fq 'crate::velvet_device_settings::vial_device_settings' keyboards/velvet/build.rs \
     || fail "keyboards/velvet/build.rs: standalone Velvet settings provider is missing"
 rg -Fq 'crate::velvet_device_settings::vial_device_settings' keyboards/classic_qube/build.rs \

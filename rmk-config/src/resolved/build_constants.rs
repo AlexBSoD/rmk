@@ -45,6 +45,7 @@ pub struct BuildConstants {
     pub vial_channel_size: usize,
     pub flash_channel_size: usize,
     pub split_peripherals_num: usize,
+    pub split_central_is_left: bool,
     pub ble_profiles_num: usize,
     pub split_pairing_timeout_seconds: u32,
     pub ble_reconnect_timeout_seconds: u32,
@@ -84,6 +85,17 @@ impl crate::KeyboardTomlConfig {
         } else {
             rmk.split_peripherals_num
         };
+        let split_central_is_left = self
+            .split
+            .as_ref()
+            .filter(|split| split.peripheral.len() == 1)
+            .and_then(|split| {
+                split.peripheral.first().map(|peripheral| {
+                    (split.central.row_offset, split.central.col_offset)
+                        <= (peripheral.row_offset, peripheral.col_offset)
+                })
+            })
+            .unwrap_or(true);
 
         // Build event channels
         macro_rules! event_channels {
@@ -202,6 +214,7 @@ impl crate::KeyboardTomlConfig {
             vial_channel_size: rmk.vial_channel_size,
             flash_channel_size: rmk.flash_channel_size,
             split_peripherals_num,
+            split_central_is_left,
             ble_profiles_num: rmk.ble_profiles_num,
             split_pairing_timeout_seconds: rmk.split_pairing_timeout_seconds,
             ble_reconnect_timeout_seconds: rmk.ble_reconnect_timeout_seconds,
@@ -341,6 +354,23 @@ mod tests {
             .subs;
 
         assert_eq!(split_subs, base_subs + 2);
+    }
+
+    #[test]
+    fn resolves_split_central_physical_side_from_matrix_offsets() {
+        let left_central = parse(
+            "[split]\nconnection = \"ble\"\n[split.central]\nrows = 4\ncols = 6\nrow_offset = 0\ncol_offset = 0\n[split.central.matrix]\nrow_pins = []\ncol_pins = []\n[[split.peripheral]]\nrows = 4\ncols = 6\nrow_offset = 4\ncol_offset = 0\n[split.peripheral.matrix]\nrow_pins = []\ncol_pins = []\n",
+        )
+        .build_constants(&["split"])
+        .unwrap();
+        let right_central = parse(
+            "[split]\nconnection = \"ble\"\n[split.central]\nrows = 4\ncols = 6\nrow_offset = 4\ncol_offset = 0\n[split.central.matrix]\nrow_pins = []\ncol_pins = []\n[[split.peripheral]]\nrows = 4\ncols = 6\nrow_offset = 0\ncol_offset = 0\n[split.peripheral.matrix]\nrow_pins = []\ncol_pins = []\n",
+        )
+        .build_constants(&["split"])
+        .unwrap();
+
+        assert!(left_central.split_central_is_left);
+        assert!(!right_central.split_central_is_left);
     }
 
     #[test]

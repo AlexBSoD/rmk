@@ -12,7 +12,8 @@ use rmk::types::action::Action;
 use rmk::types::keycode::HidKeyCode;
 
 pub(crate) const SETTINGS_VERSION: u8 = 0x56;
-pub(crate) const SETTINGS_STORAGE_LEN: usize = 10;
+pub(crate) const LEGACY_SETTINGS_STORAGE_LEN: usize = 10;
+pub(crate) const SETTINGS_STORAGE_LEN: usize = 11;
 
 pub(crate) const IDX_VERSION: usize = 0;
 pub(crate) const IDX_MODE: usize = 1;
@@ -24,6 +25,7 @@ pub(crate) const IDX_TEXT_SENS: usize = 6;
 pub(crate) const IDX_FLAGS: usize = 7;
 pub(crate) const IDX_AUTO_LAYER: usize = 8;
 pub(crate) const IDX_AUTO_FLAGS: usize = 9;
+pub(crate) const IDX_AUTO_LAYER_TIMEOUT: usize = 10;
 
 pub(crate) const FLAG_INVERT_SCROLL_Y: u8 = 1 << 0;
 pub(crate) const FLAG_INVERT_TEXT_Y: u8 = 1 << 1;
@@ -31,12 +33,14 @@ pub(crate) const FLAG_ACCELERATION: u8 = 1 << 2;
 pub(crate) const FLAG_STICKY: u8 = 1 << 3;
 pub(crate) const FLAG_INVERT_SCROLL_X: u8 = 1 << 4;
 pub(crate) const FLAG_INVERT_TEXT_X: u8 = 1 << 5;
+pub(crate) const FLAG_TRACKBALL_DISABLED: u8 = 1 << 6;
 pub(crate) const FLAGS_MASK: u8 = FLAG_INVERT_SCROLL_Y
     | FLAG_INVERT_TEXT_Y
     | FLAG_ACCELERATION
     | FLAG_STICKY
     | FLAG_INVERT_SCROLL_X
-    | FLAG_INVERT_TEXT_X;
+    | FLAG_INVERT_TEXT_X
+    | FLAG_TRACKBALL_DISABLED;
 
 const TRACKBALL_DEVICE_ID: u8 = 0;
 const LAYER_SCROLL: u8 = 5;
@@ -45,8 +49,8 @@ const USER_SNIPER: u8 = 10;
 const USER_SCROLL: u8 = 11;
 const USER_TEXT: u8 = 12;
 const AUTO_LAYER_NONE: u8 = 0xff;
-const AUTO_LAYER_TIMEOUT_MS: u32 = 350;
 const MODE_KEY_TAP_MS: u32 = 220;
+const AUTO_LAYER_TIMEOUT_MS_TABLE: [u32; 6] = [250, 500, 750, 1000, 1250, 1500];
 
 const DPI_TABLE: [u16; 16] = [
     200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000, 3200,
@@ -64,16 +68,18 @@ pub(crate) const fn default_settings_packet() -> [u8; 27] {
     data[IDX_FLAGS] = 0;
     data[IDX_AUTO_LAYER] = 4;
     data[IDX_AUTO_FLAGS] = 1;
+    data[IDX_AUTO_LAYER_TIMEOUT] = 1;
     data
 }
 
 pub(crate) fn sanitize_settings_packet(data: &[u8]) -> [u8; 27] {
-    if data.len() < SETTINGS_STORAGE_LEN || data[IDX_VERSION] != SETTINGS_VERSION {
+    if data.len() < LEGACY_SETTINGS_STORAGE_LEN || data[IDX_VERSION] != SETTINGS_VERSION {
         return default_settings_packet();
     }
 
     let mut sanitized = default_settings_packet();
-    sanitized[..SETTINGS_STORAGE_LEN].copy_from_slice(&data[..SETTINGS_STORAGE_LEN]);
+    let copy_len = data.len().min(SETTINGS_STORAGE_LEN);
+    sanitized[..copy_len].copy_from_slice(&data[..copy_len]);
     sanitized[IDX_MODE] = sanitized[IDX_MODE].min(3);
     sanitized[IDX_AXIS] = sanitized[IDX_AXIS].min(3);
     sanitized[IDX_DPI] = sanitized[IDX_DPI].min(15);
@@ -83,6 +89,7 @@ pub(crate) fn sanitize_settings_packet(data: &[u8]) -> [u8; 27] {
     sanitized[IDX_FLAGS] &= FLAGS_MASK;
     sanitized[IDX_AUTO_LAYER] = sanitized[IDX_AUTO_LAYER].min(15);
     sanitized[IDX_AUTO_FLAGS] &= 0x0f;
+    sanitized[IDX_AUTO_LAYER_TIMEOUT] = sanitized[IDX_AUTO_LAYER_TIMEOUT].min(5);
     sanitized
 }
 
@@ -121,6 +128,7 @@ struct Settings {
     flags: u8,
     auto_layer: u8,
     auto_flags: u8,
+    auto_layer_timeout_index: u8,
 }
 
 impl Settings {
@@ -129,7 +137,7 @@ impl Settings {
     }
 
     fn from_packet(data: &[u8]) -> Option<Self> {
-        if data.len() < SETTINGS_STORAGE_LEN || data[IDX_VERSION] != SETTINGS_VERSION {
+        if data.len() < LEGACY_SETTINGS_STORAGE_LEN || data[IDX_VERSION] != SETTINGS_VERSION {
             return None;
         }
         Some(Self {
@@ -142,6 +150,7 @@ impl Settings {
             flags: data[IDX_FLAGS] & FLAGS_MASK,
             auto_layer: data[IDX_AUTO_LAYER].min(15),
             auto_flags: data[IDX_AUTO_FLAGS] & 0x0f,
+            auto_layer_timeout_index: data.get(IDX_AUTO_LAYER_TIMEOUT).copied().unwrap_or(1).min(5),
         })
     }
 
@@ -157,6 +166,14 @@ impl Settings {
             Mode::Text => 3,
         };
         self.auto_flags & (1 << bit) != 0
+    }
+
+    fn trackball_enabled(self) -> bool {
+        !self.flag(FLAG_TRACKBALL_DISABLED)
+    }
+
+    fn auto_layer_timeout_ms(self) -> u32 {
+        AUTO_LAYER_TIMEOUT_MS_TABLE[usize::from(self.auto_layer_timeout_index)]
     }
 
     fn pointing_mode(self, mode: Mode) -> PointingMode {
@@ -229,7 +246,9 @@ impl<'a> VelvetPointingMode<'a> {
             return;
         };
         self.settings = settings;
-        if self.active_auto_layer != AUTO_LAYER_NONE && !settings.auto_layer_enabled(self.current_mode()) {
+        if self.active_auto_layer != AUTO_LAYER_NONE
+            && (!settings.trackball_enabled() || !settings.auto_layer_enabled(self.current_mode()))
+        {
             self.deactivate_auto_layer();
         }
         self.publish_current(true).await;
@@ -286,7 +305,8 @@ impl<'a> VelvetPointingMode<'a> {
     }
 
     async fn on_pointing_event(&mut self, event: PointingEvent) {
-        if event.device_id != TRACKBALL_DEVICE_ID
+        if !self.settings.trackball_enabled()
+            || event.device_id != TRACKBALL_DEVICE_ID
             || !event
                 .axes
                 .iter()
@@ -301,7 +321,7 @@ impl<'a> VelvetPointingMode<'a> {
         if self.active_auto_layer == AUTO_LAYER_NONE || self.auto_layer_held_keys != 0 {
             return;
         }
-        if now_ms_u32().wrapping_sub(self.last_auto_motion_ms) >= AUTO_LAYER_TIMEOUT_MS {
+        if now_ms_u32().wrapping_sub(self.last_auto_motion_ms) >= self.settings.auto_layer_timeout_ms() {
             self.deactivate_auto_layer();
         }
     }
@@ -311,7 +331,11 @@ impl<'a> VelvetPointingMode<'a> {
     }
 
     async fn publish_current(&mut self, force: bool) {
-        let mode = self.settings.pointing_mode(self.current_mode());
+        let mode = if self.settings.trackball_enabled() {
+            self.settings.pointing_mode(self.current_mode())
+        } else {
+            PointingMode::Disabled
+        };
         if force || self.published_mode != mode {
             publish_event_async(PointingProcessorEvent {
                 device_id: TRACKBALL_DEVICE_ID,
@@ -335,7 +359,10 @@ impl<'a> VelvetPointingMode<'a> {
     }
 
     fn sync_auto_layer_for_motion(&mut self) {
-        if !self.settings.auto_layer_enabled(self.current_mode()) || self.settings.auto_layer == 0 {
+        if !self.settings.trackball_enabled()
+            || !self.settings.auto_layer_enabled(self.current_mode())
+            || self.settings.auto_layer == 0
+        {
             self.deactivate_auto_layer();
             return;
         }

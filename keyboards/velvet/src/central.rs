@@ -30,6 +30,11 @@ mod keyboard_central {
     }
 
     #[register_processor(event)]
+    fn pointing_settings() -> crate::velvet_pointing::VelvetPointingSettingsSync {
+        crate::velvet_pointing::VelvetPointingSettingsSync::new()
+    }
+
+    #[register_processor(event)]
     fn settings_broadcast() -> crate::velvet_device_settings::VelvetSettingsBroadcast {
         crate::velvet_device_settings::VelvetSettingsBroadcast::new()
     }

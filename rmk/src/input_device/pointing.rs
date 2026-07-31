@@ -274,6 +274,8 @@ impl<S: PointingDriver> PointingDevice<S> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PointingMode {
+    /// Ignore motion from the pointing device.
+    Disabled,
     /// Default cursor mode - XY maps to mouse XY movement
     Cursor(CursorConfig),
     /// Scroll mode - XY maps to wheel (vertical) and pan (horizontal)
@@ -1271,6 +1273,7 @@ impl<'a> PointingProcessor<'a> {
 
         let buttons = self.keymap.mouse_buttons();
         match self.current_mode {
+            PointingMode::Disabled => {}
             PointingMode::Cursor(_) | PointingMode::Scroll(_) | PointingMode::Sniper(_) => {
                 // modes that generate mouse reports
                 let mouse_report = match self.current_mode {
@@ -2275,6 +2278,7 @@ mod tests {
     fn test_pointing_processor_mode_selection() {
         // Test that the processor correctly selects the mode based on current layer
         let modes = [
+            PointingMode::Disabled,
             PointingMode::Cursor(CursorConfig::default()),
             PointingMode::Scroll(ScrollConfig::default()),
             PointingMode::Sniper(SniperConfig {

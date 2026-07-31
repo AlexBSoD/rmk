@@ -88,26 +88,26 @@ connection = "ble"
 [split.central]
 rows = 4
 cols = 6
-row_offset = 0
+row_offset = 4
 col_offset = 0
 
 [split.central.matrix]
-row_pins = ["P0_30", "P0_10", "P0_09", "P0_24"]
-col_pins = ["P0_02", "P1_13", "P0_28", "P0_03", "P1_10", "P1_11"]
+row_pins = ["P1_13", "P0_02", "P0_29", "P0_30"]
+col_pins = ["P0_24", "P0_09", "P0_10", "P1_11", "P1_10", "P0_03"]
 
 [[split.peripheral]]
 rows = 4
 cols = 6
-row_offset = 4
+row_offset = 0
 col_offset = 0
 
 [split.peripheral.matrix]
-row_pins = ["P1_13", "P0_02", "P0_29", "P0_30"]
-col_pins = ["P0_24", "P0_09", "P0_10", "P1_11", "P1_10", "P0_03"]
+row_pins = ["P0_30", "P0_10", "P0_09", "P0_24"]
+col_pins = ["P0_02", "P1_13", "P0_28", "P0_03", "P1_10", "P1_11"]
 
-# Optional PMW3610 on the right half. Its pins do not overlap the matrix.
+# Optional PMW3610 on the right central half. Its pins do not overlap the matrix.
 # On a key-only Velvet the pulled-up motion line leaves this device inactive.
-[[split.peripheral.input_device.pmw3610]]
+[[split.central.input_device.pmw3610]]
 name = "trackball0"
 spi.instance = "bitbang0"
 spi.sck = "P0_08"
