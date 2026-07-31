@@ -15,7 +15,6 @@ use core::fmt::Write as _;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
-use embassy_futures::yield_now;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::peripherals::{P0_02, P0_03, P0_28, P1_10, P1_11, P1_13, SPI3};
 use embassy_nrf::spim::{self, Spim};
@@ -79,10 +78,9 @@ const BATTERY_DIRTY: DirtyRegion = DirtyRegion::range(174, 224);
 // behind framebuffer rendering or SPI. Apply pending UI changes once the
 // pointing stream has been quiet for this window.
 const POINTING_REDRAW_QUIET_PERIOD: Duration = Duration::from_millis(100);
-// Modifier chips are interactive feedback and must remain responsive while
-// the trackball is moving. Transfer them in short rows and yield between SPI
-// transactions so the 125 Hz pointing path keeps running.
-const INTERACTIVE_STRIPE_H: u16 = 2;
+// Modifier chips are interactive feedback. Render the complete band once,
+// then commit it in one asynchronous EasyDMA transfer so the screen never
+// exposes intermediate stripe renders and the executor remains available.
 const MODIFIER_REDRAW_MIN_INTERVAL: Duration = Duration::from_millis(16);
 
 const COL_BG: Rgb565 = Rgb565::new(0, 2, 4);
@@ -146,7 +144,8 @@ impl StripeLcd {
 
     fn clear_stripe(&mut self, color: Rgb565) {
         let c = color.into_storage().to_be_bytes();
-        for pix in self.buffer.chunks_exact_mut(2) {
+        let bytes = SCREEN_W * self.band_h as usize * 2;
+        for pix in self.buffer[..bytes].chunks_exact_mut(2) {
             pix[0] = c[0];
             pix[1] = c[1];
         }
@@ -297,29 +296,6 @@ where
 
     /// Redraw the requested vertical region via stripe multipass.
     async fn present_dirty(&mut self, renderer: &mut QubeStatusRenderer, ctx: &RenderContext, dirty: DirtyRegion) {
-        self.present_dirty_striped(renderer, ctx, dirty, STRIPE_H as u16, false)
-            .await;
-    }
-
-    /// Redraw latency-sensitive feedback without monopolising the executor.
-    async fn present_interactive_dirty(
-        &mut self,
-        renderer: &mut QubeStatusRenderer,
-        ctx: &RenderContext,
-        dirty: DirtyRegion,
-    ) {
-        self.present_dirty_striped(renderer, ctx, dirty, INTERACTIVE_STRIPE_H, true)
-            .await;
-    }
-
-    async fn present_dirty_striped(
-        &mut self,
-        renderer: &mut QubeStatusRenderer,
-        ctx: &RenderContext,
-        dirty: DirtyRegion,
-        stripe_h: u16,
-        cooperative: bool,
-    ) {
         self.ensure_init().await;
         let LcdState::Active(lcd) = &mut self.state else {
             return;
@@ -333,17 +309,30 @@ where
         let mut y = y0;
         while y < y1 {
             let remaining = y1.saturating_sub(y);
-            let h = remaining.min(stripe_h);
+            let h = remaining.min(STRIPE_H as u16);
             lcd.set_band(y, h);
             lcd.clear_stripe(COL_BG);
             // Re-run full UI; DrawTarget keeps only this stripe's pixels.
             renderer.render(ctx, lcd);
             lcd.flush_band().await;
             y = y.saturating_add(h);
-            if cooperative && y < y1 {
-                yield_now().await;
-            }
         }
+    }
+
+    /// Render interactive modifier feedback once before touching the panel.
+    async fn present_modifiers(&mut self, renderer: &QubeStatusRenderer, ctx: &RenderContext) {
+        self.ensure_init().await;
+        let LcdState::Active(lcd) = &mut self.state else {
+            return;
+        };
+        let DirtyRegion::Range { y0, y1 } = MODIFIER_DIRTY else {
+            return;
+        };
+
+        lcd.set_band(y0, y1.saturating_sub(y0));
+        lcd.clear_stripe(COL_BG);
+        renderer.render_modifiers(ctx, lcd);
+        lcd.flush_band().await;
     }
 }
 
@@ -529,7 +518,7 @@ where
             return;
         }
         self.lcd
-            .present_interactive_dirty(&mut self.renderer, &self.ctx, MODIFIER_DIRTY)
+            .present_modifiers(&self.renderer, &self.ctx)
             .await;
         self.modifier_pending = false;
         self.last_modifier_render = Instant::now();
@@ -879,6 +868,42 @@ impl QubeStatusRenderer {
         push_media_label(&mut media, &self.host_data);
         media.len() > MEDIA_VISIBLE_CHARS
     }
+
+    fn render_modifiers<D: DrawTarget<Color = Rgb565>>(&self, ctx: &RenderContext, display: &mut D) {
+        draw_chip(display, 30, 146, 38, "CAPS", ctx.caps_lock);
+        draw_chip(
+            display,
+            76,
+            146,
+            38,
+            "CTRL",
+            ctx.modifiers.left_ctrl() || ctx.modifiers.right_ctrl(),
+        );
+        draw_chip(
+            display,
+            122,
+            146,
+            46,
+            "SHIFT",
+            ctx.modifiers.left_shift() || ctx.modifiers.right_shift(),
+        );
+        draw_chip(
+            display,
+            176,
+            146,
+            34,
+            "ALT",
+            ctx.modifiers.left_alt() || ctx.modifiers.right_alt(),
+        );
+        draw_chip(
+            display,
+            218,
+            146,
+            34,
+            "GUI",
+            ctx.modifiers.left_gui() || ctx.modifiers.right_gui(),
+        );
+    }
 }
 
 impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
@@ -950,39 +975,7 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         draw_round_fill(display, 104, 125, 72, 2, 1, COL_ACCENT_DIM);
 
         // Modifier chips.
-        draw_chip(display, 30, 146, 38, "CAPS", ctx.caps_lock);
-        draw_chip(
-            display,
-            76,
-            146,
-            38,
-            "CTRL",
-            ctx.modifiers.left_ctrl() || ctx.modifiers.right_ctrl(),
-        );
-        draw_chip(
-            display,
-            122,
-            146,
-            46,
-            "SHIFT",
-            ctx.modifiers.left_shift() || ctx.modifiers.right_shift(),
-        );
-        draw_chip(
-            display,
-            176,
-            146,
-            34,
-            "ALT",
-            ctx.modifiers.left_alt() || ctx.modifiers.right_alt(),
-        );
-        draw_chip(
-            display,
-            218,
-            146,
-            34,
-            "GUI",
-            ctx.modifiers.left_gui() || ctx.modifiers.right_gui(),
-        );
+        self.render_modifiers(ctx, display);
 
         // Battery cards.
         draw_bat(display, SAFE_X, 176, 116, lp, left, "LEFT");
