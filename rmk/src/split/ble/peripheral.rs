@@ -14,7 +14,7 @@ use crate::event::{
 };
 use crate::split::driver::{SplitDriverError, SplitReader, SplitWriter};
 use crate::split::peripheral::SplitPeripheral;
-use crate::split::{SPLIT_MESSAGE_MAX_SIZE, SplitMessage};
+use crate::split::{SPLIT_MESSAGE_MAX_SIZE, SplitMessage, encode_split_message};
 use crate::state::update_status;
 
 const SPLIT_COMPANY_ID: u16 = 0xe118;
@@ -116,19 +116,19 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitReader for BleSplitPeripheralDrive
 impl<'stack, 'server, 'c, P: PacketPool> SplitWriter for BleSplitPeripheralDriver<'stack, 'server, 'c, P> {
     async fn write(&mut self, message: &SplitMessage) -> Result<usize, SplitDriverError> {
         let mut buf = [0_u8; SPLIT_MESSAGE_MAX_SIZE];
-        postcard::to_slice(message, &mut buf).map_err(|e| {
+        let encoded = encode_split_message(message, &mut buf).map_err(|e| {
             error!("Postcard serialize split message error: {}", e);
             SplitDriverError::SerializeError
         })?;
         info!("Writing split message to central: {:?}", message);
         self.message_to_central
-            .notify(self.conn, &buf, true)
+            .notify_raw(self.conn, encoded, false)
             .await
             .map_err(|e| {
                 error!("BLE notify error: {:?}", e);
                 SplitDriverError::BleError(1)
             })?;
-        Ok(buf.len())
+        Ok(encoded.len())
     }
 }
 

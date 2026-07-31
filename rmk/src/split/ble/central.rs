@@ -19,7 +19,7 @@ use crate::event::{
 #[cfg(feature = "storage")]
 use crate::split::ble::PeerAddress;
 use crate::split::driver::{PeripheralManager, SplitDriverError, SplitReader, SplitWriter};
-use crate::split::{SPLIT_MESSAGE_MAX_SIZE, SplitMessage};
+use crate::split::{SPLIT_MESSAGE_MAX_SIZE, SplitMessage, encode_split_message};
 use crate::storage::FlashOperationMessage;
 use crate::{SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS, SPLIT_PAIRING_TIMEOUT_SECONDS};
 
@@ -38,6 +38,11 @@ static SPLIT_WINDOW_DONE: Signal<crate::RawMutex, u32> = Signal::new();
 static SPLIT_WINDOW_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 static LAST_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
+// Keyboard activity is link-local. Keeping this separate from the global
+// sleep timestamp prevents motion or keys on one half from forcing every
+// other Qube link into the active connection interval.
+static LAST_LINK_ACTIVITY_MS: [AtomicU32; crate::SPLIT_PERIPHERALS_NUM] =
+    [const { AtomicU32::new(0) }; crate::SPLIT_PERIPHERALS_NUM];
 // Pointing cadence belongs to the link that actually carries the device. A
 // single global timestamp made every Qube peripheral renegotiate to 7.5 ms
 // whenever the right trackball moved, adding controller contention and stale
@@ -46,8 +51,11 @@ static LAST_POINTING_ACTIVITY_MS: [AtomicU32; crate::SPLIT_PERIPHERALS_NUM] =
     [const { AtomicU32::new(0) }; crate::SPLIT_PERIPHERALS_NUM];
 static SPLIT_SLEEP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-const SPLIT_POINTING_ACTIVE_WINDOW_MS: u32 = 500;
 const SPLIT_ACTIVE_WINDOW_MS: u32 = 2_000;
+// Keep the 7.5 ms pointing interval through normal cursor pauses, then move
+// directly to idle instead of renegotiating 7.5 -> 15 -> 30 ms after every
+// gesture.
+const SPLIT_POINTING_ACTIVE_WINDOW_MS: u32 = SPLIT_ACTIVE_WINDOW_MS;
 const SPLIT_POWER_POLL_MS: u64 = 100;
 
 const SPLIT_SERVICE_UUID: [u8; 16] = [70, 153, 101, 152, 54, 53, 10, 191, 7, 75, 229, 24, 170, 251, 213, 77];
@@ -773,7 +781,7 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
             }
             SplitMessage::Key(_) => {
                 debug!("Key activity {:?} detected from peripheral", &message);
-                update_activity_time();
+                update_link_activity_time(self.peripheral_id);
             }
             _ => {}
         }
@@ -787,11 +795,11 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
 {
     async fn write(&mut self, message: &SplitMessage) -> Result<usize, SplitDriverError> {
         let mut buf = [0_u8; SPLIT_MESSAGE_MAX_SIZE];
-        match postcard::to_slice(&message, &mut buf) {
-            Ok(_bytes) => {
+        match encode_split_message(message, &mut buf) {
+            Ok(encoded) => {
                 if let Err(e) = self
                     .client
-                    .write_characteristic_without_response(&self.message_to_peripheral, &buf)
+                    .write_characteristic_without_response(&self.message_to_peripheral, encoded)
                     .await
                 {
                     if let BleHostError::BleHost(Error::NotFound) = e {
@@ -802,11 +810,12 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
                     let e = defmt::Debug2Format(&e);
                     error!("BLE message_to_peripheral_write error: {:?}", e);
                 }
+                return Ok(encoded.len());
             }
             Err(e) => error!("Postcard serialize split message error: {}", e),
         };
 
-        Ok(SPLIT_MESSAGE_MAX_SIZE)
+        Err(SplitDriverError::SerializeError)
     }
 }
 
@@ -922,7 +931,10 @@ async fn sleep_manager_task<
         Timer::after_millis(SPLIT_POWER_POLL_MS).await;
         let next_mode = desired_split_power_mode(
             Instant::now().as_millis() as u32,
-            LAST_ACTIVITY_MS.load(Ordering::Acquire),
+            LAST_LINK_ACTIVITY_MS
+                .get(peripheral_id)
+                .map(|last| last.load(Ordering::Acquire))
+                .unwrap_or(0),
             LAST_POINTING_ACTIVITY_MS
                 .get(peripheral_id)
                 .map(|last| last.load(Ordering::Acquire))
@@ -971,22 +983,37 @@ async fn sleep_manager_task<
     }
 }
 
-/// Update the activity time to indicate user activity
+/// Update the keyboard-wide activity time without attributing it to a split link.
 pub(crate) fn update_activity_time() {
     LAST_ACTIVITY_MS.store(Instant::now().as_millis() as u32, Ordering::Release);
     SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
-    debug!("Activity detected, restoring active split link");
+    debug!("Activity detected, waking split links");
+}
+
+/// Record key activity for the one split link that carried it and for the
+/// keyboard-wide sleep deadline.
+pub(crate) fn update_link_activity_time(peripheral_id: usize) {
+    let now_ms = Instant::now().as_millis() as u32;
+    store_link_activity(&LAST_LINK_ACTIVITY_MS, peripheral_id, now_ms);
+    LAST_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
+    debug!("Split-link activity detected, restoring active interval");
 }
 
 /// Record pointing motion so the split link can temporarily use a 7.5 ms interval.
 pub(crate) fn update_pointing_activity_time(peripheral_id: usize) {
     let now_ms = Instant::now().as_millis() as u32;
-    if let Some(last) = LAST_POINTING_ACTIVITY_MS.get(peripheral_id) {
-        last.store(now_ms, Ordering::Release);
-    }
+    store_link_activity(&LAST_LINK_ACTIVITY_MS, peripheral_id, now_ms);
+    store_link_activity(&LAST_POINTING_ACTIVITY_MS, peripheral_id, now_ms);
     LAST_ACTIVITY_MS.store(now_ms, Ordering::Release);
     SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
     debug!("Pointing activity detected, restoring low-latency split link");
+}
+
+fn store_link_activity(slots: &[AtomicU32], peripheral_id: usize, now_ms: u32) {
+    if let Some(last) = slots.get(peripheral_id) {
+        last.store(now_ms, Ordering::Release);
+    }
 }
 
 /// Request deep split-link sleep from a host suspend or transport timeout.
@@ -1053,8 +1080,12 @@ mod advertisement_tests {
             SplitPowerMode::Pointing
         );
         assert_eq!(
-            desired_split_power_mode(2_500, 2_000, 2_000, false),
-            SplitPowerMode::Active
+            desired_split_power_mode(3_999, 2_000, 2_000, false),
+            SplitPowerMode::Pointing
+        );
+        assert_eq!(
+            desired_split_power_mode(4_000, 2_000, 2_000, false),
+            SplitPowerMode::Idle
         );
 
         if SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS != 0 {
@@ -1074,6 +1105,16 @@ mod advertisement_tests {
         assert_eq!(params.min_connection_interval, Duration::from_micros(7_500));
         assert_eq!(params.max_connection_interval, Duration::from_micros(7_500));
         assert_eq!(params.max_latency, 0);
+    }
+
+    #[test]
+    fn split_link_activity_is_recorded_only_for_its_peripheral() {
+        let slots = [AtomicU32::new(0), AtomicU32::new(0)];
+
+        store_link_activity(&slots, 1, 42);
+
+        assert_eq!(slots[0].load(Ordering::Acquire), 0);
+        assert_eq!(slots[1].load(Ordering::Acquire), 42);
     }
 
     #[test]
