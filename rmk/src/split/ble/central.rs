@@ -38,7 +38,12 @@ static SPLIT_WINDOW_DONE: Signal<crate::RawMutex, u32> = Signal::new();
 static SPLIT_WINDOW_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 static LAST_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
-static LAST_POINTING_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
+// Pointing cadence belongs to the link that actually carries the device. A
+// single global timestamp made every Qube peripheral renegotiate to 7.5 ms
+// whenever the right trackball moved, adding controller contention and stale
+// reports on the pointing link itself.
+static LAST_POINTING_ACTIVITY_MS: [AtomicU32; crate::SPLIT_PERIPHERALS_NUM] =
+    [const { AtomicU32::new(0) }; crate::SPLIT_PERIPHERALS_NUM];
 static SPLIT_SLEEP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 const SPLIT_POINTING_ACTIVE_WINDOW_MS: u32 = 500;
@@ -633,7 +638,7 @@ async fn run_central_manager_task<
     let result = match select3(
         ble_central_task(&client, conn),
         run_peripheral_manager::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(id, peer_address, &client, peer_validated),
-        sleep_manager_task(stack, conn),
+        sleep_manager_task(stack, conn, id),
     )
     .await
     {
@@ -705,7 +710,7 @@ async fn run_peripheral_manager<
             .await?;
         info!("Subscribing notifications");
         let listener = client.subscribe(&message_to_central, false).await?;
-        let mut split_ble_driver = BleSplitCentralDriver::new(listener, message_to_peripheral, client);
+        let mut split_ble_driver = BleSplitCentralDriver::new(id, listener, message_to_peripheral, client);
         if !validate_split_product(&mut split_ble_driver).await {
             warn!("Rejecting split peripheral {} after product validation", id);
             return Ok(());
@@ -728,6 +733,7 @@ async fn run_peripheral_manager<
 /// It's impossible to implement `SplitReader` or `SplitWriter` for BLE service,
 /// so we need this wrapper to forward split message to channel.
 pub(crate) struct BleSplitCentralDriver<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> {
+    peripheral_id: usize,
     // Listener for split message from peripheral
     listener: NotificationListener<'b, 512>,
     // Characteristic to send split message to peripheral
@@ -738,11 +744,13 @@ pub(crate) struct BleSplitCentralDriver<'a, 'b, 'c, C: Controller + ControllerCm
 
 impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> BleSplitCentralDriver<'a, 'b, 'c, C, P> {
     pub(crate) fn new(
+        peripheral_id: usize,
         listener: NotificationListener<'b, 512>,
         message_to_peripheral: Characteristic<[u8; SPLIT_MESSAGE_MAX_SIZE]>,
         client: &'c GattClient<'a, C, P, 10>,
     ) -> Self {
         Self {
+            peripheral_id,
             listener,
             message_to_peripheral,
             client,
@@ -761,7 +769,7 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
         match &message {
             SplitMessage::Pointing(_) => {
                 debug!("Pointing activity {:?} detected from peripheral", &message);
-                update_pointing_activity_time();
+                update_pointing_activity_time(self.peripheral_id);
             }
             SplitMessage::Key(_) => {
                 debug!("Key activity {:?} detected from peripheral", &message);
@@ -863,7 +871,7 @@ pub async fn run_split_power_state_manager() -> ! {
     let mut sleeping = desired_split_power_mode(
         now_ms,
         LAST_ACTIVITY_MS.load(Ordering::Acquire),
-        LAST_POINTING_ACTIVITY_MS.load(Ordering::Acquire),
+        0,
         SPLIT_SLEEP_REQUESTED.load(Ordering::Acquire),
     ) == SplitPowerMode::Sleeping;
 
@@ -876,7 +884,7 @@ pub async fn run_split_power_state_manager() -> ! {
         let next_sleeping = desired_split_power_mode(
             Instant::now().as_millis() as u32,
             LAST_ACTIVITY_MS.load(Ordering::Acquire),
-            LAST_POINTING_ACTIVITY_MS.load(Ordering::Acquire),
+            0,
             SPLIT_SLEEP_REQUESTED.load(Ordering::Acquire),
         ) == SplitPowerMode::Sleeping;
         if next_sleeping == sleeping {
@@ -902,6 +910,7 @@ async fn sleep_manager_task<
 >(
     stack: &'b Stack<'s, C, P>,
     conn: &Connection<'b, P>,
+    peripheral_id: usize,
 ) -> Result<(), BleHostError<C::Error>> {
     info!(
         "Adaptive split power manager started with {}s sleep timeout",
@@ -914,7 +923,10 @@ async fn sleep_manager_task<
         let next_mode = desired_split_power_mode(
             Instant::now().as_millis() as u32,
             LAST_ACTIVITY_MS.load(Ordering::Acquire),
-            LAST_POINTING_ACTIVITY_MS.load(Ordering::Acquire),
+            LAST_POINTING_ACTIVITY_MS
+                .get(peripheral_id)
+                .map(|last| last.load(Ordering::Acquire))
+                .unwrap_or(0),
             SPLIT_SLEEP_REQUESTED.load(Ordering::Acquire),
         );
         if next_mode == current_mode {
@@ -967,9 +979,11 @@ pub(crate) fn update_activity_time() {
 }
 
 /// Record pointing motion so the split link can temporarily use a 7.5 ms interval.
-pub(crate) fn update_pointing_activity_time() {
+pub(crate) fn update_pointing_activity_time(peripheral_id: usize) {
     let now_ms = Instant::now().as_millis() as u32;
-    LAST_POINTING_ACTIVITY_MS.store(now_ms, Ordering::Release);
+    if let Some(last) = LAST_POINTING_ACTIVITY_MS.get(peripheral_id) {
+        last.store(now_ms, Ordering::Release);
+    }
     LAST_ACTIVITY_MS.store(now_ms, Ordering::Release);
     SPLIT_SLEEP_REQUESTED.store(false, Ordering::Release);
     debug!("Pointing activity detected, restoring low-latency split link");

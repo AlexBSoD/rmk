@@ -179,3 +179,19 @@ pub struct PointingTransformEvent {
     pub rotation: u8,
     pub acceleration: bool,
 }
+
+/// Runtime override for one configured auto-mouse-layer entry.
+///
+/// The entry must already exist in `[behavior.auto_mouse_layer]`; this event
+/// updates the fields that settings UIs commonly expose without creating a
+/// second layer-timer implementation in keyboard-specific code.
+#[event(channel_size = 4, pubs = 2, subs = 1)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct AutoMouseLayerConfigEvent {
+    pub device_id: u8,
+    pub enabled: bool,
+    pub target_layer: u8,
+    pub timeout_ms: u32,
+    pub threshold: u16,
+}

@@ -124,6 +124,14 @@ swap_xy = true
 invert_x = true
 invert_y = true
 
+# The generic RMK runner owns activation and its exact deadline. Velvet
+# settings update this entry at runtime (enabled modes, layer and timeout).
+[[behavior.auto_mouse_layer]]
+device_id = 0
+target_layer = 4
+timeout = "500ms"
+threshold = 2
+
 [rmk]
 split_peripherals_num = 1
 split_pairing_timeout_seconds = 30

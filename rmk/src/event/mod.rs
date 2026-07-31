@@ -62,8 +62,8 @@ pub use connection::{ConnectionStatus, ConnectionStatusChangeEvent, ConnectionTy
 #[cfg(feature = "dfu")]
 pub use dfu::DfuStatusEvent;
 pub use input::{
-    Axis, AxisEvent, AxisValType, KeyPos, KeyboardEvent, KeyboardEventPos, ModifierEvent, PointingEvent,
-    PointingProcessorEvent, PointingSetCpiEvent, PointingTransformEvent, RotaryEncoderPos,
+    AutoMouseLayerConfigEvent, Axis, AxisEvent, AxisValType, KeyPos, KeyboardEvent, KeyboardEventPos, ModifierEvent,
+    PointingEvent, PointingProcessorEvent, PointingSetCpiEvent, PointingTransformEvent, RotaryEncoderPos,
 };
 #[cfg(feature = "split")]
 pub use split::{

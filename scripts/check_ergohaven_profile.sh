@@ -621,9 +621,8 @@ done
 [[ "$(rg -c '^\[\[split\.peripheral\.input_device\.pmw3610\]\]$' keyboards/classic_qube/keyboard_velvet.toml)" == "1" ]] \
     || fail "keyboards/classic_qube/keyboard_velvet.toml: right peripheral must own one optional PMW3610"
 for file in keyboards/velvet/keyboard.toml keyboards/classic_qube/keyboard_velvet.toml; do
-    if rg -q '^\[\[behavior\.auto_mouse_layer\]\]$' "$file"; then
-        fail "$file: static auto Mouse behavior must not shadow persistent Velvet settings"
-    fi
+    [[ "$(rg -c '^\[\[behavior\.auto_mouse_layer\]\]$' "$file")" == "1" ]] \
+        || fail "$file: persistent Velvet settings require one runtime-configurable auto Mouse entry"
     [[ "$(rg -c '^name = "Mouse"$' "$file")" == "1" ]] \
         || fail "$file: unified Velvet must define one Mouse factory layer"
 done
@@ -657,6 +656,13 @@ for path in (
     assert len(pointing) == 1, f"{path}: expected one PMW3610, found {len(pointing)}"
     assert pointing[0]["smart_mode"] is True, f"{path}: PMW3610 smart_mode must be true"
     assert pointing[0]["report_hz"] == 125, f"{path}: PMW3610 report_hz must be 125"
+    auto_mouse = config["behavior"]["auto_mouse_layer"]
+    assert auto_mouse == [{
+        "device_id": 0,
+        "target_layer": 4,
+        "timeout": "500ms",
+        "threshold": 2,
+    }], f"{path}: runtime-configurable auto Mouse seed drifted: {auto_mouse!r}"
 PY
 
 actual_velvet_modes="$(jq -r '.customKeycodes[10:13] | map(.name) | join(",")' keyboards/velvet/vial.json)"
@@ -678,6 +684,8 @@ rg -Fq '#[path = "../../common/velvet_device_settings.rs"]' keyboards/velvet/src
     || fail "keyboards/velvet/src/central.rs: persistent Velvet settings owner is missing"
 rg -Fq 'crate::velvet_pointing::VelvetPointingSettingsSync' keyboards/velvet/src/central.rs \
     || fail "keyboards/velvet/src/central.rs: right-central PMW3610 settings sync is missing"
+rg -Fq 'AutoMouseLayerConfigEvent' keyboards/common/velvet_pointing.rs \
+    || fail "keyboards/common/velvet_pointing.rs: persistent settings no longer update the generic auto Mouse runner"
 if rg -q 'VelvetPointingSettingsSync|velvet_pointing.rs' keyboards/velvet/src/peripheral.rs; then
     fail "keyboards/velvet/src/peripheral.rs: left peripheral must not own PMW3610 settings"
 fi

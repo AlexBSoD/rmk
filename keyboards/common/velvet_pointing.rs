@@ -2,13 +2,10 @@
 
 use embassy_time::Instant;
 use rmk::event::{
-    ActionEvent, Axis, KeyboardEvent, LayerChangeEvent, PeripheralSettingsEvent, PointingEvent, PointingProcessorEvent,
-    PointingSetCpiEvent, PointingTransformEvent, publish_event_async,
+    publish_event_async, ActionEvent, AutoMouseLayerConfigEvent, LayerChangeEvent, PeripheralSettingsEvent,
+    PointingProcessorEvent, PointingSetCpiEvent, PointingTransformEvent,
 };
-use rmk::input_device::pointing::{
-    CaretConfig, CursorConfig, PointingMode, RelativeMotionActivity, ScrollConfig, SniperConfig,
-};
-use rmk::keymap::KeyMap;
+use rmk::input_device::pointing::{CaretConfig, CursorConfig, PointingMode, ScrollConfig, SniperConfig};
 use rmk::macros::processor;
 use rmk::types::action::Action;
 use rmk::types::keycode::HidKeyCode;
@@ -50,11 +47,11 @@ const LAYER_SNIPER: u8 = 6;
 const USER_SNIPER: u8 = 10;
 const USER_SCROLL: u8 = 11;
 const USER_TEXT: u8 = 12;
-const AUTO_LAYER_NONE: u8 = 0xff;
 const MODE_KEY_TAP_MS: u32 = 220;
 const AUTO_LAYER_TIMEOUT_MS_TABLE: [u32; 6] = [250, 500, 750, 1000, 1250, 1500];
-const AUTO_LAYER_ACTIVITY_WINDOW_MS: u32 = 64;
-const AUTO_LAYER_ACTIVITY_THRESHOLD: u16 = 3;
+// Ignore isolated one-count PMW3610 idle jitter. Unlike the old coherent
+// accumulator, this threshold never turns repeated +/-1 noise into activity.
+const AUTO_LAYER_MOTION_THRESHOLD: u16 = 2;
 
 const DPI_TABLE: [u16; 16] = [
     200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000, 3200,
@@ -209,11 +206,9 @@ impl Settings {
 }
 
 #[processor(
-    subscribe = [ActionEvent, KeyboardEvent, LayerChangeEvent, PeripheralSettingsEvent, PointingEvent],
-    poll_interval = 50
+    subscribe = [ActionEvent, LayerChangeEvent, PeripheralSettingsEvent]
 )]
-pub struct VelvetPointingMode<'a> {
-    keymap: &'a KeyMap<'a>,
+pub struct VelvetPointingMode {
     settings: Settings,
     layer_mode: Option<Mode>,
     mode_override: Option<Mode>,
@@ -222,16 +217,11 @@ pub struct VelvetPointingMode<'a> {
     published_mode: PointingMode,
     published_axis: u8,
     published_acceleration: bool,
-    active_auto_layer: u8,
-    auto_layer_held_keys: u8,
-    last_auto_motion_ms: u32,
-    auto_layer_motion: RelativeMotionActivity,
 }
 
-impl<'a> VelvetPointingMode<'a> {
-    pub fn new(keymap: &'a KeyMap<'a>) -> Self {
+impl VelvetPointingMode {
+    pub fn new() -> Self {
         Self {
-            keymap,
             settings: Settings::defaults(),
             layer_mode: None,
             mode_override: None,
@@ -240,10 +230,6 @@ impl<'a> VelvetPointingMode<'a> {
             published_mode: PointingMode::default(),
             published_axis: 0,
             published_acceleration: false,
-            active_auto_layer: AUTO_LAYER_NONE,
-            auto_layer_held_keys: 0,
-            last_auto_motion_ms: 0,
-            auto_layer_motion: RelativeMotionActivity::new(),
         }
     }
 
@@ -252,11 +238,6 @@ impl<'a> VelvetPointingMode<'a> {
             return;
         };
         self.settings = settings;
-        if self.active_auto_layer != AUTO_LAYER_NONE
-            && (!settings.trackball_enabled() || !settings.auto_layer_enabled(self.current_mode()))
-        {
-            self.deactivate_auto_layer();
-        }
         self.publish_current(true).await;
     }
 
@@ -298,53 +279,6 @@ impl<'a> VelvetPointingMode<'a> {
         self.publish_current(false).await;
     }
 
-    async fn on_keyboard_event(&mut self, event: KeyboardEvent) {
-        if self.active_auto_layer == AUTO_LAYER_NONE {
-            return;
-        }
-        if event.pressed {
-            self.auto_layer_held_keys = self.auto_layer_held_keys.saturating_add(1);
-        } else {
-            self.auto_layer_held_keys = self.auto_layer_held_keys.saturating_sub(1);
-            self.last_auto_motion_ms = now_ms_u32();
-        }
-    }
-
-    async fn on_pointing_event(&mut self, event: PointingEvent) {
-        if !self.settings.trackball_enabled() || event.device_id != TRACKBALL_DEVICE_ID {
-            return;
-        }
-
-        let mut x = 0;
-        let mut y = 0;
-        for axis in event.axes {
-            match axis.axis {
-                Axis::X => x = axis.value,
-                Axis::Y => y = axis.value,
-                _ => {}
-            }
-        }
-        if !self.auto_layer_motion.observe(
-            x,
-            y,
-            now_ms_u32(),
-            AUTO_LAYER_ACTIVITY_WINDOW_MS,
-            AUTO_LAYER_ACTIVITY_THRESHOLD,
-        ) {
-            return;
-        }
-        self.sync_auto_layer_for_motion();
-    }
-
-    async fn poll(&mut self) {
-        if self.active_auto_layer == AUTO_LAYER_NONE || self.auto_layer_held_keys != 0 {
-            return;
-        }
-        if now_ms_u32().wrapping_sub(self.last_auto_motion_ms) >= self.settings.auto_layer_timeout_ms() {
-            self.deactivate_auto_layer();
-        }
-    }
-
     fn current_mode(&self) -> Mode {
         self.mode_override.or(self.layer_mode).unwrap_or(self.settings.mode)
     }
@@ -375,36 +309,18 @@ impl<'a> VelvetPointingMode<'a> {
             self.published_axis = self.settings.axis;
             self.published_acceleration = acceleration;
         }
-    }
 
-    fn sync_auto_layer_for_motion(&mut self) {
-        if !self.settings.trackball_enabled()
-            || !self.settings.auto_layer_enabled(self.current_mode())
-            || self.settings.auto_layer == 0
-        {
-            self.deactivate_auto_layer();
-            return;
-        }
-
-        self.last_auto_motion_ms = now_ms_u32();
-        if self.active_auto_layer == self.settings.auto_layer {
-            return;
-        }
-        self.deactivate_auto_layer();
-        if self.keymap.activate_layer_if_inactive(self.settings.auto_layer) {
-            self.active_auto_layer = self.settings.auto_layer;
-            self.auto_layer_held_keys = 0;
-        }
-    }
-
-    fn deactivate_auto_layer(&mut self) {
-        let previous = self.active_auto_layer;
-        self.active_auto_layer = AUTO_LAYER_NONE;
-        self.auto_layer_held_keys = 0;
-        self.auto_layer_motion.reset();
-        if previous != AUTO_LAYER_NONE && previous != 0 {
-            self.keymap.deactivate_layer_if_active(previous);
-        }
+        let mode = self.current_mode();
+        publish_event_async(AutoMouseLayerConfigEvent {
+            device_id: TRACKBALL_DEVICE_ID,
+            enabled: self.settings.trackball_enabled()
+                && self.settings.auto_layer_enabled(mode)
+                && self.settings.auto_layer != 0,
+            target_layer: self.settings.auto_layer,
+            timeout_ms: self.settings.auto_layer_timeout_ms(),
+            threshold: AUTO_LAYER_MOTION_THRESHOLD,
+        })
+        .await;
     }
 }
 

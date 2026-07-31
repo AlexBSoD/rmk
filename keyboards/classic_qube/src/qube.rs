@@ -38,8 +38,8 @@ mod keyboard_central {
 
     #[cfg(velvet_pointing)]
     #[register_processor(event)]
-    fn pointing_mode() -> crate::velvet_pointing::VelvetPointingMode<'static> {
-        crate::velvet_pointing::VelvetPointingMode::new(&keymap)
+    fn pointing_mode() -> crate::velvet_pointing::VelvetPointingMode {
+        crate::velvet_pointing::VelvetPointingMode::new()
     }
 
     #[cfg(velvet_pointing)]

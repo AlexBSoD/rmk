@@ -28,64 +28,6 @@ pub struct MotionData {
     pub dy: i16,
 }
 
-/// Detects deliberate relative motion while rejecting alternating one-count
-/// sensor jitter. Small samples are accumulated as a signed vector inside a
-/// short window, so slow real motion still becomes activity without letting
-/// idle +/-1 noise continuously refresh timers such as auto-mouse-layer.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RelativeMotionActivity {
-    window_started_ms: u32,
-    accumulated_x: i32,
-    accumulated_y: i32,
-    window_active: bool,
-}
-
-impl RelativeMotionActivity {
-    pub const fn new() -> Self {
-        Self {
-            window_started_ms: 0,
-            accumulated_x: 0,
-            accumulated_y: 0,
-            window_active: false,
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.accumulated_x = 0;
-        self.accumulated_y = 0;
-        self.window_active = false;
-    }
-
-    /// Returns `true` once coherent motion reaches `threshold` counts within
-    /// `window_ms`. Alternating samples cancel each other instead of extending
-    /// the caller's activity deadline.
-    pub fn observe(&mut self, x: i16, y: i16, now_ms: u32, window_ms: u32, threshold: u16) -> bool {
-        if x == 0 && y == 0 {
-            return false;
-        }
-
-        if !self.window_active || now_ms.wrapping_sub(self.window_started_ms) >= window_ms.max(1) {
-            self.window_started_ms = now_ms;
-            self.accumulated_x = 0;
-            self.accumulated_y = 0;
-            self.window_active = true;
-        }
-
-        self.accumulated_x = self.accumulated_x.saturating_add(i32::from(x));
-        self.accumulated_y = self.accumulated_y.saturating_add(i32::from(y));
-        let coherent_motion = self
-            .accumulated_x
-            .saturating_abs()
-            .max(self.accumulated_y.saturating_abs());
-        if coherent_motion < i32::from(threshold.max(1)) {
-            return false;
-        }
-
-        self.reset();
-        true
-    }
-}
-
 /// Errors of pointing devices
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1579,34 +1521,6 @@ mod tests {
             apply_runtime_transform(i16::MAX, i16::MIN, 0, true),
             (i16::MAX, i16::MIN)
         );
-    }
-
-    #[test]
-    fn relative_motion_activity_rejects_alternating_idle_jitter() {
-        let mut activity = RelativeMotionActivity::new();
-
-        for (now_ms, x) in [(0, 1), (8, -1), (16, 1), (24, -1), (32, 1), (40, -1)] {
-            assert!(!activity.observe(x, 0, now_ms, 64, 3));
-        }
-    }
-
-    #[test]
-    fn relative_motion_activity_accumulates_slow_coherent_motion() {
-        let mut activity = RelativeMotionActivity::new();
-
-        assert!(!activity.observe(1, 0, 0, 64, 3));
-        assert!(!activity.observe(1, 0, 8, 64, 3));
-        assert!(activity.observe(1, 0, 16, 64, 3));
-        assert!(!activity.observe(1, 0, 24, 64, 3));
-    }
-
-    #[test]
-    fn relative_motion_activity_does_not_accumulate_across_windows() {
-        let mut activity = RelativeMotionActivity::new();
-
-        assert!(!activity.observe(2, 0, 0, 64, 3));
-        assert!(!activity.observe(1, 0, 64, 64, 3));
-        assert!(activity.observe(2, 0, 72, 64, 3));
     }
 
     struct DummyDriver {
