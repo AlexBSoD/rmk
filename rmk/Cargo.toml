@@ -117,6 +117,9 @@ watchdog = ["rmk-macro/watchdog"]
 ## Enable host configurator support
 host = ["dep:byteorder"]
 
+## Enable firmware-native EN/RU Universal Symbols actions.
+universal_symbols = []
+
 ## Enable vial support
 vial = ["host"]
 

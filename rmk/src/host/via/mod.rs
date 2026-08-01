@@ -32,6 +32,7 @@ const ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION: u8 = 0x03;
 const ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION: u8 = 0x04;
 const ERGOHAVEN_NATIVE_KEY_ACTION_VERSION: u8 = 0x01;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET: u16 = 0x0001;
+const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS: u16 = 0x0002;
 const NATIVE_KEY_ACTION_STATUS_OK: u8 = 0x00;
 const NATIVE_KEY_ACTION_STATUS_END: u8 = 0x01;
 const NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION: u8 = 0x02;
@@ -95,6 +96,13 @@ fn init_native_key_action_response(report: &mut ViaReport, subcommand: u8) {
 fn native_key_position_valid(ctx: &KeyboardContext<'_>, layer: u8, row: u8, col: u8) -> bool {
     let (rows, cols, layers) = ctx.keymap_dimensions();
     (layer as usize) < layers && (row as usize) < rows && (col as usize) < cols
+}
+
+const fn native_key_action_capabilities() -> u16 {
+    let capabilities = ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET;
+    #[cfg(feature = "universal_symbols")]
+    let capabilities = capabilities | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS;
+    capabilities
 }
 
 fn encode_native_key_action(report: &mut ViaReport, payload_offset: usize, action: KeyAction) -> bool {
@@ -336,7 +344,7 @@ impl<'a> VialService<'a> {
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS
                 {
                     init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS);
-                    LittleEndian::write_u16(&mut report.input_data[4..6], ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET);
+                    LittleEndian::write_u16(&mut report.input_data[4..6], native_key_action_capabilities());
                 } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION
                 {
@@ -625,7 +633,7 @@ mod tests {
             assert_eq!(report.input_data[3], ERGOHAVEN_NATIVE_KEY_ACTION_VERSION);
             assert_eq!(
                 LittleEndian::read_u16(&report.input_data[4..6]),
-                ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET
+                native_key_action_capabilities()
             );
         });
     }

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Added modular firmware-native Universal Symbols for EN/RU punctuation, autonomous layout controls, PC/macOS mappings, and optional Entropy Layout Sync
+- Advertised Universal Symbols support through the Ergohaven native key-action capability protocol and enabled it for every bundled Ergohaven keyboard profile
+
 ## v0.1.4
 
 ### Features

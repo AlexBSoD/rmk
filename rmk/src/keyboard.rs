@@ -239,6 +239,10 @@ pub struct Keyboard<'a> {
     /// Used for temporarily disabling combos
     combo_on: bool,
 
+    /// Firmware-native EN/RU punctuation state.
+    #[cfg(feature = "universal_symbols")]
+    universal_symbols: crate::universal_symbols::State,
+
     /// Plover HID stenography chord accumulator
     #[cfg(feature = "steno")]
     steno: crate::keyboard::steno::StenoChord,
@@ -272,6 +276,8 @@ impl<'a> Keyboard<'a> {
             system_control_report: SystemControlReport { usage_id: 0 },
             last_key_code: HidKeyCode::No,
             combo_on: true,
+            #[cfg(feature = "universal_symbols")]
+            universal_symbols: crate::universal_symbols::State::default(),
             #[cfg(feature = "steno")]
             steno: crate::keyboard::steno::StenoChord::new(),
             #[cfg(feature = "passkey_entry")]
@@ -1323,7 +1329,12 @@ impl<'a> Keyboard<'a> {
             Action::Light(_light_action) => warn!("Light controll is not supported"),
             Action::KeyboardControl(c) => self.process_action_keyboard_control(c, event).await,
             Action::Special(special_key) => self.process_action_special(special_key, event).await,
-            Action::User(_id) => {}
+            Action::User(id) => {
+                #[cfg(feature = "universal_symbols")]
+                self.process_universal_symbols_user_action(id, event.pressed).await;
+                #[cfg(not(feature = "universal_symbols"))]
+                let _ = id;
+            }
             Action::TriLayerLower => {
                 // Tri-layer lower, turn layer 1 on and update layer state
                 self.process_action_layer_switch(1, event);
@@ -1751,6 +1762,90 @@ impl<'a> Keyboard<'a> {
         .await;
 
         // Yield once after sending the report to channel
+        yield_now().await;
+    }
+
+    #[cfg(feature = "universal_symbols")]
+    async fn process_universal_symbols_user_action(&mut self, user_id: u8, pressed: bool) {
+        if !pressed {
+            return;
+        }
+
+        let host_layout = crate::host_data::snapshot().layout;
+        let Some(command) = self.universal_symbols.handle(user_id, host_layout) else {
+            return;
+        };
+        let platform = self.universal_symbols.platform();
+
+        match command {
+            crate::universal_symbols::Command::None => {}
+            crate::universal_symbols::Command::SwitchLayout => {
+                self.send_universal_symbols_layout_switch(platform).await;
+            }
+            crate::universal_symbols::Command::Type(resolved) => {
+                if resolved.temporary_english {
+                    self.send_universal_symbols_layout_switch(platform).await;
+                }
+                self.send_universal_symbols_tap(resolved.stroke.keycode, resolved.stroke.modifiers)
+                    .await;
+                if resolved.temporary_english {
+                    self.send_universal_symbols_layout_switch(platform).await;
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "universal_symbols")]
+    async fn send_universal_symbols_layout_switch(&mut self, platform: crate::universal_symbols::Platform) {
+        let Some((pressed_keys, released_keys)) = self.universal_symbols_key_reports(HidKeyCode::Space) else {
+            warn!("Universal Symbols: no free 6KRO slot for layout switch");
+            return;
+        };
+        let modifier = match platform {
+            crate::universal_symbols::Platform::Pc => ModifierCombination::LGUI,
+            crate::universal_symbols::Platform::Mac => ModifierCombination::LCTRL,
+        };
+
+        self.send_universal_symbols_report(modifier, pressed_keys).await;
+        Timer::after_millis(10).await;
+        self.send_universal_symbols_report(modifier, released_keys).await;
+        self.send_universal_symbols_report(ModifierCombination::new(), released_keys)
+            .await;
+        Timer::after_millis(50).await;
+        self.send_keyboard_report_with_resolved_modifiers(false).await;
+    }
+
+    #[cfg(feature = "universal_symbols")]
+    async fn send_universal_symbols_tap(&mut self, keycode: HidKeyCode, modifiers: ModifierCombination) {
+        let Some((pressed_keys, released_keys)) = self.universal_symbols_key_reports(keycode) else {
+            warn!("Universal Symbols: no free 6KRO slot for {:?}", keycode);
+            return;
+        };
+
+        self.send_universal_symbols_report(modifiers, pressed_keys).await;
+        Timer::after_millis(10).await;
+        self.send_universal_symbols_report(ModifierCombination::new(), released_keys)
+            .await;
+        self.send_keyboard_report_with_resolved_modifiers(false).await;
+    }
+
+    #[cfg(feature = "universal_symbols")]
+    fn universal_symbols_key_reports(&self, keycode: HidKeyCode) -> Option<([HidKeyCode; 6], [HidKeyCode; 6])> {
+        let mut pressed = self.held_keycodes;
+        let index = pressed.iter().position(|key| *key == HidKeyCode::No)?;
+        pressed[index] = keycode;
+        Some((pressed, self.held_keycodes))
+    }
+
+    #[cfg(feature = "universal_symbols")]
+    async fn send_universal_symbols_report(&self, modifiers: ModifierCombination, keycodes: [HidKeyCode; 6]) {
+        self.send_report(Report::KeyboardReport(KeyboardReport {
+            modifier: modifiers.into_bits(),
+            reserved: 0,
+            leds: LOCK_LED_STATES.load(core::sync::atomic::Ordering::Relaxed),
+            keycodes: keycodes.map(|key| key as u8),
+        }))
+        .await;
         yield_now().await;
     }
 
