@@ -33,6 +33,7 @@ const ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION: u8 = 0x04;
 const ERGOHAVEN_NATIVE_KEY_ACTION_VERSION: u8 = 0x01;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET: u16 = 0x0001;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS: u16 = 0x0002;
+const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_RUSSIAN_LETTERS: u16 = 0x0004;
 const NATIVE_KEY_ACTION_STATUS_OK: u8 = 0x00;
 const NATIVE_KEY_ACTION_STATUS_END: u8 = 0x01;
 const NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION: u8 = 0x02;
@@ -101,7 +102,9 @@ fn native_key_position_valid(ctx: &KeyboardContext<'_>, layer: u8, row: u8, col:
 const fn native_key_action_capabilities() -> u16 {
     let capabilities = ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET;
     #[cfg(feature = "universal_symbols")]
-    let capabilities = capabilities | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS;
+    let capabilities = capabilities
+        | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS
+        | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_RUSSIAN_LETTERS;
     capabilities
 }
 

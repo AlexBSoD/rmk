@@ -13,6 +13,8 @@ pub const USER_SET_RUSSIAN: u8 = 0x83;
 pub const USER_TOGGLE_MACOS: u8 = 0x84;
 pub const USER_SYMBOL_START: u8 = 0x90;
 pub const USER_SYMBOL_END: u8 = 0xB0;
+pub const USER_RUSSIAN_LETTER_START: u8 = 0xB0;
+pub const USER_RUSSIAN_LETTER_END: u8 = 0xB4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum HostLayout {
@@ -125,10 +127,34 @@ impl Symbol {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RussianLetter {
+    Kha,
+    Be,
+    Yu,
+    HardSign,
+}
+
+impl RussianLetter {
+    pub(crate) const fn from_user_id(id: u8) -> Option<Self> {
+        if id < USER_RUSSIAN_LETTER_START || id >= USER_RUSSIAN_LETTER_END {
+            return None;
+        }
+        Some(match id - USER_RUSSIAN_LETTER_START {
+            0 => Self::Kha,
+            1 => Self::Be,
+            2 => Self::Yu,
+            3 => Self::HardSign,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     None,
     SwitchLayout,
     Type(layout::ResolvedStroke),
+    TypeRussianLetter(rmk_types::keycode::HidKeyCode),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -160,7 +186,16 @@ impl State {
                 };
                 Command::None
             }
-            id => Command::Type(layout::resolve(self.layout, self.platform, Symbol::from_user_id(id)?)),
+            id => {
+                if let Some(letter) = RussianLetter::from_user_id(id) {
+                    match layout::resolve_russian_letter(self.layout, letter) {
+                        Some(keycode) => Command::TypeRussianLetter(keycode),
+                        None => Command::None,
+                    }
+                } else {
+                    Command::Type(layout::resolve(self.layout, self.platform, Symbol::from_user_id(id)?))
+                }
+            }
         };
         Some(command)
     }
@@ -202,6 +237,28 @@ mod tests {
         }
         assert!(Symbol::from_user_id(USER_SYMBOL_START - 1).is_none());
         assert!(Symbol::from_user_id(USER_SYMBOL_END).is_none());
+    }
+
+    #[test]
+    fn stable_russian_letter_ids_map_only_in_russian_layout() {
+        let expected = [
+            HidKeyCode::LeftBracket,
+            HidKeyCode::Comma,
+            HidKeyCode::Dot,
+            HidKeyCode::RightBracket,
+        ];
+        let mut state = State::default();
+
+        for id in USER_RUSSIAN_LETTER_START..USER_RUSSIAN_LETTER_END {
+            assert_eq!(state.handle(id, None), Some(Command::None));
+        }
+        assert!(RussianLetter::from_user_id(USER_RUSSIAN_LETTER_START - 1).is_none());
+        assert!(RussianLetter::from_user_id(USER_RUSSIAN_LETTER_END).is_none());
+
+        assert_eq!(state.handle(USER_SYNC, None), Some(Command::None));
+        for (id, keycode) in (USER_RUSSIAN_LETTER_START..USER_RUSSIAN_LETTER_END).zip(expected) {
+            assert_eq!(state.handle(id, None), Some(Command::TypeRussianLetter(keycode)));
+        }
     }
 
     #[test]

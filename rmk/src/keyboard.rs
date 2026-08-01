@@ -1331,7 +1331,7 @@ impl<'a> Keyboard<'a> {
             Action::Special(special_key) => self.process_action_special(special_key, event).await,
             Action::User(id) => {
                 #[cfg(feature = "universal_symbols")]
-                self.process_universal_symbols_user_action(id, event.pressed).await;
+                self.process_universal_symbols_user_action(id, event).await;
                 #[cfg(not(feature = "universal_symbols"))]
                 let _ = id;
             }
@@ -1561,12 +1561,26 @@ impl<'a> Keyboard<'a> {
     // Process action key
     /// Universal HID keyboard-key pipeline: `Again` resolution, last-key/caps-word
     /// bookkeeping, dispatch (a `HidKeyCode` may alias to consumer/system/mouse), and one-shot post.
-    async fn process_action_key(&mut self, mut key: HidKeyCode, event: KeyboardEvent) {
+    async fn process_action_key(&mut self, key: HidKeyCode, event: KeyboardEvent) {
+        self.process_action_key_with_caps_word_key(key, key, event).await;
+    }
+
+    /// Process a physical HID key while using another key's Caps Word semantics.
+    /// Russian letters live on punctuation HID positions but must continue and shift Caps Word.
+    async fn process_action_key_with_caps_word_key(
+        &mut self,
+        mut key: HidKeyCode,
+        mut caps_word_key: HidKeyCode,
+        event: KeyboardEvent,
+    ) {
         // Process `Again` key first.
         // Not all platform support `Again` key, so we manually repeat it for users.
         if key == HidKeyCode::Again {
             debug!("Repeat(Again) last key code: {:?} , {:?}", self.last_key_code, event);
             key = self.last_key_code;
+            if caps_word_key == HidKeyCode::Again {
+                caps_word_key = key;
+            }
         }
 
         // Pre-check
@@ -1586,7 +1600,7 @@ impl<'a> Keyboard<'a> {
             }
 
             // Check Caps Word
-            self.caps_word.check(key);
+            self.caps_word.check(caps_word_key);
         }
 
         // Dispatch to the right HID report; only the plain-keyboard branch is "basic".
@@ -1766,8 +1780,8 @@ impl<'a> Keyboard<'a> {
     }
 
     #[cfg(feature = "universal_symbols")]
-    async fn process_universal_symbols_user_action(&mut self, user_id: u8, pressed: bool) {
-        if !pressed {
+    async fn process_universal_symbols_user_action(&mut self, user_id: u8, event: KeyboardEvent) {
+        if !event.pressed {
             return;
         }
 
@@ -1791,6 +1805,15 @@ impl<'a> Keyboard<'a> {
                 if resolved.temporary_english {
                     self.send_universal_symbols_layout_switch(platform).await;
                 }
+            }
+            crate::universal_symbols::Command::TypeRussianLetter(keycode) => {
+                let mut letter_event = event;
+                self.process_action_key_with_caps_word_key(keycode, HidKeyCode::A, letter_event)
+                    .await;
+                Timer::after_millis(10).await;
+                letter_event.pressed = false;
+                self.process_action_key_with_caps_word_key(keycode, HidKeyCode::A, letter_event)
+                    .await;
             }
         }
     }

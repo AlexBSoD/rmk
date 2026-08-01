@@ -1,7 +1,16 @@
 use rmk_types::keycode::HidKeyCode;
 
 use super::{ResolvedStroke, Stroke, en};
-use crate::universal_symbols::{Platform, Symbol};
+use crate::universal_symbols::{Platform, RussianLetter, Symbol};
+
+pub(super) const fn letter_keycode(letter: RussianLetter) -> HidKeyCode {
+    match letter {
+        RussianLetter::Kha => HidKeyCode::LeftBracket,
+        RussianLetter::Be => HidKeyCode::Comma,
+        RussianLetter::Yu => HidKeyCode::Dot,
+        RussianLetter::HardSign => HidKeyCode::RightBracket,
+    }
+}
 
 pub(super) const fn stroke(platform: Platform, symbol: Symbol) -> ResolvedStroke {
     let direct = match (platform, symbol) {
