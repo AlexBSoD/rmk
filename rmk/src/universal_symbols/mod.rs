@@ -226,9 +226,10 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rmk_types::keycode::HidKeyCode;
     use rmk_types::modifier::ModifierCombination;
+
+    use super::*;
 
     #[test]
     fn stable_symbol_id_range_covers_all_punctuation() {
