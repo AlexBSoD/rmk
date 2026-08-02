@@ -4,9 +4,9 @@
     "vendorId": "0xE126",
     "productId": "0x00C3",
     "firmware": {
-        "version": "0.1.4"
+        "version": "0.1.5"
     },
-    "firmwareVersion": "0.1.4",
+    "firmwareVersion": "0.1.5",
     "lighting": "none",
     "matrix": {
         "rows": 3,

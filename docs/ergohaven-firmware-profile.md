@@ -12,7 +12,7 @@ profiles share this software contract:
 - protocol bulk size 8 and macro chunk size 64 bytes
 - Bluetooth reconnect and pairing windows of 60 seconds
 - persistent layer names at QSID 200–215, up to 12 UTF-8 bytes each
-- firmware version 0.1.4 and manufacturer `Ergohaven`
+- firmware version 0.1.5 and manufacturer `Ergohaven`
 
 Standard keyboard profiles expose the factory layer names `Base`,
 `Navigation`, `Symbols`, and `Adjust`. Layer 4 is `Mouse` only on keyboards

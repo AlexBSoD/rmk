@@ -442,10 +442,10 @@ mapfile -t build_scripts < <(
         done
 )
 for file in "${build_scripts[@]}"; do
-    rg -q 'const FIRMWARE_VERSION: &str = "0\.1\.4";' "$file" \
-        || fail "$file: firmware version must be 0.1.4"
-    rg -q 'const FIRMWARE_VERSION_BCD: &str = "0x0104";' "$file" \
-        || fail "$file: BCD firmware version must be 0x0104"
+    rg -q 'const FIRMWARE_VERSION: &str = "0\.1\.5";' "$file" \
+        || fail "$file: firmware version must be 0.1.5"
+    rg -q 'const FIRMWARE_VERSION_BCD: &str = "0x0105";' "$file" \
+        || fail "$file: BCD firmware version must be 0x0105"
 done
 
 mapfile -t vial_definitions < <(
@@ -457,8 +457,8 @@ mapfile -t vial_definitions < <(
 for file in "${vial_definitions[@]}"; do
     jq -e '.manufacturer == "Ergohaven"' "$file" >/dev/null \
         || fail "$file: manufacturer must be Ergohaven"
-    jq -e '.firmware.version == "0.1.4" and .firmwareVersion == "0.1.4"' "$file" >/dev/null \
-        || fail "$file: both firmware versions must be 0.1.4"
+    jq -e '.firmware.version == "0.1.5" and .firmwareVersion == "0.1.5"' "$file" >/dev/null \
+        || fail "$file: both firmware versions must be 0.1.5"
 done
 
 for file in "${vial_definitions[@]}"; do
