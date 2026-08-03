@@ -35,8 +35,8 @@ use rmk::core_traits::Runnable;
 use rmk::display::{DisplayRenderer, RenderContext};
 use rmk::event::{
     BatteryStatusEvent, CentralConnectedEvent, ConnectionStatusChangeEvent, EventSubscriber, KeyboardEvent,
-    LayerChangeEvent, LedIndicatorEvent, ModifierEvent, PeripheralBatteryEvent, PeripheralConnectedEvent,
-    SleepStateEvent, SubscribableEvent, WpmUpdateEvent,
+    LayerChangeEvent, PeripheralBatteryEvent, PeripheralConnectedEvent, SleepStateEvent, SubscribableEvent,
+    WpmUpdateEvent,
 };
 use rmk::processor::Processor;
 use rmk_types::battery::BatteryStatus;
@@ -61,24 +61,21 @@ const BACKLIGHT_ACTIVE_HIGH: bool = true;
 const UI_X_OFFSET: i32 = 5;
 const SAFE_X: i32 = 18;
 const SAFE_W: u32 = SCREEN_W as u32 - (SAFE_X as u32 * 2);
-const MEDIA_VISIBLE_CHARS: usize = 26;
-const MEDIA_GAP_CHARS: usize = 3;
 const PANEL_RADIUS: u32 = 14;
-const CHIP_RADIUS: u32 = 7;
 const BAR_RADIUS: u32 = 5;
 
+/// Vertical centre of each agent row inside the agent panel.
+const AGENT_ROW_Y: [i32; 3] = [78, 122, 166];
+
 const HEADER_DIRTY: DirtyRegion = DirtyRegion::range(12, 44);
-const LAYER_DIRTY: DirtyRegion = DirtyRegion::range(50, 138);
-const MODIFIER_DIRTY: DirtyRegion = DirtyRegion::range(144, 166);
-const BATTERY_DIRTY: DirtyRegion = DirtyRegion::range(174, 224);
+const AGENTS_DIRTY: DirtyRegion = DirtyRegion::range(48, 196);
+const BATTERY_DIRTY: DirtyRegion = DirtyRegion::range(198, 234);
 
 const COL_BG: Rgb565 = Rgb565::new(0, 2, 4);
 const COL_FG: Rgb565 = Rgb565::new(29, 61, 30);
 const COL_MUTED: Rgb565 = Rgb565::new(11, 24, 20);
-const COL_LABEL: Rgb565 = Rgb565::new(16, 36, 28);
 const COL_DIM: Rgb565 = Rgb565::new(5, 12, 14);
 const COL_ACCENT: Rgb565 = Rgb565::new(3, 38, 31);
-const COL_ACCENT_DIM: Rgb565 = Rgb565::new(1, 16, 18);
 const COL_YELLOW: Rgb565 = Rgb565::new(31, 50, 0);
 const COL_RED: Rgb565 = Rgb565::new(31, 5, 5);
 const COL_BAR_BG: Rgb565 = Rgb565::new(2, 7, 9);
@@ -460,18 +457,29 @@ where
 
     fn sync_host_data(&mut self) {
         let host_data = rmk::host_data::snapshot();
-        if host_data != self.last_host_data {
-            self.last_host_data = host_data.clone();
-            self.renderer.host_data = host_data;
-            self.request_redraw_region(HEADER_DIRTY);
+        if host_data == self.last_host_data {
+            return;
         }
+        // The agent panel and the clock live in different bands; repainting
+        // both on every clock minute would drag the whole frame through SPI.
+        let dirty = match (
+            host_data.agents != self.last_host_data.agents,
+            host_data.hour != self.last_host_data.hour || host_data.minute != self.last_host_data.minute,
+        ) {
+            (true, true) => HEADER_DIRTY.union(AGENTS_DIRTY),
+            (true, false) => AGENTS_DIRTY,
+            _ => HEADER_DIRTY,
+        };
+        self.last_host_data = host_data.clone();
+        self.renderer.host_data = host_data;
+        self.request_redraw_region(dirty);
     }
 
     fn sync_layer_names(&mut self) {
         let version = crate::layer_names::version();
         if version != self.last_layer_names_version {
             self.last_layer_names_version = version;
-            self.request_redraw_region(LAYER_DIRTY);
+            self.request_redraw_region(HEADER_DIRTY);
         }
     }
 }
@@ -499,8 +507,6 @@ where
 
         let mut layer_sub = LayerChangeEvent::subscriber();
         let mut wpm_sub = WpmUpdateEvent::subscriber();
-        let mut led_sub = LedIndicatorEvent::subscriber();
-        let mut mod_sub = ModifierEvent::subscriber();
         let mut key_sub = KeyboardEvent::subscriber();
         let mut sleep_sub = SleepStateEvent::subscriber();
         let mut bat_sub = BatteryStatusEvent::subscriber();
@@ -521,8 +527,7 @@ where
                     Self::next_any_or_host_tick(
                         &mut layer_sub,
                         &mut wpm_sub,
-                        &mut led_sub,
-                        &mut mod_sub,
+
                         &mut key_sub,
                         &mut sleep_sub,
                         &mut bat_sub,
@@ -543,8 +548,7 @@ where
                 let ev = Self::next_any_or_host_tick(
                     &mut layer_sub,
                     &mut wpm_sub,
-                    &mut led_sub,
-                    &mut mod_sub,
+
                     &mut key_sub,
                     &mut sleep_sub,
                     &mut bat_sub,
@@ -565,8 +569,7 @@ where
                     Self::next_any(
                         &mut layer_sub,
                         &mut wpm_sub,
-                        &mut led_sub,
-                        &mut mod_sub,
+
                         &mut key_sub,
                         &mut sleep_sub,
                         &mut bat_sub,
@@ -594,8 +597,6 @@ where
 enum UiEv {
     Layer(LayerChangeEvent),
     Wpm(WpmUpdateEvent),
-    Led(LedIndicatorEvent),
-    Mod(ModifierEvent),
     Key(KeyboardEvent),
     Sleep(SleepStateEvent),
     Bat(BatteryStatusEvent),
@@ -615,8 +616,6 @@ where
     async fn next_any_or_host_tick(
         layer: &mut impl EventSubscriber<Event = LayerChangeEvent>,
         wpm: &mut impl EventSubscriber<Event = WpmUpdateEvent>,
-        led: &mut impl EventSubscriber<Event = LedIndicatorEvent>,
-        mods: &mut impl EventSubscriber<Event = ModifierEvent>,
         key: &mut impl EventSubscriber<Event = KeyboardEvent>,
         sleep: &mut impl EventSubscriber<Event = SleepStateEvent>,
         bat: &mut impl EventSubscriber<Event = BatteryStatusEvent>,
@@ -627,9 +626,7 @@ where
     ) -> UiEv {
         match select(
             Timer::after(Duration::from_millis(250)),
-            Self::next_any(
-                layer, wpm, led, mods, key, sleep, bat, conn, peri_conn, peri_bat, central,
-            ),
+            Self::next_any(layer, wpm, key, sleep, bat, conn, peri_conn, peri_bat, central),
         )
         .await
         {
@@ -641,8 +638,6 @@ where
     async fn next_any(
         layer: &mut impl EventSubscriber<Event = LayerChangeEvent>,
         wpm: &mut impl EventSubscriber<Event = WpmUpdateEvent>,
-        led: &mut impl EventSubscriber<Event = LedIndicatorEvent>,
-        mods: &mut impl EventSubscriber<Event = ModifierEvent>,
         key: &mut impl EventSubscriber<Event = KeyboardEvent>,
         sleep: &mut impl EventSubscriber<Event = SleepStateEvent>,
         bat: &mut impl EventSubscriber<Event = BatteryStatusEvent>,
@@ -653,14 +648,14 @@ where
     ) -> UiEv {
         // Nested select — a bit verbose but no heap / macro dependency.
         // Prefer input events; depth is fine for status UI.
-        use embassy_futures::select::{select, select3, Either, Either3};
+        use embassy_futures::select::{select3, Either3};
 
         match select3(
-            select3(layer.next_event(), wpm.next_event(), led.next_event()),
-            select3(mods.next_event(), key.next_event(), sleep.next_event()),
+            select3(layer.next_event(), wpm.next_event(), key.next_event()),
+            select3(sleep.next_event(), bat.next_event(), conn.next_event()),
             select3(
-                select(bat.next_event(), conn.next_event()),
-                select(peri_conn.next_event(), peri_bat.next_event()),
+                peri_conn.next_event(),
+                peri_bat.next_event(),
                 central.next_event(),
             ),
         )
@@ -668,41 +663,28 @@ where
         {
             Either3::First(Either3::First(e)) => UiEv::Layer(e),
             Either3::First(Either3::Second(e)) => UiEv::Wpm(e),
-            Either3::First(Either3::Third(e)) => UiEv::Led(e),
-            Either3::Second(Either3::First(e)) => UiEv::Mod(e),
-            Either3::Second(Either3::Second(e)) => UiEv::Key(e),
-            Either3::Second(Either3::Third(e)) => UiEv::Sleep(e),
-            Either3::Third(Either3::First(Either::First(e))) => UiEv::Bat(e),
-            Either3::Third(Either3::First(Either::Second(e))) => UiEv::Conn(e),
-            Either3::Third(Either3::Second(Either::First(e))) => UiEv::PeriConn(e),
-            Either3::Third(Either3::Second(Either::Second(e))) => UiEv::PeriBat(e),
+            Either3::First(Either3::Third(e)) => UiEv::Key(e),
+            Either3::Second(Either3::First(e)) => UiEv::Sleep(e),
+            Either3::Second(Either3::Second(e)) => UiEv::Bat(e),
+            Either3::Second(Either3::Third(e)) => UiEv::Conn(e),
+            Either3::Third(Either3::First(e)) => UiEv::PeriConn(e),
+            Either3::Third(Either3::Second(e)) => UiEv::PeriBat(e),
             Either3::Third(Either3::Third(e)) => UiEv::Central(e),
         }
     }
 
     fn apply(&mut self, ev: UiEv) {
         // Keyboard matrix floods KeyboardEvent; UI doesn't show individual
-        // keys — skip redraw for those so multipass can keep up with layer/mod.
+        // keys — skip redraw for those so multipass can keep up with layer.
         let mut need_redraw = true;
         match ev {
             UiEv::Layer(e) => {
                 self.ctx.layer = e.0;
-                self.request_redraw_region(LAYER_DIRTY);
+                self.request_redraw_region(HEADER_DIRTY);
                 need_redraw = false;
             }
             UiEv::Wpm(e) => {
                 self.ctx.wpm = e.0;
-                need_redraw = false;
-            }
-            UiEv::Led(e) => {
-                self.ctx.caps_lock = e.0.caps_lock();
-                self.ctx.num_lock = e.0.num_lock();
-                self.request_redraw_region(MODIFIER_DIRTY);
-                need_redraw = false;
-            }
-            UiEv::Mod(e) => {
-                self.ctx.modifiers = e.modifier;
-                self.request_redraw_region(MODIFIER_DIRTY);
                 need_redraw = false;
             }
             UiEv::Key(e) => {
@@ -743,9 +725,6 @@ where
             UiEv::HostDataTick => {
                 self.sync_host_data();
                 self.sync_layer_names();
-                if self.renderer.media_needs_marquee() {
-                    self.request_redraw_region(HEADER_DIRTY);
-                }
                 need_redraw = false;
             }
         }
@@ -776,37 +755,21 @@ where
 // --- Full-screen UI ---------------------------------------------------------
 //
 // Fixed vertical zones (280x240) so nothing overlaps:
-//   14..42   compact header
-//   52..136  layer panel
-//   146..164 modifier state
-//   176..222 battery cards
+//   14..42   compact header (host clock + active layer)
+//   50..194  host agent summary — the reason to glance at this screen
+//   200..232 battery row
 
 pub struct QubeStatusRenderer {
     host_data: rmk::host_data::HostData,
-}
-
-impl QubeStatusRenderer {
-    fn media_needs_marquee(&self) -> bool {
-        let mut media: heapless::String<72> = heapless::String::new();
-        push_media_label(&mut media, &self.host_data);
-        media.chars().count() > MEDIA_VISIBLE_CHARS
-    }
 }
 
 impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
     fn render<D: DrawTarget<Color = Rgb565>>(&mut self, ctx: &RenderContext, display: &mut D) {
         let _ = display.clear(COL_BG);
 
-        let layer_meta = MonoTextStyle::new(&FONT_6X10, COL_LABEL);
-        let header_media = U8g2TextStyle::new(fonts::u8g2_font_6x12_t_cyrillic, COL_FG);
-        let header_fallback = MonoTextStyle::new(&FONT_8X13, COL_ACCENT);
-        let body = MonoTextStyle::new(&FONT_8X13, COL_FG);
-        let title_shadow = U8g2TextStyle::new(fonts::u8g2_font_10x20_t_cyrillic, COL_ACCENT_DIM);
-        let title = U8g2TextStyle::new(fonts::u8g2_font_10x20_t_cyrillic, COL_FG);
-        let tc = TextStyleBuilder::new()
-            .alignment(Alignment::Center)
-            .baseline(Baseline::Top)
-            .build();
+        let clock = MonoTextStyle::new(&FONT_9X15, COL_FG);
+        let layer_title = U8g2TextStyle::new(fonts::u8g2_font_8x13_t_cyrillic, COL_ACCENT);
+        let top = TextStyleBuilder::new().baseline(Baseline::Top).build();
         let tr = TextStyleBuilder::new()
             .alignment(Alignment::Right)
             .baseline(Baseline::Top)
@@ -826,64 +789,54 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
             layer_name(ctx.layer)
         };
 
-        // Header.
+        // Header: clock on the left, active layer on the right.
         draw_panel(display, SAFE_X, 14, SAFE_W, 28, COL_PANEL, COL_BORDER_DIM);
         draw_round_fill(display, SAFE_X + 11, 23, 3, 10, 2, COL_ACCENT);
         let mut s: heapless::String<16> = heapless::String::new();
-        draw_media_or_fallback(display, &self.host_data, &header_media, header_fallback);
-        if host_time_available(&self.host_data) {
-            push_host_time(&mut s, self.host_data.hour, self.host_data.minute);
-            let _ = Text::with_text_style(&s, Point::new(SAFE_X + SAFE_W as i32 - 14, 21), body, tr).draw(display);
+        push_host_time(&mut s, self.host_data.hour, self.host_data.minute);
+        let _ = Text::with_text_style(&s, Point::new(SAFE_X + 22, 21), clock, top).draw(display);
+        let _ =
+            Text::with_text_style(name, Point::new(SAFE_X + SAFE_W as i32 - 14, 21), &layer_title, tr).draw(display);
+
+        // Agent summary.
+        draw_panel(display, SAFE_X, 50, SAFE_W, 144, COL_PANEL_HI, COL_BORDER_DIM);
+        match self.host_data.agents {
+            Some(agents) => {
+                // Blocked agents are the only state worth interrupting typing
+                // for, so they get the warning colour even at a glance.
+                draw_agent_row(display, AGENT_ROW_Y[0], agents.working, "WORKING", COL_ACCENT);
+                draw_agent_row(display, AGENT_ROW_Y[1], agents.blocked, "BLOCKED", COL_YELLOW);
+                draw_agent_row(display, AGENT_ROW_Y[2], agents.idle, "IDLE", COL_MUTED);
+            }
+            None => {
+                let offline = MonoTextStyle::new(&FONT_8X13, COL_DIM);
+                let _ = Text::with_text_style("NO AGENT FEED", Point::new(SCREEN_W as i32 / 2, 122), offline, mc)
+                    .draw(display);
+            }
         }
 
-        // Layer panel.
-        draw_panel(display, SAFE_X, 52, SAFE_W, 84, COL_PANEL_HI, COL_BORDER_DIM);
-        s.clear();
-        let _ = write!(&mut s, "LAYER {}", ctx.layer);
-        let _ = Text::with_text_style(&s, Point::new(SCREEN_W as i32 / 2, 66), layer_meta, tc).draw(display);
-        let _ = Text::with_text_style(name, Point::new(SCREEN_W as i32 / 2 + 1, 101), &title_shadow, mc).draw(display);
-        let _ = Text::with_text_style(name, Point::new(SCREEN_W as i32 / 2, 100), &title, mc).draw(display);
-        draw_round_fill(display, 104, 125, 72, 2, 1, COL_ACCENT_DIM);
-
-        // Modifier chips.
-        draw_chip(display, 30, 146, 38, "CAPS", ctx.caps_lock);
-        draw_chip(
-            display,
-            76,
-            146,
-            38,
-            "CTRL",
-            ctx.modifiers.left_ctrl() || ctx.modifiers.right_ctrl(),
-        );
-        draw_chip(
-            display,
-            122,
-            146,
-            46,
-            "SHIFT",
-            ctx.modifiers.left_shift() || ctx.modifiers.right_shift(),
-        );
-        draw_chip(
-            display,
-            176,
-            146,
-            34,
-            "ALT",
-            ctx.modifiers.left_alt() || ctx.modifiers.right_alt(),
-        );
-        draw_chip(
-            display,
-            218,
-            146,
-            34,
-            "GUI",
-            ctx.modifiers.left_gui() || ctx.modifiers.right_gui(),
-        );
-
-        // Battery cards.
-        draw_bat(display, SAFE_X, 176, 116, lp, left, "LEFT");
-        draw_bat(display, 146, 176, 116, rp, right, "RIGHT");
+        // Battery row.
+        draw_bat(display, SAFE_X, 200, 116, lp, left, "L");
+        draw_bat(display, 146, 200, 116, rp, right, "R");
     }
+}
+
+/// One `<dot> <count> <LABEL>` line of the agent panel. `accent` is used when
+/// the count is non-zero; an empty state stays deliberately dim so a screen
+/// with nothing running reads as quiet rather than as data.
+fn draw_agent_row<D: DrawTarget<Color = Rgb565>>(display: &mut D, y: i32, count: u8, label: &str, accent: Rgb565) {
+    let color = if count > 0 { accent } else { COL_DIM };
+    let ml = TextStyleBuilder::new().baseline(Baseline::Middle).build();
+
+    draw_round_fill(display, SAFE_X + 20, y - 5, 10, 10, 5, color);
+
+    let mut s: heapless::String<4> = heapless::String::new();
+    let _ = write!(&mut s, "{}", count);
+    let count_style = U8g2TextStyle::new(fonts::u8g2_font_logisoso20_tn, color);
+    let _ = Text::with_text_style(&s, Point::new(SAFE_X + 46, y), count_style, ml).draw(display);
+
+    let label_style = MonoTextStyle::new(&FONT_9X15, if count > 0 { COL_FG } else { COL_DIM });
+    let _ = Text::with_text_style(label, Point::new(SAFE_X + 84, y), label_style, ml).draw(display);
 }
 
 fn draw_panel<D: DrawTarget<Color = Rgb565>>(
@@ -921,29 +874,6 @@ fn draw_round_fill<D: DrawTarget<Color = Rgb565>>(
         .draw(display);
 }
 
-fn draw_chip<D: DrawTarget<Color = Rgb565>>(display: &mut D, x: i32, y: i32, w: u32, label: &str, active: bool) {
-    let text = if active {
-        MonoTextStyle::new(&FONT_6X10, COL_FG)
-    } else {
-        MonoTextStyle::new(&FONT_6X10, COL_DIM)
-    };
-    if active {
-        let rect = Rectangle::new(Point::new(x, y), Size::new(w, 16));
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color(COL_ACCENT_DIM)
-            .stroke_color(COL_ACCENT)
-            .stroke_width(1)
-            .build();
-        let _ = RoundedRectangle::with_equal_corners(rect, Size::new(CHIP_RADIUS, CHIP_RADIUS))
-            .into_styled(style)
-            .draw(display);
-    }
-    let tc = TextStyleBuilder::new()
-        .alignment(Alignment::Center)
-        .baseline(Baseline::Top)
-        .build();
-    let _ = Text::with_text_style(label, Point::new(x + w as i32 / 2, y + 3), text, tc).draw(display);
-}
 #[derive(Clone, Copy)]
 enum BatReading {
     Unknown,
@@ -993,7 +923,7 @@ fn draw_bat<D: DrawTarget<Color = Rgb565>>(
         }
     };
 
-    draw_panel(display, x, y, w as u32, 46, COL_PANEL, COL_BORDER_DIM);
+    draw_panel(display, x, y, w as u32, 32, COL_PANEL, COL_BORDER_DIM);
 
     let title = MonoTextStyle::new(&FONT_6X10, COL_MUTED);
     let percent = MonoTextStyle::new(&FONT_9X15, col);
@@ -1002,13 +932,13 @@ fn draw_bat<D: DrawTarget<Color = Rgb565>>(
         .alignment(Alignment::Right)
         .baseline(Baseline::Top)
         .build();
-    let _ = Text::with_text_style(side, Point::new(x + 10, y + 8), title, top).draw(display);
-    let _ = Text::with_text_style(&label, Point::new(x + w - 12, y + 6), percent, tr).draw(display);
+    let _ = Text::with_text_style(side, Point::new(x + 10, y + 7), title, top).draw(display);
+    let _ = Text::with_text_style(&label, Point::new(x + w - 12, y + 5), percent, tr).draw(display);
 
     let bx = x + 10;
-    let by = y + 30;
+    let by = y + 22;
     let bw = w - 28;
-    let bh = 8u32;
+    let bh = 6u32;
     let bar = RoundedRectangle::with_equal_corners(
         Rectangle::new(Point::new(bx, by), Size::new(bw as u32, bh)),
         Size::new(BAR_RADIUS, BAR_RADIUS),
@@ -1051,72 +981,3 @@ fn push_host_time(buffer: &mut heapless::String<16>, hour: Option<u8>, minute: O
     }
 }
 
-fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
-    display: &mut D,
-    host_data: &rmk::host_data::HostData,
-    media_style: &U8g2TextStyle<Rgb565>,
-    fallback_style: MonoTextStyle<'_, Rgb565>,
-) {
-    let top = TextStyleBuilder::new().baseline(Baseline::Top).build();
-    let mut media: heapless::String<72> = heapless::String::new();
-    push_media_label(&mut media, host_data);
-
-    if media.is_empty() {
-        if !host_time_available(host_data) {
-            let _ = Text::with_text_style("QUBE", Point::new(SAFE_X + 22, 21), fallback_style, top).draw(display);
-        }
-        return;
-    }
-
-    let mut visible: heapless::String<64> = heapless::String::new();
-    if media.chars().count() <= MEDIA_VISIBLE_CHARS {
-        let _ = visible.push_str(&media);
-    } else {
-        let elapsed = Instant::now().duration_since(Instant::from_ticks(0)).as_millis() as usize;
-        let offset = (elapsed / 300) % (media.chars().count() + MEDIA_GAP_CHARS);
-        push_marquee_slice(&mut visible, &media, offset);
-    }
-
-    let _ = Text::with_text_style(&visible, Point::new(SAFE_X + 22, 22), media_style, top).draw(display);
-}
-
-fn push_media_label(buffer: &mut heapless::String<72>, host_data: &rmk::host_data::HostData) {
-    if !host_data.media_artist.is_empty() {
-        push_display_text(buffer, &host_data.media_artist);
-    }
-    if !host_data.media_title.is_empty() {
-        if !buffer.is_empty() {
-            let _ = buffer.push_str(" - ");
-        }
-        push_display_text(buffer, &host_data.media_title);
-    }
-}
-
-fn push_display_text<const N: usize>(buffer: &mut heapless::String<N>, value: &str) {
-    for ch in value.chars() {
-        if ch.is_control() {
-            continue;
-        }
-        if buffer.push(ch).is_err() {
-            break;
-        }
-    }
-}
-
-fn push_marquee_slice(buffer: &mut heapless::String<64>, text: &str, offset: usize) {
-    let text_len = text.chars().count();
-    let cycle_len = text_len + MEDIA_GAP_CHARS;
-    for i in 0..MEDIA_VISIBLE_CHARS {
-        let idx = (offset + i) % cycle_len;
-        let ch = if idx < text_len {
-            text.chars().nth(idx).unwrap_or(' ')
-        } else {
-            ' '
-        };
-        let _ = buffer.push(ch);
-    }
-}
-
-fn host_time_available(host_data: &rmk::host_data::HostData) -> bool {
-    host_data.hour.is_some() && host_data.minute.is_some()
-}

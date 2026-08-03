@@ -27,6 +27,8 @@ const HOST_DATA_VOLUME: u8 = 0xAB;
 const HOST_DATA_LAYOUT: u8 = 0xAC;
 const HOST_DATA_MEDIA_ARTIST: u8 = 0xAD;
 const HOST_DATA_MEDIA_TITLE: u8 = 0xAE;
+const HOST_DATA_AGENTS: u8 = 0xB0;
+const HOST_DATA_AGENTS_VERSION: u8 = 0x01;
 const ERGOHAVEN_CUSTOM_NAMESPACE: u8 = 0xE8;
 const ERGOHAVEN_CUSTOM_BATTERY_HALVES: u8 = 0x01;
 const ERGOHAVEN_BATTERY_HALVES_VERSION: u8 = 0x01;
@@ -75,6 +77,21 @@ fn process_host_data_packet(data: &[u8; 32]) -> bool {
         }
         HOST_DATA_MEDIA_TITLE => {
             crate::host_data::update_media_title(host_data_text(data));
+            true
+        }
+        // [1] version, [2..7] per-state counts, [7] reserved flags.
+        HOST_DATA_AGENTS => {
+            if data[1] == HOST_DATA_AGENTS_VERSION {
+                crate::host_data::update_agents(crate::host_data::AgentSummary {
+                    working: data[2],
+                    idle: data[3],
+                    blocked: data[4],
+                    done: data[5],
+                    unknown: data[6],
+                });
+            }
+            // A packet from a newer host daemon is still ours to swallow; never
+            // let it fall through and get answered as a Via command.
             true
         }
         HOST_DATA_VOLUME => true,
@@ -1280,5 +1297,51 @@ mod tests {
             battery_halves_for_split(battery(100), battery(80), battery(55), 2, true),
             (battery(80), battery(55))
         );
+    }
+
+    fn agents_packet(version: u8, counts: [u8; 5]) -> [u8; 32] {
+        let mut data = [0u8; 32];
+        data[0] = HOST_DATA_AGENTS;
+        data[1] = version;
+        data[2..7].copy_from_slice(&counts);
+        data
+    }
+
+    #[test]
+    fn agent_packet_lands_in_the_host_snapshot() {
+        assert!(process_host_data_packet(&agents_packet(
+            HOST_DATA_AGENTS_VERSION,
+            [1, 2, 3, 4, 5]
+        )));
+        assert_eq!(
+            crate::host_data::snapshot().agents,
+            Some(crate::host_data::AgentSummary {
+                working: 1,
+                idle: 2,
+                blocked: 3,
+                done: 4,
+                unknown: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn agent_packet_from_a_newer_daemon_is_swallowed_without_updating_state() {
+        assert!(process_host_data_packet(&agents_packet(
+            HOST_DATA_AGENTS_VERSION + 1,
+            [9, 9, 9, 9, 9]
+        )));
+        assert_eq!(crate::host_data::snapshot().agents, None);
+    }
+
+    #[test]
+    fn agent_summary_expires_when_the_host_daemon_goes_quiet() {
+        assert!(process_host_data_packet(&agents_packet(
+            HOST_DATA_AGENTS_VERSION,
+            [1, 0, 0, 0, 0]
+        )));
+        assert!(crate::host_data::snapshot().agents.is_some());
+        embassy_time::MockDriver::get().advance(embassy_time::Duration::from_secs(31));
+        assert_eq!(crate::host_data::snapshot().agents, None);
     }
 }
