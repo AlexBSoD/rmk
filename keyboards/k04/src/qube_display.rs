@@ -64,8 +64,10 @@ const SAFE_W: u32 = SCREEN_W as u32 - (SAFE_X as u32 * 2);
 const PANEL_RADIUS: u32 = 14;
 const BAR_RADIUS: u32 = 5;
 
-/// Vertical centre of each agent row inside the agent panel.
-const AGENT_ROW_Y: [i32; 3] = [78, 122, 166];
+/// Vertical centre of each agent row inside the agent panel (2×2 grid).
+const AGENT_ROW_Y: [i32; 2] = [78, 166];
+/// Left edge of each agent column inside the agent panel.
+const AGENT_COL_X: [i32; 2] = [SAFE_X, SAFE_X + SAFE_W as i32 / 2];
 
 const HEADER_DIRTY: DirtyRegion = DirtyRegion::range(12, 44);
 const AGENTS_DIRTY: DirtyRegion = DirtyRegion::range(48, 196);
@@ -804,9 +806,10 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
             Some(agents) => {
                 // Blocked agents are the only state worth interrupting typing
                 // for, so they get the warning colour even at a glance.
-                draw_agent_row(display, AGENT_ROW_Y[0], agents.working, "WORKING", COL_ACCENT);
-                draw_agent_row(display, AGENT_ROW_Y[1], agents.blocked, "BLOCKED", COL_YELLOW);
-                draw_agent_row(display, AGENT_ROW_Y[2], agents.idle, "IDLE", COL_MUTED);
+                draw_agent_cell(display, AGENT_COL_X[0], AGENT_ROW_Y[0], agents.working, "WORKING", COL_ACCENT);
+                draw_agent_cell(display, AGENT_COL_X[1], AGENT_ROW_Y[0], agents.blocked, "BLOCKED", COL_YELLOW);
+                draw_agent_cell(display, AGENT_COL_X[0], AGENT_ROW_Y[1], agents.idle, "IDLE", COL_MUTED);
+                draw_agent_cell(display, AGENT_COL_X[1], AGENT_ROW_Y[1], agents.done, "DONE", COL_FG);
             }
             None => {
                 let offline = MonoTextStyle::new(&FONT_8X13, COL_DIM);
@@ -821,22 +824,29 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
     }
 }
 
-/// One `<dot> <count> <LABEL>` line of the agent panel. `accent` is used when
-/// the count is non-zero; an empty state stays deliberately dim so a screen
-/// with nothing running reads as quiet rather than as data.
-fn draw_agent_row<D: DrawTarget<Color = Rgb565>>(display: &mut D, y: i32, count: u8, label: &str, accent: Rgb565) {
+/// One `<dot> <count> <LABEL>` cell of the 2×2 agent grid. `accent` is used
+/// when the count is non-zero; an empty state stays deliberately dim so a
+/// screen with nothing running reads as quiet rather than as data.
+fn draw_agent_cell<D: DrawTarget<Color = Rgb565>>(
+    display: &mut D,
+    x0: i32,
+    y: i32,
+    count: u8,
+    label: &str,
+    accent: Rgb565,
+) {
     let color = if count > 0 { accent } else { COL_DIM };
     let ml = TextStyleBuilder::new().baseline(Baseline::Middle).build();
 
-    draw_round_fill(display, SAFE_X + 20, y - 5, 10, 10, 5, color);
+    draw_round_fill(display, x0 + 8, y - 3, 6, 6, 3, color);
 
     let mut s: heapless::String<4> = heapless::String::new();
     let _ = write!(&mut s, "{}", count);
     let count_style = U8g2TextStyle::new(fonts::u8g2_font_logisoso20_tn, color);
-    let _ = Text::with_text_style(&s, Point::new(SAFE_X + 46, y), count_style, ml).draw(display);
+    let _ = Text::with_text_style(&s, Point::new(x0 + 24, y), count_style, ml).draw(display);
 
-    let label_style = MonoTextStyle::new(&FONT_9X15, if count > 0 { COL_FG } else { COL_DIM });
-    let _ = Text::with_text_style(label, Point::new(SAFE_X + 84, y), label_style, ml).draw(display);
+    let label_style = MonoTextStyle::new(&FONT_6X10, if count > 0 { COL_FG } else { COL_DIM });
+    let _ = Text::with_text_style(label, Point::new(x0 + 54, y), label_style, ml).draw(display);
 }
 
 fn draw_panel<D: DrawTarget<Color = Rgb565>>(
