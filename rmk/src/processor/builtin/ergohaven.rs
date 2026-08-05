@@ -69,6 +69,8 @@ impl ErgohavenUserKeys {
         if event.keyboard_event.pressed {
             if ble_id == USER_BT_CLEAR_PEER {
                 self.arm_clear_peer(event.keyboard_event);
+            } else if let Some(action) = profile_action_on_press(ble_id) {
+                BLE_PROFILE_CHANNEL.send(action).await;
             }
             return;
         }
@@ -90,25 +92,14 @@ impl ErgohavenUserKeys {
             _ => {}
         }
 
-        match ble_id {
-            id if id < NUM_BLE_PROFILE as u8 => {
-                info!("Switch to profile: {}", id);
-                BLE_PROFILE_CHANNEL.send(BleProfileAction::Switch(id)).await;
+        if let Some(action) = profile_action_on_release(ble_id) {
+            if let BleProfileAction::Switch(profile) = action {
+                info!("Switch to profile: {}", profile);
             }
-            USER_BT_NEXT => {
-                BLE_PROFILE_CHANNEL.send(BleProfileAction::Next).await;
-            }
-            USER_BT_PREV => {
-                BLE_PROFILE_CHANNEL.send(BleProfileAction::Previous).await;
-            }
-            USER_BT_CLEAR => {
-                BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearBond).await;
-            }
-            USER_BT_TOGGLE => {
-                #[cfg(not(feature = "_no_usb"))]
-                crate::state::toggle_preferred().await;
-            }
-            _ => {}
+            BLE_PROFILE_CHANNEL.send(action).await;
+        } else if ble_id == USER_BT_TOGGLE {
+            #[cfg(not(feature = "_no_usb"))]
+            crate::state::toggle_preferred().await;
         }
     }
 
@@ -151,6 +142,22 @@ impl ErgohavenUserKeys {
     }
 }
 
+fn profile_action_on_press(id: u8) -> Option<BleProfileAction> {
+    (id == USER_BT_CLEAR).then_some(BleProfileAction::ClearBond)
+}
+
+fn profile_action_on_release(id: u8) -> Option<BleProfileAction> {
+    match id {
+        id if id < NUM_BLE_PROFILE as u8 => Some(BleProfileAction::Switch(id)),
+        USER_BT_NEXT => Some(BleProfileAction::Next),
+        USER_BT_PREV => Some(BleProfileAction::Previous),
+        // ClearBond is intentionally handled on press so disconnect/pairing
+        // cannot depend on a later release event from a changing layer.
+        USER_BT_CLEAR => None,
+        _ => None,
+    }
+}
+
 fn k04_common_ble_id(id: u8) -> Option<u8> {
     match id {
         K04_USER_BT_PROFILE0 => Some(0),
@@ -169,4 +176,23 @@ fn k04_common_ble_id(id: u8) -> Option<u8> {
 
 async fn set_preferred_connection(connection_type: ConnectionType) {
     crate::state::set_preferred_connection_persistent(connection_type).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn k04_bt_clear_dispatches_on_press_only() {
+        let id = k04_common_ble_id(K04_USER_BT_CLEAR).unwrap();
+        assert_eq!(profile_action_on_press(id), Some(BleProfileAction::ClearBond));
+        assert_eq!(profile_action_on_release(id), None);
+    }
+
+    #[test]
+    fn k04_profile_switch_stays_release_triggered() {
+        let id = k04_common_ble_id(K04_USER_BT_PROFILE1).unwrap();
+        assert_eq!(profile_action_on_press(id), None);
+        assert_eq!(profile_action_on_release(id), Some(BleProfileAction::Switch(1)));
+    }
 }
