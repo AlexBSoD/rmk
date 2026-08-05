@@ -126,6 +126,52 @@ impl PointingEvent {
                 && axis.value.unsigned_abs() >= threshold
         })
     }
+
+    /// Merge a newer cursor-only relative X/Y report into this one.
+    ///
+    /// Button pulses, scroll axes, absolute coordinates, and reports from a
+    /// different device are deliberately rejected so their ordering is
+    /// preserved by the split transport.
+    pub fn merge_relative_xy(&mut self, newer: &Self) -> bool {
+        if self.device_id != newer.device_id
+            || !self.is_cursor_only_relative_xy()
+            || !newer.is_cursor_only_relative_xy()
+        {
+            return false;
+        }
+
+        let mut newer_x = 0i16;
+        let mut newer_y = 0i16;
+        for axis in newer.axes {
+            match (axis.typ, axis.axis) {
+                (AxisValType::Rel, Axis::X) => newer_x = newer_x.saturating_add(axis.value),
+                (AxisValType::Rel, Axis::Y) => newer_y = newer_y.saturating_add(axis.value),
+                _ => {}
+            }
+        }
+        for axis in &mut self.axes {
+            match (axis.typ, axis.axis) {
+                (AxisValType::Rel, Axis::X) => axis.value = axis.value.saturating_add(newer_x),
+                (AxisValType::Rel, Axis::Y) => axis.value = axis.value.saturating_add(newer_y),
+                _ => {}
+            }
+        }
+        true
+    }
+
+    fn is_cursor_only_relative_xy(&self) -> bool {
+        let mut has_x = false;
+        let mut has_y = false;
+        for axis in self.axes {
+            match (axis.typ, axis.axis) {
+                (AxisValType::Rel, Axis::X) => has_x = true,
+                (AxisValType::Rel, Axis::Y) => has_y = true,
+                (AxisValType::Rel, Axis::Z) if axis.value == 0 => {}
+                _ => return false,
+            }
+        }
+        has_x && has_y
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Copy, MaxSize)]
@@ -158,6 +204,59 @@ pub enum Axis {
     H,
     V,
     // .. More is allowed
+}
+
+#[cfg(test)]
+mod pointing_event_tests {
+    use super::*;
+
+    fn event(device_id: u8, x: i16, y: i16, z: i16) -> PointingEvent {
+        PointingEvent {
+            device_id,
+            axes: [
+                AxisEvent {
+                    typ: AxisValType::Rel,
+                    axis: Axis::X,
+                    value: x,
+                },
+                AxisEvent {
+                    typ: AxisValType::Rel,
+                    axis: Axis::Y,
+                    value: y,
+                },
+                AxisEvent {
+                    typ: AxisValType::Rel,
+                    axis: Axis::Z,
+                    value: z,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn relative_cursor_reports_merge_with_saturation() {
+        let mut accumulated = event(3, i16::MAX - 2, -10, 0);
+        assert!(accumulated.merge_relative_xy(&event(3, 20, 4, 0)));
+        assert_eq!(accumulated.axes[0].value, i16::MAX);
+        assert_eq!(accumulated.axes[1].value, -6);
+        assert_eq!(accumulated.axes[2].value, 0);
+    }
+
+    #[test]
+    fn merge_preserves_button_scroll_and_device_ordering() {
+        let original = event(3, 4, 5, 0);
+
+        let mut accumulated = original;
+        assert!(!accumulated.merge_relative_xy(&event(3, 0, 0, 1)));
+        assert_eq!(accumulated.axes[0].value, 4);
+        assert_eq!(accumulated.axes[1].value, 5);
+
+        let mut scroll = event(3, 0, 0, 0);
+        scroll.axes[0].axis = Axis::H;
+        scroll.axes[1].axis = Axis::V;
+        assert!(!accumulated.merge_relative_xy(&scroll));
+        assert!(!accumulated.merge_relative_xy(&event(2, 1, 1, 0)));
+    }
 }
 
 /// Set the CPI (Resolution) of the pointing device

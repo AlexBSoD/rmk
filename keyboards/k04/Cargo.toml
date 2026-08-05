@@ -49,6 +49,7 @@ rmk-types = { path = "../../rmk-types", optional = true }
 u8g2-fonts = { version = "0.5.2", features = ["embedded_graphics_textstyle"], optional = true }
 heapless = "0.9"
 embassy-futures = "0.1"
+embassy-sync = "0.8"
 nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = [
     "defmt",
     "peripheral",

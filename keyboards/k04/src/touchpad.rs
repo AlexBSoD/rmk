@@ -1,3 +1,4 @@
+use embassy_futures::select::{select, Either};
 use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Instant, Timer};
 use rmk::core_traits::Runnable;
@@ -108,9 +109,26 @@ impl Touchpad {
 
     async fn run_loop(&mut self) -> ! {
         loop {
+            let selection = module_settings::module_selection(self.side);
+            if selection != module_settings::ModuleSelection::Touchpad {
+                self.deactivate();
+                let _ = module_settings::wait_for_module_selection_change(self.side, selection).await;
+                continue;
+            }
+
             let deadline = if self.ready { self.next_poll } else { self.next_probe };
-            Timer::at(deadline).await;
-            self.poll_once().await;
+            match select(
+                Timer::at(deadline),
+                module_settings::wait_for_module_selection_change(
+                    self.side,
+                    module_settings::ModuleSelection::Touchpad,
+                ),
+            )
+            .await
+            {
+                Either::First(_) => self.poll_once().await,
+                Either::Second(_) => self.deactivate(),
+            }
         }
     }
 
@@ -140,6 +158,10 @@ impl Touchpad {
             TouchReadResult::Scroll { h, v } => {
                 self.read_failures = 0;
                 self.send_scroll(h, v);
+                true
+            }
+            TouchReadResult::Contact => {
+                self.read_failures = 0;
                 true
             }
             TouchReadResult::NoMotion => {
@@ -285,12 +307,18 @@ impl Touchpad {
         if gestures_enabled && ((gesture_1 & GESTURE_1_SCROLL) != 0 || (number_of_fingers >= 2 && (x != 0 || y != 0))) {
             return match scroll_delta(x, y) {
                 Some((h, v)) => TouchReadResult::Scroll { h, v },
-                None => TouchReadResult::NoMotion,
+                None => TouchReadResult::Contact,
             };
         }
 
-        if number_of_fingers != 1 || (x == 0 && y == 0) {
+        if number_of_fingers == 0 {
             return TouchReadResult::NoMotion;
+        }
+        if number_of_fingers != 1 || (x == 0 && y == 0) {
+            // A stationary finger is still activity. Keeping the host poll at
+            // 8 ms here prevents the first real delta after LP2 from arriving
+            // in a burst of slow, stale samples.
+            return TouchReadResult::Contact;
         }
 
         TouchReadResult::Motion {
@@ -305,7 +333,23 @@ impl Touchpad {
         self.read_failures = 0;
         self.acc_x = 0;
         self.acc_y = 0;
+        self.last_report = Instant::MIN;
+        self.last_activity = Instant::MIN;
+        self.poll_interval = Duration::from_millis(REPORT_RATE_ACTIVE_MS as u64);
         self.schedule_next_probe(now);
+    }
+
+    fn deactivate(&mut self) {
+        self.ready = false;
+        self.read_failures = 0;
+        self.acc_x = 0;
+        self.acc_y = 0;
+        self.last_report = Instant::MIN;
+        self.last_activity = Instant::MIN;
+        self.next_probe = Instant::MIN;
+        self.next_poll = Instant::MIN;
+        self.poll_interval = Duration::from_millis(REPORT_RATE_ACTIVE_MS as u64);
+        self.unavailable_since = None;
     }
 
     fn schedule_next_probe(&mut self, now: Instant) {
@@ -414,6 +458,7 @@ enum TouchReadResult {
     Motion { x: i16, y: i16 },
     Gesture { buttons: u8 },
     Scroll { h: i16, v: i16 },
+    Contact,
     NoMotion,
     ReadFailed,
 }

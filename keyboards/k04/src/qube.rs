@@ -8,6 +8,7 @@
 #[path = "../../common/default_layer_names.rs"]
 mod default_layer_names;
 mod layer_names;
+mod module_settings;
 mod qube_display;
 
 const DEFAULT_LAYER_NAMES: [&str; 16] = default_layer_names::STANDARD_WITH_MOUSE;
@@ -28,6 +29,11 @@ mod keyboard_central {
     #[register_processor(event)]
     fn module_settings_broadcast() -> crate::layer_names::ModuleSettingsBroadcast {
         crate::layer_names::ModuleSettingsBroadcast::new()
+    }
+
+    #[register_processor(event)]
+    fn module_settings_sync() -> crate::module_settings::ModuleSettingsSync {
+        crate::module_settings::ModuleSettingsSync::new()
     }
 
     #[register_processor(poll)]

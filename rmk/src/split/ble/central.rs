@@ -38,6 +38,10 @@ static PERIPHERAL_CONNECTION_CHANGED: Signal<crate::RawMutex, ()> = Signal::new(
 static SPLIT_WINDOW_RESTART: Signal<crate::RawMutex, u32> = Signal::new();
 static SPLIT_WINDOW_DONE: Signal<crate::RawMutex, u32> = Signal::new();
 static SPLIT_WINDOW_GENERATION: BlockingMutex<crate::RawMutex, Cell<u32>> = BlockingMutex::new(Cell::new(0));
+static CONFIGURED_LINK_PROFILES: AtomicU32 = AtomicU32::new(0);
+static POINTING_LINK_PROFILES: AtomicU32 = AtomicU32::new(0);
+static LINK_PROFILE_CHANGED: [Signal<crate::RawMutex, ()>; u32::BITS as usize] =
+    [const { Signal::new() }; u32::BITS as usize];
 
 static LAST_POINTING_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
 // PMW3610 may emit background +/-1 reports while settling. Velvet's
@@ -57,6 +61,40 @@ const SPLIT_COMPANY_ID: u16 = 0xe118;
 pub enum SplitLinkProfile {
     Keyboard,
     Pointing,
+}
+
+/// Override the active BLE cadence for one split peripheral at runtime.
+///
+/// Generated keyboards keep their compile-time profile until this is called.
+/// This lets a hot-configurable board switch between a key-only link and a
+/// 125 Hz pointing link without declaring a second hardware device in TOML.
+pub fn set_split_link_profile(peripheral_id: usize, profile: SplitLinkProfile) -> bool {
+    let Some(changed) = LINK_PROFILE_CHANGED.get(peripheral_id) else {
+        return false;
+    };
+    let bit = bit_for_peri(peripheral_id);
+    let was_configured = CONFIGURED_LINK_PROFILES.fetch_or(bit, Ordering::AcqRel) & bit != 0;
+    let previous_pointing = match profile {
+        SplitLinkProfile::Keyboard => POINTING_LINK_PROFILES.fetch_and(!bit, Ordering::AcqRel) & bit != 0,
+        SplitLinkProfile::Pointing => POINTING_LINK_PROFILES.fetch_or(bit, Ordering::AcqRel) & bit != 0,
+    };
+    let is_pointing = profile == SplitLinkProfile::Pointing;
+    if !was_configured || previous_pointing != is_pointing {
+        changed.signal(());
+    }
+    true
+}
+
+fn effective_split_link_profile(peripheral_id: usize, generated: SplitLinkProfile) -> SplitLinkProfile {
+    let bit = bit_for_peri(peripheral_id);
+    if CONFIGURED_LINK_PROFILES.load(Ordering::Acquire) & bit == 0 {
+        return generated;
+    }
+    if POINTING_LINK_PROFILES.load(Ordering::Acquire) & bit != 0 {
+        SplitLinkProfile::Pointing
+    } else {
+        SplitLinkProfile::Keyboard
+    }
 }
 
 fn required_peripheral_mask() -> u32 {
@@ -468,8 +506,9 @@ pub(crate) async fn run_ble_peripheral_manager<
         info!("Peripheral peer address: {:?}", address);
 
         let mut central = stack.central();
+        let active_profile = effective_split_link_profile(peri_id, profile);
         let config = ConnectConfig {
-            connect_params: active_central_conn_param(profile),
+            connect_params: active_central_conn_param(active_profile),
             scan_config: ScanConfig {
                 filter_accept_list: &[address],
                 // Match the effective 62.5 ms initiating scan used by the
@@ -631,12 +670,13 @@ async fn run_central_manager_task<
     update_ble_phy(stack, conn).await;
 
     info!("Updating connection parameters for peripheral");
-    update_conn_params(stack, conn, &active_central_conn_param(profile)).await;
+    let active_profile = effective_split_link_profile(id, profile);
+    update_conn_params(stack, conn, &active_central_conn_param(active_profile)).await;
 
     match select3(
         ble_central_task(&client, conn),
         run_peripheral_manager::<_, _, ROW, COL, ROW_OFFSET, COL_OFFSET>(id, peer_address, &client, peer_validated),
-        follow_sleep_state(stack, conn, profile),
+        follow_sleep_state(stack, conn, id, profile),
     )
     .await
     {
@@ -822,9 +862,11 @@ async fn follow_sleep_state<
 >(
     stack: &'b Stack<'s, C, P>,
     conn: &Connection<'b, P>,
-    profile: SplitLinkProfile,
+    peripheral_id: usize,
+    generated_profile: SplitLinkProfile,
 ) -> Result<(), BleHostError<C::Error>> {
     let mut sleep_events = SleepStateEvent::subscriber();
+    let profile_changed = LINK_PROFILE_CHANGED.get(peripheral_id);
 
     // A new link needs the active cadence for discovery and traffic. Reporting
     // activity also wakes every other split link through the global manager.
@@ -832,21 +874,45 @@ async fn follow_sleep_state<
 
     // `run_central_manager_task` just requested the active parameters.
     let mut applied_sleeping = false;
+    let mut applied_profile = effective_split_link_profile(peripheral_id, generated_profile);
     loop {
-        let sleeping = sleep_events.next_event().await.0;
-        if sleeping == applied_sleeping {
-            continue;
-        }
-
-        let conn_params = if sleeping {
-            info!("Split link entering sleep mode");
-            sleeping_central_conn_param()
+        let update = if let Some(profile_changed) = profile_changed {
+            select(sleep_events.next_event(), profile_changed.wait()).await
         } else {
-            info!("Split link restoring fixed active mode");
-            active_central_conn_param(profile)
+            Either::First(sleep_events.next_event().await)
         };
-        if update_conn_params(stack, conn, &conn_params).await {
-            applied_sleeping = sleeping;
+        match update {
+            Either::First(event) => {
+                let sleeping = event.0;
+                if sleeping == applied_sleeping {
+                    continue;
+                }
+
+                let profile = effective_split_link_profile(peripheral_id, generated_profile);
+                let conn_params = if sleeping {
+                    info!("Split link entering sleep mode");
+                    sleeping_central_conn_param()
+                } else {
+                    info!("Split link restoring active mode");
+                    active_central_conn_param(profile)
+                };
+                if update_conn_params(stack, conn, &conn_params).await {
+                    applied_sleeping = sleeping;
+                    if !sleeping {
+                        applied_profile = profile;
+                    }
+                }
+            }
+            Either::Second(_) => {
+                let profile = effective_split_link_profile(peripheral_id, generated_profile);
+                if applied_sleeping || profile == applied_profile {
+                    continue;
+                }
+                info!("Split link applying runtime active profile");
+                if update_conn_params(stack, conn, &active_central_conn_param(profile)).await {
+                    applied_profile = profile;
+                }
+            }
         }
     }
 }
@@ -949,6 +1015,25 @@ mod advertisement_tests {
         assert_eq!(params.min_connection_interval, Duration::from_millis(15));
         assert_eq!(params.max_connection_interval, Duration::from_millis(15));
         assert_eq!(params.max_latency, 0);
+    }
+
+    #[test]
+    fn runtime_profile_override_replaces_generated_profile_per_link() {
+        assert_eq!(
+            effective_split_link_profile(30, SplitLinkProfile::Keyboard),
+            SplitLinkProfile::Keyboard
+        );
+        assert!(set_split_link_profile(30, SplitLinkProfile::Pointing));
+        assert_eq!(
+            effective_split_link_profile(30, SplitLinkProfile::Keyboard),
+            SplitLinkProfile::Pointing
+        );
+        assert!(set_split_link_profile(30, SplitLinkProfile::Keyboard));
+        assert_eq!(
+            effective_split_link_profile(30, SplitLinkProfile::Pointing),
+            SplitLinkProfile::Keyboard
+        );
+        assert!(!set_split_link_profile(32, SplitLinkProfile::Pointing));
     }
 
     #[test]

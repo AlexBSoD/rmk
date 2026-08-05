@@ -23,6 +23,7 @@ const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const USB_REPORT_INTERVAL: Duration = Duration::from_millis(4);
 const TRANSPORT_SAFE_REPORT_INTERVAL: Duration = Duration::from_millis(8);
 const MOTION_ACCUM_LIMIT: i32 = (i8::MAX as i32) * 2;
+const MAX_MOTION_READS_PER_WAKE: usize = 16;
 const DEFAULT_CPI: u16 = 1000;
 
 pub type K04Trackball = Pmw3610<BitBangSpiBus<Output<'static>, Flex<'static>>, Output<'static>, Input<'static>>;
@@ -107,10 +108,29 @@ impl Trackball {
 
     async fn run_loop(&mut self) -> ! {
         loop {
+            let selection = module_settings::module_selection(self.device_id);
+            if selection != module_settings::ModuleSelection::Trackball {
+                self.deactivate();
+                let _ = module_settings::wait_for_module_selection_change(self.device_id, selection).await;
+                continue;
+            }
+
             if !self.ready {
                 let now = Instant::now();
                 if now < self.next_probe {
-                    Timer::at(self.next_probe).await;
+                    if matches!(
+                        select(
+                            Timer::at(self.next_probe),
+                            module_settings::wait_for_module_selection_change(
+                                self.device_id,
+                                module_settings::ModuleSelection::Trackball,
+                            ),
+                        )
+                        .await,
+                        Either::Second(_)
+                    ) {
+                        continue;
+                    }
                 }
 
                 if self.trackball.init().await.is_ok() {
@@ -136,25 +156,57 @@ impl Trackball {
                 .map(|report| report.min(self.next_health_check))
                 .unwrap_or(self.next_health_check);
 
-            let motion_woke = if let Some(gpio) = self.trackball.motion_gpio() {
-                matches!(select(gpio.wait_for_low(), Timer::at(deadline)).await, Either::First(_))
-            } else {
-                Timer::at(deadline).await;
-                false
+            let motion_or_deadline = async {
+                if let Some(gpio) = self.trackball.motion_gpio() {
+                    matches!(select(gpio.wait_for_low(), Timer::at(deadline)).await, Either::First(_))
+                } else {
+                    Timer::at(deadline).await;
+                    false
+                }
+            };
+            let motion_woke = match select(
+                motion_or_deadline,
+                module_settings::wait_for_module_selection_change(
+                    self.device_id,
+                    module_settings::ModuleSelection::Trackball,
+                ),
+            )
+            .await
+            {
+                Either::First(motion_woke) => motion_woke,
+                Either::Second(_) => {
+                    self.deactivate();
+                    continue;
+                }
             };
 
             if motion_woke {
-                while self.trackball.motion_pending() {
+                let mut reads = 0usize;
+                while reads < MAX_MOTION_READS_PER_WAKE && self.trackball.motion_pending() {
+                    reads += 1;
                     match self.trackball.read_motion().await {
                         Ok(motion) => {
                             self.acc_x = clamp_motion_accum(self.acc_x.saturating_add(motion.dx as i32));
                             self.acc_y = clamp_motion_accum(self.acc_y.saturating_add(motion.dy as i32));
+                            let now = Instant::now();
+                            if (self.acc_x != 0 || self.acc_y != 0)
+                                && now.duration_since(self.last_report) >= report_interval
+                            {
+                                self.send_accumulated_motion();
+                                self.last_report = now;
+                            }
                         }
                         Err(_) => {
                             self.mark_unavailable(Instant::now());
                             break;
                         }
                     }
+                }
+                if reads == MAX_MOTION_READS_PER_WAKE && self.trackball.motion_pending() {
+                    // A stuck-low/noisy MOTION line must not monopolize the
+                    // executor. The next pass resumes immediately if data is
+                    // still pending.
+                    Timer::after(Duration::from_micros(50)).await;
                 }
             }
 
@@ -211,6 +263,16 @@ impl Trackball {
         self.next_health_check = Instant::MIN;
         self.acc_x = 0;
         self.acc_y = 0;
+    }
+
+    fn deactivate(&mut self) {
+        self.ready = false;
+        self.acc_x = 0;
+        self.acc_y = 0;
+        self.last_report = Instant::MIN;
+        self.next_probe = Instant::MIN;
+        self.next_health_check = Instant::MIN;
+        self.unavailable_since = None;
     }
 
     fn send_accumulated_motion(&mut self) {
