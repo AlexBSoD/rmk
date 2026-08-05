@@ -71,22 +71,11 @@ impl Default for ProfileInfo {
 }
 
 /// BLE profile switch action
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BleProfileAction {
     Switch(u8),
     Previous,
     Next,
     ClearBond,
-}
-
-impl BleProfileAction {
-    /// Clearing a bond must restart the BLE connection immediately. The clear
-    /// operation is already ordered in `FLASH_CHANNEL`, so waiting for the
-    /// flash write here only delays (or, on a stalled write, prevents) the
-    /// disconnect that opens the pairing window.
-    const fn waits_for_flash(self) -> bool {
-        !matches!(self, Self::ClearBond)
-    }
 }
 
 /// Manage BLE profiles and bonding information
@@ -297,7 +286,6 @@ where
                 Either3::First(action) => {
                     #[cfg(feature = "storage")]
                     FLASH_OPERATION_FINISHED.reset();
-                    let waits_for_flash = action.waits_for_flash();
                     match action {
                         BleProfileAction::Switch(profile) => {
                             if !self.switch_profile(profile).await {
@@ -326,9 +314,7 @@ where
                         }
                     }
                     #[cfg(feature = "storage")]
-                    if waits_for_flash {
-                        FLASH_OPERATION_FINISHED.wait().await;
-                    }
+                    FLASH_OPERATION_FINISHED.wait().await;
                     info!("Update profile done");
                     break;
                 }
@@ -340,18 +326,5 @@ where
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::BleProfileAction;
-
-    #[test]
-    fn clear_bond_does_not_delay_connection_restart_for_flash() {
-        assert!(!BleProfileAction::ClearBond.waits_for_flash());
-        assert!(BleProfileAction::Switch(1).waits_for_flash());
-        assert!(BleProfileAction::Previous.waits_for_flash());
-        assert!(BleProfileAction::Next.waits_for_flash());
     }
 }
