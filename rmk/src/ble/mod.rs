@@ -1,10 +1,7 @@
-use core::cell::Cell;
-
 use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeReadPhy, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
-use embassy_futures::join::join;
+use embassy_futures::join::join3;
 use embassy_futures::select::{Either, Either3, select, select3};
-use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::mutex::Mutex;
 #[cfg(feature = "host")]
 use embassy_sync::signal::Signal;
@@ -24,13 +21,12 @@ use crate::ble::led::BleLedReader;
 #[cfg(feature = "passkey_entry")]
 use crate::ble::passkey::{PasskeyInputState, next_gatt_event};
 use crate::ble::profile::{ProfileInfo, ProfileManager, UPDATED_CCCD_TABLE, UPDATED_PROFILE};
+use crate::ble::sleep::{report_activity, request_sleep};
 use crate::channel::{BLE_REPORT_CHANNEL, LED_SIGNAL};
 use crate::config::{BleBatteryConfig, RmkConfig};
 use crate::core_traits::Runnable;
-use crate::event::{BleAdvertisingMode, SleepStateEvent, SubscribableEvent, publish_event};
+use crate::event::{BleAdvertisingMode, SubscribableEvent};
 use crate::hid::{HidWriterTrait, run_led_reader};
-#[cfg(feature = "split")]
-use crate::split::ble::central::{request_sleep, update_activity_time};
 use crate::state::set_ble_state;
 
 pub(crate) mod battery_service;
@@ -41,23 +37,7 @@ pub(crate) mod led;
 pub(crate) mod nrf;
 pub mod passkey;
 pub(crate) mod profile;
-
-/// Global state of sleep management
-/// - `true`: Indicates central is sleeping
-/// - `false`: Indicates central is awake
-static SLEEPING_STATE: BlockingMutex<crate::RawMutex, Cell<bool>> = BlockingMutex::new(Cell::new(false));
-
-pub(crate) fn is_sleeping() -> bool {
-    SLEEPING_STATE.lock(Cell::get)
-}
-
-pub(crate) fn replace_sleeping_state(next: bool) -> bool {
-    SLEEPING_STATE.lock(|state| {
-        let previous = state.get();
-        state.set(next);
-        previous
-    })
-}
+pub(crate) mod sleep;
 
 /// Max number of connections
 pub(crate) const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + 1;
@@ -270,9 +250,6 @@ where
                         }
 
                         warn!("Advertising timeout, sleep and wait for any key");
-                        publish_event(SleepStateEvent::new(true));
-
-                        #[cfg(feature = "split")]
                         request_sleep();
 
                         // Wake on key or pointing activity after the advertising timeout.
@@ -280,9 +257,7 @@ where
                         let mut pointing_wake = crate::event::PointingEvent::subscriber();
                         let _ = select(key_wake.next_message_pure(), pointing_wake.next_message_pure()).await;
 
-                        #[cfg(feature = "split")]
-                        update_activity_time();
-                        publish_event(SleepStateEvent::new(false));
+                        report_activity();
                     }
                     Either::First(Err(e)) => {
                         #[cfg(feature = "defmt")]
@@ -300,7 +275,10 @@ where
             }
         };
 
-        join(ble_task(runner), connection_loop).await;
+        // Sleep ownership must outlive every host and split connection. Keeping
+        // it beside the BLE runner prevents a disconnected link from leaving
+        // the keyboard latched asleep.
+        join3(ble_task(runner), connection_loop, sleep::run_sleep_manager()).await;
         unreachable!("BleTransport sub-tasks must run forever")
     }
 }
@@ -439,18 +417,15 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                             cccd_updated = true;
                         } else if event.handle() == hid_control_point.handle {
                             info!("Write GATT Event to Control Point: {:?}", event.handle());
-                            #[cfg(feature = "split")]
-                            {
-                                // Forward an HID Control Point write to the split central's sleep signal.
-                                // HID Class spec opcodes for the HID Control Point characteristic:
-                                //   - 0: HID_CTRL_SUSPEND
-                                //   - 1: HID_CTRL_EXIT_SUSPEND
-                                if data_len == 1 {
-                                    match data[0] {
-                                        0 => request_sleep(),
-                                        1 => update_activity_time(),
-                                        _ => {}
-                                    }
+                            // Forward HID suspend/resume to the persistent sleep manager.
+                            // HID Class control point opcodes:
+                            //   - 0: HID_CTRL_SUSPEND
+                            //   - 1: HID_CTRL_EXIT_SUSPEND
+                            if data_len == 1 {
+                                match data[0] {
+                                    0 => request_sleep(),
+                                    1 => report_activity(),
+                                    _ => {}
                                 }
                             }
                         } else {
@@ -509,8 +484,7 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                 if cccd_updated {
                     // When macOS wakes up from sleep mode, it won't send EXIT SUSPEND command
                     // So we need to monitor the sleep state by using CCCD write event
-                    #[cfg(feature = "split")]
-                    update_activity_time();
+                    report_activity();
 
                     if let Some(table) = server.get_client_att_table(conn.raw())
                         && let Ok(bytes) = heapless::Vec::from_slice(table.raw())
@@ -1093,11 +1067,11 @@ pub(crate) async fn update_conn_params<
     stack: &Stack<'a, C, P>,
     conn: &Connection<'b, P>,
     params: &RequestedConnParams,
-) {
+) -> bool {
     let _guard = BLE_HCI_LINK_UPDATE_MUTEX.lock().await;
     for attempt in 1..=HCI_LINK_UPDATE_ATTEMPTS {
         if !conn.is_connected() {
-            return;
+            return false;
         }
 
         match conn.update_connection_params(stack, params).await {
@@ -1111,17 +1085,19 @@ pub(crate) async fn update_conn_params<
                     continue;
                 } else {
                     error!("[update_conn_params] HCI error: {:?}", error);
+                    return false;
                 }
             }
             Err(e) => {
                 #[cfg(feature = "defmt")]
                 let e = defmt::Debug2Format(&e);
                 error!("[update_conn_params] BLE host error: {:?}", e);
+                return false;
             }
-            _ => (),
+            Ok(_) => return true,
         }
-        return;
     }
+    false
 }
 
 fn is_hci_link_update_busy(status: u8) -> bool {

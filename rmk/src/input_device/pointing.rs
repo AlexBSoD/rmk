@@ -908,8 +908,8 @@ impl<'a> QubePointingModeProcessor<'a> {
             return;
         };
 
-        #[cfg(all(feature = "split", feature = "_ble"))]
-        crate::split::ble::central::update_activity_time();
+        #[cfg(feature = "_ble")]
+        crate::ble::sleep::report_activity();
 
         let mut x = 0i16;
         let mut y = 0i16;
