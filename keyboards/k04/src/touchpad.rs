@@ -37,7 +37,9 @@ const REPORT_RATE_ACTIVE_MS: u16 = 8;
 const REPORT_RATE_IDLE_TOUCH_MS: u16 = 8;
 const REPORT_RATE_IDLE_MS: u16 = 40;
 const REPORT_RATE_LP1_MS: u16 = 160;
-const REPORT_RATE_LP2_MS: u16 = 320;
+// Keep the deepest scan cadence at LP1 speed. The extra current is only a few
+// microamps, while 320 ms made the first contact after a long idle visibly lag.
+const REPORT_RATE_LP2_MS: u16 = 160;
 const ACTIVE_MODE_TIMEOUT_SECS: u8 = 1;
 const IDLE_TOUCH_MODE_TIMEOUT_SECS: u8 = 255;
 const IDLE_MODE_TIMEOUT_SECS: u8 = 5;
@@ -53,6 +55,8 @@ const TOUCH_FAST_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const TOUCH_SLOW_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 const TOUCH_FAST_PROBE_WINDOW: Duration = Duration::from_secs(10);
 const TOUCH_READ_FAILURE_REINIT_THRESHOLD: u8 = 4;
+// Ignore one-frame second-finger glitches caused by reference drift/re-ATI.
+const TOUCH_SCROLL_CONFIRM_SAMPLES: u8 = 3;
 const TOUCH_MOTION_ACCUM_LIMIT: i32 = (i8::MAX as i32) * 2;
 // Keep sampling and report pacing aligned so continuous motion is emitted on
 // every active sample instead of falling into an alternating 15/30 ms cadence.
@@ -65,6 +69,11 @@ const GESTURE_0_PRESS_AND_HOLD: u8 = 1 << 1;
 const GESTURE_1_TWO_FINGER_TAP: u8 = 1 << 0;
 const GESTURE_1_SCROLL: u8 = 1 << 1;
 const SYSTEM_INFO_0_SHOW_RESET: u8 = 1 << 7;
+const SYSTEM_INFO_0_CHARGING_MODE: u8 = 0b111;
+const CHARGING_MODE_ACTIVE: u8 = 0b000;
+const CHARGING_MODE_IDLE_TOUCH: u8 = 0b001;
+const SYSTEM_INFO_0_ATI_ERROR: u8 = 1 << 3;
+const SYSTEM_INFO_0_REATI_OCCURRED: u8 = 1 << 4;
 const SYSTEM_INFO_1_TP_MOVEMENT: u8 = 1 << 0;
 const SYSTEM_CONTROL_0_ACK_RESET: u8 = 1 << 7;
 const FILTER_IIR: u8 = 1 << 0;
@@ -78,6 +87,7 @@ pub struct Touchpad {
     side: u8,
     ready: bool,
     read_failures: u8,
+    multi_finger_samples: u8,
     acc_x: i32,
     acc_y: i32,
     last_report: Instant,
@@ -96,6 +106,7 @@ impl Touchpad {
             side: side_for_device_id(device_id),
             ready: false,
             read_failures: 0,
+            multi_finger_samples: 0,
             acc_x: 0,
             acc_y: 0,
             last_report: Instant::MIN,
@@ -169,6 +180,8 @@ impl Touchpad {
                 false
             }
             TouchReadResult::ReadFailed => {
+                // A missing frame breaks the consecutive two-finger sequence.
+                self.multi_finger_samples = 0;
                 self.read_failures = self.read_failures.saturating_add(1);
                 if self.read_failures >= TOUCH_READ_FAILURE_REINIT_THRESHOLD {
                     self.reset();
@@ -251,8 +264,7 @@ impl Touchpad {
             self.poll_interval = Duration::from_millis(REPORT_RATE_ACTIVE_MS as u64);
             self.last_activity = now;
             self.unavailable_since = None;
-            self.acc_x = 0;
-            self.acc_y = 0;
+            self.clear_motion_state();
         }
         ok
     }
@@ -293,6 +305,24 @@ impl Touchpad {
             return TouchReadResult::ReadFailed;
         }
 
+        // Finger counts and deltas are trustworthy only while the controller
+        // scans for touch. Low-power transition frames and ATI/re-ATI frames can
+        // retain stale fingers and movement, which previously surfaced as a
+        // phantom scroll after the pad had already been released.
+        let charging_mode = system_info_0 & SYSTEM_INFO_0_CHARGING_MODE;
+        let scanning_for_touch = charging_mode == CHARGING_MODE_ACTIVE || charging_mode == CHARGING_MODE_IDLE_TOUCH;
+        if !scanning_for_touch || (system_info_0 & (SYSTEM_INFO_0_ATI_ERROR | SYSTEM_INFO_0_REATI_OCCURRED)) != 0 {
+            self.clear_motion_state();
+            return TouchReadResult::NoMotion;
+        }
+
+        self.multi_finger_samples = if number_of_fingers >= 2 {
+            self.multi_finger_samples.saturating_add(1)
+        } else {
+            0
+        };
+        let two_fingers_settled = self.multi_finger_samples >= TOUCH_SCROLL_CONFIRM_SAMPLES;
+
         let gestures_enabled = module_settings::touch_gestures_enabled(self.side);
 
         if gestures_enabled && (gesture_0 & (GESTURE_0_SINGLE_TAP | GESTURE_0_PRESS_AND_HOLD)) != 0 {
@@ -304,7 +334,7 @@ impl Touchpad {
             return TouchReadResult::Gesture { buttons: BUTTON_RIGHT };
         }
 
-        if gestures_enabled && ((gesture_1 & GESTURE_1_SCROLL) != 0 || (number_of_fingers >= 2 && (x != 0 || y != 0))) {
+        if gestures_enabled && two_fingers_settled && ((gesture_1 & GESTURE_1_SCROLL) != 0 || x != 0 || y != 0) {
             return match scroll_delta(x, y) {
                 Some((h, v)) => TouchReadResult::Scroll { h, v },
                 None => TouchReadResult::Contact,
@@ -331,8 +361,7 @@ impl Touchpad {
         let now = Instant::now();
         self.ready = false;
         self.read_failures = 0;
-        self.acc_x = 0;
-        self.acc_y = 0;
+        self.clear_motion_state();
         self.last_report = Instant::MIN;
         self.last_activity = Instant::MIN;
         self.poll_interval = Duration::from_millis(REPORT_RATE_ACTIVE_MS as u64);
@@ -342,14 +371,19 @@ impl Touchpad {
     fn deactivate(&mut self) {
         self.ready = false;
         self.read_failures = 0;
-        self.acc_x = 0;
-        self.acc_y = 0;
+        self.clear_motion_state();
         self.last_report = Instant::MIN;
         self.last_activity = Instant::MIN;
         self.next_probe = Instant::MIN;
         self.next_poll = Instant::MIN;
         self.poll_interval = Duration::from_millis(REPORT_RATE_ACTIVE_MS as u64);
         self.unavailable_since = None;
+    }
+
+    fn clear_motion_state(&mut self) {
+        self.multi_finger_samples = 0;
+        self.acc_x = 0;
+        self.acc_y = 0;
     }
 
     fn schedule_next_probe(&mut self, now: Instant) {
