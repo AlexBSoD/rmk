@@ -263,7 +263,7 @@ pub(crate) struct RmkConstantsConfig {
     /// BLE reconnect window for the active bonded host in seconds
     #[serde_inline_default(300)]
     pub ble_reconnect_timeout_seconds: u32,
-    /// BLE pairing window for a new host in seconds (0 = legacy behavior)
+    /// BLE pairing window for an unbonded profile in seconds (0 = use the reconnect window)
     #[serde_inline_default(0)]
     pub ble_pairing_timeout_seconds: u32,
     /// BLE Split Central sleep timeout in seconds (0 = disabled)

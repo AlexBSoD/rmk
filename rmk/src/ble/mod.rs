@@ -642,15 +642,17 @@ async fn advertise<'a, 'b, C: Controller>(
         ..fast_advertise_config
     };
 
-    let reconnect_timeout_ms = u64::from(crate::BLE_RECONNECT_TIMEOUT_SECONDS) * 1_000;
+    let reconnect_timeout_secs = u64::from(crate::BLE_RECONNECT_TIMEOUT_SECONDS);
+    let reconnect_timeout_ms = reconnect_timeout_secs * 1_000;
     let configured_pairing_timeout = u64::from(crate::BLE_PAIRING_TIMEOUT_SECONDS);
-    let mut undirected_timeout_secs = configured_pairing_timeout;
     let has_active_peer = active_peer.is_some();
+    let pairing_window_secs =
+        pairing_window_timeout_secs(has_active_peer, configured_pairing_timeout, reconnect_timeout_secs);
+
+    crate::state::set_ble_advertising_mode(advertising_mode(has_active_peer));
+    set_ble_state(BleState::Advertising);
 
     if let Some(peer) = active_peer {
-        crate::state::set_ble_advertising_mode(BleAdvertisingMode::Reconnecting);
-        set_ble_state(BleState::Advertising);
-
         let high_duty_window_ms = reconnect_timeout_ms.min(DIRECTED_RECONNECT_WINDOW_MS);
         if high_duty_window_ms > 0 {
             info!("[adv] directed high duty reconnect");
@@ -669,7 +671,7 @@ async fn advertise<'a, 'b, C: Controller>(
                     }
                     return Ok(conn);
                 }
-                Ok(Err(error)) if directed_reconnect_should_fallback(&error) => {
+                Ok(Err(error)) if directed_reconnect_should_continue(&error) => {
                     info!("[adv] directed reconnect timed out");
                 }
                 Err(_) => {
@@ -680,7 +682,7 @@ async fn advertise<'a, 'b, C: Controller>(
         }
 
         let remaining_reconnect_ms = reconnect_timeout_ms.saturating_sub(high_duty_window_ms);
-        if configured_pairing_timeout > 0 && remaining_reconnect_ms > 0 {
+        if remaining_reconnect_ms > 0 {
             info!("[adv] directed reconnect");
             let advertiser = peripheral
                 .advertise(
@@ -699,17 +701,17 @@ async fn advertise<'a, 'b, C: Controller>(
                 }
                 Err(_) => info!("[adv] bonded host reconnect timeout"),
             }
-        } else if configured_pairing_timeout == 0 {
-            // Preserve the historical single 300-second advertising phase for
-            // keyboards that have not opted into a separate pairing timeout.
-            undirected_timeout_secs = remaining_reconnect_ms.div_ceil(1_000);
         }
-    } else if undirected_timeout_secs == 0 {
-        undirected_timeout_secs = u64::from(crate::BLE_RECONNECT_TIMEOUT_SECONDS);
+
+        // A bonded profile must never become discoverable for a new host
+        // automatically. Opening a pairing window requires an explicit bond
+        // clear or switching to an unbonded profile.
+        return Err(BleHostError::BleHost(Error::Timeout));
     }
 
-    crate::state::set_ble_advertising_mode(advertising_mode(has_active_peer && configured_pairing_timeout == 0));
-    set_ble_state(BleState::Advertising);
+    let Some(undirected_timeout_secs) = pairing_window_secs else {
+        return Err(BleHostError::BleHost(Error::Timeout));
+    };
 
     if undirected_timeout_secs == 0 {
         return Err(BleHostError::BleHost(Error::Timeout));
@@ -774,7 +776,21 @@ fn advertising_mode(has_active_bond: bool) -> BleAdvertisingMode {
     }
 }
 
-fn directed_reconnect_should_fallback(error: &Error) -> bool {
+fn pairing_window_timeout_secs(
+    has_active_bond: bool,
+    configured_pairing_timeout_secs: u64,
+    reconnect_timeout_secs: u64,
+) -> Option<u64> {
+    if has_active_bond {
+        None
+    } else if configured_pairing_timeout_secs == 0 {
+        Some(reconnect_timeout_secs)
+    } else {
+        Some(configured_pairing_timeout_secs)
+    }
+}
+
+fn directed_reconnect_should_continue(error: &Error) -> bool {
     matches!(error, Error::Timeout)
 }
 
@@ -1127,8 +1143,8 @@ mod tests {
     use trouble_host::prelude::PhyKind;
 
     use super::{
-        HostPhyUpdateState, Server, advertising_mode, directed_reconnect_should_fallback, host_phy_update_state,
-        is_hci_link_update_busy, seed_battery_level,
+        HostPhyUpdateState, Server, advertising_mode, directed_reconnect_should_continue, host_phy_update_state,
+        is_hci_link_update_busy, pairing_window_timeout_secs, seed_battery_level,
     };
     use crate::event::{
         Axis, AxisEvent, AxisValType, BleAdvertisingMode, KeyboardEvent, PointingEvent, SubscribableEvent,
@@ -1163,9 +1179,24 @@ mod tests {
     }
 
     #[test]
-    fn directed_reconnect_timeout_falls_back_to_undirected_advertising() {
-        assert!(directed_reconnect_should_fallback(&Error::Timeout));
-        assert!(!directed_reconnect_should_fallback(&Error::Disconnected));
+    fn bonded_profile_does_not_open_pairing_window() {
+        assert_eq!(pairing_window_timeout_secs(true, 60, 300), None);
+    }
+
+    #[test]
+    fn unbonded_profile_uses_configured_pairing_window() {
+        assert_eq!(pairing_window_timeout_secs(false, 60, 300), Some(60));
+    }
+
+    #[test]
+    fn unbonded_profile_preserves_legacy_pairing_timeout_fallback() {
+        assert_eq!(pairing_window_timeout_secs(false, 0, 300), Some(300));
+    }
+
+    #[test]
+    fn high_duty_timeout_continues_with_low_duty_reconnect() {
+        assert!(directed_reconnect_should_continue(&Error::Timeout));
+        assert!(!directed_reconnect_should_continue(&Error::Disconnected));
     }
 
     #[test]
