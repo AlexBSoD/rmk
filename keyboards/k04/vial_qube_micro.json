@@ -8,9 +8,9 @@
         "batteryHalves": true
     },
     "firmware": {
-        "version": "0.1.5"
+        "version": "0.1.6"
     },
-    "firmwareVersion": "0.1.5",
+    "firmwareVersion": "0.1.6",
     "lighting": "none",
     "matrix": {
         "rows": 8,

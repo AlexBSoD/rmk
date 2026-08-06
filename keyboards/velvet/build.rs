@@ -6,8 +6,8 @@ use std::{env, fs};
 use xz2::read::XzEncoder;
 
 fn main() {
-    const FIRMWARE_VERSION: &str = "0.1.5";
-    const FIRMWARE_VERSION_BCD: &str = "0x0105";
+    const FIRMWARE_VERSION: &str = "0.1.6";
+    const FIRMWARE_VERSION_BCD: &str = "0x0106";
 
     println!("cargo:rerun-if-changed=vial.json");
     println!("cargo:rerun-if-changed=keyboard.toml");

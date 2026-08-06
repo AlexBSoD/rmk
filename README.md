@@ -86,7 +86,7 @@ Every push builds all devices in parallel via GitHub Actions. UF2 artifacts avai
 
 Packaged UF2 firmware is published on the
 [GitHub Releases](https://github.com/ergohaven/rmk/releases) page. The current
-firmware release is `v0.1.4`.
+firmware release is `v0.1.6`.
 
 ## RMK Version
 
