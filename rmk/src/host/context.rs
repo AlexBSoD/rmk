@@ -20,6 +20,8 @@ use rmk_types::connection::ConnectionStatus;
 use rmk_types::led_indicator::LedIndicator;
 use rmk_types::morse::{Morse, MorseProfile};
 
+#[cfg(feature = "storage")]
+use crate::channel::MACRO_FLASH_SIGNAL;
 use crate::event::KeyboardEventPos;
 use crate::keyboard::combo::Combo;
 use crate::keymap::KeyMap;
@@ -147,14 +149,15 @@ impl<'a> KeyboardContext<'a> {
         self.keymap.read_macro_buffer(offset, target);
     }
 
-    /// Vial's protocol expects every set to be followed by a full-buffer save.
-    pub async fn write_macro_buffer(&self, offset: usize, data: &[u8]) {
+    /// Update the live buffer and replace the pending flash snapshot.
+    /// The storage task commits the latest snapshot once the chunk burst ends.
+    pub fn write_macro_buffer(&self, offset: usize, data: &[u8]) {
         self.keymap.write_macro_buffer(offset, data);
         #[cfg(feature = "storage")]
         {
             let buf = self.keymap.get_macro_sequences();
-            FLASH_CHANNEL.send(FlashOperationMessage::MacroData(buf)).await;
-            info!("Flush macros to storage");
+            MACRO_FLASH_SIGNAL.signal(buf);
+            info!("Queue macro snapshot for storage");
         }
     }
 

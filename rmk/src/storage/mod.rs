@@ -1,7 +1,11 @@
 use core::fmt::Debug;
 
 use embassy_embedded_hal::adapter::BlockingAsync;
+#[cfg(feature = "host")]
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_sync::signal::Signal;
+#[cfg(feature = "host")]
+use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::NorFlash;
 use embedded_storage_async::nor_flash::NorFlash as AsyncNorFlash;
 use postcard::experimental::max_size::MaxSize;
@@ -21,6 +25,8 @@ use {
 #[cfg(feature = "_ble")]
 use crate::ble::profile::ProfileInfo;
 use crate::channel::FLASH_CHANNEL;
+#[cfg(feature = "host")]
+use crate::channel::MACRO_FLASH_SIGNAL;
 use crate::config::StorageConfig;
 #[cfg(all(feature = "_ble", feature = "split"))]
 use crate::split::ble::PeerAddress;
@@ -28,6 +34,8 @@ use crate::{BUILD_HASH, config};
 
 #[cfg(feature = "host")]
 const KEYMAP_STORAGE_SCHEMA_VERSION: u16 = 2;
+#[cfg(feature = "host")]
+const MACRO_FLASH_DEBOUNCE: Duration = Duration::from_millis(100);
 
 /// Signal to synchronize the flash operation status, usually used outside of the flash task.
 /// True if the flash operation is finished correctly, false if the flash operation is finished with error.
@@ -89,7 +97,6 @@ pub(crate) async fn write_peer_address(addr: PeerAddress) -> bool {
 }
 
 // Message send from other tasks, which will do saving or clearing operation
-#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum FlashOperationMessage {
@@ -113,8 +120,6 @@ pub(crate) enum FlashOperationMessage {
     LayoutOptions(u32),
     // Default layer number
     DefaultLayer(u8),
-    #[cfg(feature = "host")]
-    MacroData([u8; MACRO_SPACE_SIZE]),
     #[cfg(feature = "host")]
     KeymapKey {
         layer: u8,
@@ -796,8 +801,53 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
     crate::core_traits::Runnable for Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>
 {
     async fn run(&mut self) -> ! {
+        #[cfg(feature = "host")]
+        let mut pending_macro: Option<[u8; MACRO_SPACE_SIZE]> = None;
+        #[cfg(feature = "host")]
+        let mut macro_deadline = Instant::now();
+
         loop {
-            let info: FlashOperationMessage = FLASH_CHANNEL.receive().await;
+            #[cfg(feature = "host")]
+            let info = if pending_macro.is_some() {
+                match select3(
+                    FLASH_CHANNEL.receive(),
+                    MACRO_FLASH_SIGNAL.wait(),
+                    Timer::at(macro_deadline),
+                )
+                .await
+                {
+                    Either3::First(info) => Some(info),
+                    Either3::Second(data) => {
+                        pending_macro = Some(data);
+                        macro_deadline = Instant::now() + MACRO_FLASH_DEBOUNCE;
+                        None
+                    }
+                    Either3::Third(()) => {
+                        let data = pending_macro.take().expect("pending macro snapshot");
+                        let result = self
+                            .store_data(StorageKey::MacroData, &StorageData::MacroData(data))
+                            .await;
+                        report_storage_result::<F>(result);
+                        None
+                    }
+                }
+            } else {
+                match select(FLASH_CHANNEL.receive(), MACRO_FLASH_SIGNAL.wait()).await {
+                    Either::First(info) => Some(info),
+                    Either::Second(data) => {
+                        pending_macro = Some(data);
+                        macro_deadline = Instant::now() + MACRO_FLASH_DEBOUNCE;
+                        None
+                    }
+                }
+            };
+
+            #[cfg(not(feature = "host"))]
+            let info = Some(FLASH_CHANNEL.receive().await);
+
+            let Some(info) = info else {
+                continue;
+            };
             debug!("Flash operation: {:?}", info);
 
             let write_result: Result<(), SSError<F::Error>> = match info {
@@ -856,11 +906,6 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 }
                 FlashOperationMessage::DefaultLayer(default_layer) => {
                     update_storage_field!(&mut self.flash, &mut self.buffer, LayoutConfig, default_layer)
-                }
-                #[cfg(feature = "host")]
-                FlashOperationMessage::MacroData(data) => {
-                    self.store_data(StorageKey::MacroData, &StorageData::MacroData(data))
-                        .await
                 }
                 #[cfg(feature = "host")]
                 FlashOperationMessage::KeymapKey {
@@ -960,13 +1005,17 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 }
             };
 
-            match write_result {
-                Ok(()) => FLASH_OPERATION_FINISHED.signal(true),
-                Err(e) => {
-                    print_storage_error::<F>(e);
-                    FLASH_OPERATION_FINISHED.signal(false);
-                }
-            }
+            report_storage_result::<F>(write_result);
+        }
+    }
+}
+
+fn report_storage_result<F: AsyncNorFlash>(result: Result<(), SSError<F::Error>>) {
+    match result {
+        Ok(()) => FLASH_OPERATION_FINISHED.signal(true),
+        Err(e) => {
+            print_storage_error::<F>(e);
+            FLASH_OPERATION_FINISHED.signal(false);
         }
     }
 }

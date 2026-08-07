@@ -3,13 +3,15 @@
 use core::future::poll_fn;
 
 use embassy_sync::channel::{Channel, TrySendError};
-#[cfg(feature = "_ble")]
+#[cfg(any(feature = "_ble", all(feature = "storage", feature = "host")))]
 use embassy_sync::signal::Signal;
 pub use embassy_sync::{blocking_mutex, channel, pubsub, zerocopy_channel};
 use rmk_types::connection::ConnectionType;
 #[cfg(feature = "_ble")]
 use {crate::ble::profile::BleProfileAction, rmk_types::led_indicator::LedIndicator};
 
+#[cfg(all(feature = "storage", feature = "host"))]
+use crate::MACRO_SPACE_SIZE;
 #[cfg(feature = "host")]
 use crate::VIAL_CHANNEL_SIZE;
 use crate::hid::{KeyboardReport, Report};
@@ -89,6 +91,11 @@ pub(crate) fn clear_and_release_report_channel(transport: ConnectionType) {
 // Sync messages from server to flash
 #[cfg(feature = "storage")]
 pub(crate) static FLASH_CHANNEL: Channel<RawMutex, FlashOperationMessage, FLASH_CHANNEL_SIZE> = Channel::new();
+/// Latest complete macro snapshot waiting for a debounced flash commit.
+/// `Signal` replaces an older pending snapshot instead of back-pressuring the
+/// serial Vial host service for every 28-byte protocol chunk.
+#[cfg(all(feature = "storage", feature = "host"))]
+pub(crate) static MACRO_FLASH_SIGNAL: Signal<RawMutex, [u8; MACRO_SPACE_SIZE]> = Signal::new();
 #[cfg(feature = "_ble")]
 pub(crate) static BLE_PROFILE_CHANNEL: Channel<RawMutex, BleProfileAction, 1> = Channel::new();
 

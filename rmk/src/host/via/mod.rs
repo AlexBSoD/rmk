@@ -407,11 +407,10 @@ impl<'a> VialService<'a> {
                         self.ctx.reset_macro_buffer();
                     }
 
-                    // Update macro cache + flush full buffer to storage
+                    // Update macro cache and replace the pending debounced snapshot.
                     info!("Setting macro buffer, offset: {}, size: {}", offset, size);
                     self.ctx
-                        .write_macro_buffer(offset as usize, &report.output_data[4..4 + size as usize])
-                        .await;
+                        .write_macro_buffer(offset as usize, &report.output_data[4..4 + size as usize]);
                 } else {
                     report.input_data[0] = 0xFF;
                 }
@@ -495,6 +494,9 @@ impl Runnable for VialService<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "storage")]
+    use std::sync::{Mutex, OnceLock};
+
     use embassy_futures::block_on;
     use rmk_types::action::{Action, KeyAction};
     use rmk_types::battery::ChargeState;
@@ -504,6 +506,12 @@ mod tests {
     use super::*;
     use crate::config::{BehaviorConfig, PositionalConfig};
     use crate::keymap::{KeyMap, KeymapData};
+
+    #[cfg(feature = "storage")]
+    fn macro_signal_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     /// Build a minimal 1x1x1 keymap + `VialService` and run `f` against it.
     fn with_service<R>(f: impl FnOnce(&mut VialService) -> R) -> R {
@@ -610,9 +618,44 @@ mod tests {
     // size == 28 is the largest payload that fits (writes output_data[4..32]).
     #[test]
     fn macro_set_buffer_max_size_ok() {
+        #[cfg(feature = "storage")]
+        let _guard = macro_signal_test_lock().lock().unwrap();
+        #[cfg(feature = "storage")]
+        crate::channel::MACRO_FLASH_SIGNAL.reset();
+
         with_service(|service| {
             let mut report = macro_set_buffer_report(28);
             block_on(service.process_via_packet(&mut report));
+        });
+
+        #[cfg(feature = "storage")]
+        crate::channel::MACRO_FLASH_SIGNAL.reset();
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn macro_chunks_replace_pending_flash_snapshot() {
+        let _guard = macro_signal_test_lock().lock().unwrap();
+        crate::channel::MACRO_FLASH_SIGNAL.reset();
+
+        with_service(|service| {
+            let mut first = macro_set_buffer_report(28);
+            first.output_data[4..32].fill(0x11);
+            first.input_data = first.output_data;
+            block_on(service.process_via_packet(&mut first));
+
+            let mut second = macro_set_buffer_report(4);
+            second.output_data[1..3].copy_from_slice(&28u16.to_be_bytes());
+            second.output_data[4..8].fill(0x22);
+            second.input_data = second.output_data;
+            block_on(service.process_via_packet(&mut second));
+
+            let snapshot = crate::channel::MACRO_FLASH_SIGNAL
+                .try_take()
+                .expect("latest macro snapshot");
+            assert_eq!(&snapshot[..28], &[0x11; 28]);
+            assert_eq!(&snapshot[28..32], &[0x22; 4]);
+            assert!(snapshot[32..].iter().all(|byte| *byte == 0));
         });
     }
 
