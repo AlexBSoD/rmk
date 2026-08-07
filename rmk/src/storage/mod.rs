@@ -34,8 +34,19 @@ use crate::{BUILD_HASH, config};
 
 #[cfg(feature = "host")]
 const KEYMAP_STORAGE_SCHEMA_VERSION: u16 = 2;
+/// Fallback for Vial clients that do not finish a compact macro transfer with
+/// a short chunk. This is longer than Entropy's 2.5 s BLE reply timeout, so a
+/// successful wireless transfer cannot be mistaken for an idle boundary.
 #[cfg(feature = "host")]
-const MACRO_FLASH_DEBOUNCE: Duration = Duration::from_millis(100);
+const MACRO_FLASH_FALLBACK_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// A live macro snapshot. `Commit` is emitted by the Vial handler only after
+/// the final chunk; `Update` keeps a compatibility fallback for other clients.
+#[cfg(feature = "host")]
+pub(crate) enum MacroFlashMessage {
+    Update([u8; MACRO_SPACE_SIZE]),
+    Commit([u8; MACRO_SPACE_SIZE]),
+}
 
 /// Signal to synchronize the flash operation status, usually used outside of the flash task.
 /// True if the flash operation is finished correctly, false if the flash operation is finished with error.
@@ -808,7 +819,7 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
 
         loop {
             #[cfg(feature = "host")]
-            let info = if pending_macro.is_some() {
+            let (info, macro_to_commit) = if pending_macro.is_some() {
                 match select3(
                     FLASH_CHANNEL.receive(),
                     MACRO_FLASH_SIGNAL.wait(),
@@ -816,34 +827,48 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 )
                 .await
                 {
-                    Either3::First(info) => Some(info),
-                    Either3::Second(data) => {
-                        pending_macro = Some(data);
-                        macro_deadline = Instant::now() + MACRO_FLASH_DEBOUNCE;
-                        None
-                    }
+                    Either3::First(info) => (Some(info), None),
+                    Either3::Second(message) => match message {
+                        MacroFlashMessage::Update(data) => {
+                            pending_macro = Some(data);
+                            macro_deadline = Instant::now() + MACRO_FLASH_FALLBACK_TIMEOUT;
+                            (None, None)
+                        }
+                        MacroFlashMessage::Commit(data) => {
+                            pending_macro = None;
+                            (None, Some(data))
+                        }
+                    },
                     Either3::Third(()) => {
                         let data = pending_macro.take().expect("pending macro snapshot");
-                        let result = self
-                            .store_data(StorageKey::MacroData, &StorageData::MacroData(data))
-                            .await;
-                        report_storage_result::<F>(result);
-                        None
+                        (None, Some(data))
                     }
                 }
             } else {
                 match select(FLASH_CHANNEL.receive(), MACRO_FLASH_SIGNAL.wait()).await {
-                    Either::First(info) => Some(info),
-                    Either::Second(data) => {
-                        pending_macro = Some(data);
-                        macro_deadline = Instant::now() + MACRO_FLASH_DEBOUNCE;
-                        None
-                    }
+                    Either::First(info) => (Some(info), None),
+                    Either::Second(message) => match message {
+                        MacroFlashMessage::Update(data) => {
+                            pending_macro = Some(data);
+                            macro_deadline = Instant::now() + MACRO_FLASH_FALLBACK_TIMEOUT;
+                            (None, None)
+                        }
+                        MacroFlashMessage::Commit(data) => (None, Some(data)),
+                    },
                 }
             };
 
             #[cfg(not(feature = "host"))]
             let info = Some(FLASH_CHANNEL.receive().await);
+
+            #[cfg(feature = "host")]
+            if let Some(data) = macro_to_commit {
+                let result = self
+                    .store_data(StorageKey::MacroData, &StorageData::MacroData(data))
+                    .await;
+                report_storage_result::<F>(result);
+                continue;
+            }
 
             let Some(info) = info else {
                 continue;

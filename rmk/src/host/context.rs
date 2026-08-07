@@ -20,13 +20,13 @@ use rmk_types::connection::ConnectionStatus;
 use rmk_types::led_indicator::LedIndicator;
 use rmk_types::morse::{Morse, MorseProfile};
 
-#[cfg(feature = "storage")]
-use crate::channel::MACRO_FLASH_SIGNAL;
 use crate::event::KeyboardEventPos;
 use crate::keyboard::combo::Combo;
 use crate::keymap::KeyMap;
 #[cfg(feature = "storage")]
 use crate::{channel::FLASH_CHANNEL, storage::FlashOperationMessage};
+#[cfg(feature = "storage")]
+use crate::{channel::MACRO_FLASH_SIGNAL, storage::MacroFlashMessage};
 
 /// Façade shared between Vial and rmk_protocol host services.
 ///
@@ -149,16 +149,24 @@ impl<'a> KeyboardContext<'a> {
         self.keymap.read_macro_buffer(offset, target);
     }
 
-    /// Update the live buffer and replace the pending flash snapshot.
-    /// The storage task commits the latest snapshot once the chunk burst ends.
-    pub fn write_macro_buffer(&self, offset: usize, data: &[u8]) {
+    /// Update the live macro buffer and stage its latest flash snapshot.
+    /// A completed transfer is committed once; intermediate snapshots only
+    /// arm the compatibility fallback used by clients without an end marker.
+    pub fn write_macro_buffer(&self, offset: usize, data: &[u8], transfer_complete: bool) {
         self.keymap.write_macro_buffer(offset, data);
         #[cfg(feature = "storage")]
         {
             let buf = self.keymap.get_macro_sequences();
-            MACRO_FLASH_SIGNAL.signal(buf);
-            info!("Queue macro snapshot for storage");
+            let message = if transfer_complete {
+                MacroFlashMessage::Commit(buf)
+            } else {
+                MacroFlashMessage::Update(buf)
+            };
+            MACRO_FLASH_SIGNAL.signal(message);
+            info!("Queue macro snapshot for storage, complete: {}", transfer_complete);
         }
+        #[cfg(not(feature = "storage"))]
+        let _ = transfer_complete;
     }
 
     pub fn reset_macro_buffer(&self) {
