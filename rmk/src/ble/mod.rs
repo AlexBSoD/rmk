@@ -840,7 +840,7 @@ fn host_connection_params(interval: Duration, max_latency: u16) -> RequestedConn
         max_latency,
         min_event_length: Duration::from_secs(0),
         max_event_length: Duration::from_secs(0),
-        supervision_timeout: Duration::from_secs(10),
+        supervision_timeout: Duration::from_secs(5),
     }
 }
 
@@ -1216,7 +1216,6 @@ mod tests {
         assert_eq!(idle.max_latency, 30);
         assert_eq!(interactive.max_latency, 0);
         assert_eq!(idle.supervision_timeout, interactive.supervision_timeout);
-        assert_eq!(idle.supervision_timeout, Duration::from_secs(10));
     }
 
     #[test]

@@ -44,6 +44,9 @@ pub struct BuildConstants {
     pub report_channel_size: usize,
     pub vial_channel_size: usize,
     pub flash_channel_size: usize,
+    pub keymap_rows: usize,
+    pub keymap_cols: usize,
+    pub keymap_layers: usize,
     pub split_peripherals_num: usize,
     pub split_central_is_left: bool,
     pub ble_profiles_num: usize,
@@ -96,6 +99,11 @@ impl crate::KeyboardTomlConfig {
                 })
             })
             .unwrap_or(true);
+        let (keymap_rows, keymap_cols, keymap_layers) = self
+            .layout
+            .as_ref()
+            .map(|layout| (layout.rows as usize, layout.cols as usize, layout.layers as usize))
+            .unwrap_or((1, 1, 1));
 
         // Build event channels
         macro_rules! event_channels {
@@ -213,6 +221,9 @@ impl crate::KeyboardTomlConfig {
             report_channel_size: rmk.report_channel_size,
             vial_channel_size: rmk.vial_channel_size,
             flash_channel_size: rmk.flash_channel_size,
+            keymap_rows,
+            keymap_cols,
+            keymap_layers,
             split_peripherals_num,
             split_central_is_left,
             ble_profiles_num: rmk.ble_profiles_num,

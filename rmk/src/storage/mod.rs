@@ -1,8 +1,12 @@
+#[cfg(feature = "host")]
+use core::cell::RefCell;
 use core::fmt::Debug;
 
 use embassy_embedded_hal::adapter::BlockingAsync;
 #[cfg(feature = "host")]
-use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_futures::select::{Either5, select5};
+#[cfg(feature = "host")]
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
 #[cfg(feature = "host")]
 use embassy_time::{Duration, Instant, Timer};
@@ -39,6 +43,113 @@ const KEYMAP_STORAGE_SCHEMA_VERSION: u16 = 2;
 /// editor saves collapse into one flash write without changing radio timing.
 #[cfg(feature = "host")]
 const MACRO_FLASH_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Quiet period before draining keymap mutations to flash. Host replies are
+/// sent as soon as the live keymap is updated; persistence happens here and
+/// can no longer back-pressure the serial Vial service.
+#[cfg(feature = "host")]
+const KEYMAP_FLASH_SETTLE_TIMEOUT: Duration = Duration::from_millis(500);
+
+#[cfg(feature = "host")]
+struct PendingKeymapWrites<const N: usize> {
+    actions: [Option<KeyAction>; N],
+}
+
+#[cfg(feature = "host")]
+impl<const N: usize> PendingKeymapWrites<N> {
+    const fn new() -> Self {
+        Self { actions: [None; N] }
+    }
+
+    fn insert(&mut self, index: usize, action: KeyAction) -> bool {
+        let Some(slot) = self.actions.get_mut(index) else {
+            return false;
+        };
+        *slot = Some(action);
+        true
+    }
+
+    fn take_next(&mut self) -> Option<(usize, KeyAction)> {
+        self.actions
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, action)| action.take().map(|action| (index, action)))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.actions.iter().all(Option::is_none)
+    }
+
+    fn clear(&mut self) {
+        self.actions.fill(None);
+    }
+}
+
+#[cfg(feature = "host")]
+static KEYMAP_FLASH_PENDING: Mutex<
+    crate::RawMutex,
+    RefCell<PendingKeymapWrites<{ crate::KEYMAP_STORAGE_ENTRY_COUNT }>>,
+> = Mutex::new(RefCell::new(PendingKeymapWrites::new()));
+
+#[cfg(feature = "host")]
+static KEYMAP_FLASH_SIGNAL: Signal<crate::RawMutex, ()> = Signal::new();
+
+#[cfg(feature = "host")]
+fn keymap_flat_index(layer: u8, row: u8, col: u8) -> Option<usize> {
+    let (layer, row, col) = (layer as usize, row as usize, col as usize);
+    (layer < crate::KEYMAP_LAYERS && row < crate::KEYMAP_ROWS && col < crate::KEYMAP_COLS)
+        .then_some(layer * crate::KEYMAP_ROWS * crate::KEYMAP_COLS + row * crate::KEYMAP_COLS + col)
+}
+
+#[cfg(feature = "host")]
+fn keymap_position_from_flat(index: usize) -> (u8, u8, u8) {
+    let layer_size = crate::KEYMAP_ROWS * crate::KEYMAP_COLS;
+    let layer = index / layer_size;
+    let layer_offset = index % layer_size;
+    let row = layer_offset / crate::KEYMAP_COLS;
+    let col = layer_offset % crate::KEYMAP_COLS;
+    (layer as u8, row as u8, col as u8)
+}
+
+/// Stage the latest action for one key without waiting for flash capacity.
+/// Different positions are retained independently; repeated writes to the
+/// same position collapse to the latest action.
+#[cfg(feature = "host")]
+pub(crate) fn queue_keymap_flash_write(layer: u8, row: u8, col: u8, action: KeyAction) -> bool {
+    let Some(index) = keymap_flat_index(layer, row, col) else {
+        error!("Invalid keymap flash position: layer {} ({},{})", layer, row, col);
+        return false;
+    };
+    let queued = KEYMAP_FLASH_PENDING.lock(|pending| pending.borrow_mut().insert(index, action));
+    if queued {
+        KEYMAP_FLASH_SIGNAL.signal(());
+    }
+    queued
+}
+
+#[cfg(feature = "host")]
+fn take_pending_keymap_flash_write() -> Option<FlashOperationMessage> {
+    KEYMAP_FLASH_PENDING.lock(|pending| {
+        let (index, action) = pending.borrow_mut().take_next()?;
+        let (layer, row, col) = keymap_position_from_flat(index);
+        Some(FlashOperationMessage::KeymapKey {
+            layer,
+            row,
+            col,
+            action,
+        })
+    })
+}
+
+#[cfg(feature = "host")]
+fn keymap_flash_writes_pending() -> bool {
+    KEYMAP_FLASH_PENDING.lock(|pending| !pending.borrow().is_empty())
+}
+
+#[cfg(feature = "host")]
+fn clear_pending_keymap_flash_writes() {
+    KEYMAP_FLASH_SIGNAL.reset();
+    KEYMAP_FLASH_PENDING.lock(|pending| pending.borrow_mut().clear());
+}
 
 /// Signal to synchronize the flash operation status, usually used outside of the flash task.
 /// True if the flash operation is finished correctly, false if the flash operation is finished with error.
@@ -808,40 +919,46 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         let mut pending_macro: Option<[u8; MACRO_SPACE_SIZE]> = None;
         #[cfg(feature = "host")]
         let mut macro_deadline = Instant::now();
+        #[cfg(feature = "host")]
+        let mut keymap_deadline: Option<Instant> = None;
 
         loop {
             #[cfg(feature = "host")]
-            let info = if pending_macro.is_some() {
-                match select3(
-                    FLASH_CHANNEL.receive(),
-                    MACRO_FLASH_SIGNAL.wait(),
-                    Timer::at(macro_deadline),
-                )
-                .await
-                {
-                    Either3::First(info) => Some(info),
-                    Either3::Second(data) => {
-                        pending_macro = Some(data);
-                        macro_deadline = Instant::now() + MACRO_FLASH_SETTLE_TIMEOUT;
-                        None
-                    }
-                    Either3::Third(()) => {
-                        let data = pending_macro.take().expect("pending macro snapshot");
-                        let result = self
-                            .store_data(StorageKey::MacroData, &StorageData::MacroData(data))
-                            .await;
-                        report_storage_result::<F>(result);
-                        None
-                    }
+            let info = match select5(
+                FLASH_CHANNEL.receive(),
+                MACRO_FLASH_SIGNAL.wait(),
+                KEYMAP_FLASH_SIGNAL.wait(),
+                Timer::at(if pending_macro.is_some() {
+                    macro_deadline
+                } else {
+                    Instant::MAX
+                }),
+                Timer::at(keymap_deadline.unwrap_or(Instant::MAX)),
+            )
+            .await
+            {
+                Either5::First(info) => Some(info),
+                Either5::Second(data) => {
+                    pending_macro = Some(data);
+                    macro_deadline = Instant::now() + MACRO_FLASH_SETTLE_TIMEOUT;
+                    None
                 }
-            } else {
-                match select(FLASH_CHANNEL.receive(), MACRO_FLASH_SIGNAL.wait()).await {
-                    Either::First(info) => Some(info),
-                    Either::Second(data) => {
-                        pending_macro = Some(data);
-                        macro_deadline = Instant::now() + MACRO_FLASH_SETTLE_TIMEOUT;
-                        None
-                    }
+                Either5::Third(()) => {
+                    keymap_deadline = Some(Instant::now() + KEYMAP_FLASH_SETTLE_TIMEOUT);
+                    None
+                }
+                Either5::Fourth(()) => {
+                    let data = pending_macro.take().expect("pending macro snapshot");
+                    let result = self
+                        .store_data(StorageKey::MacroData, &StorageData::MacroData(data))
+                        .await;
+                    report_storage_result::<F>(result);
+                    None
+                }
+                Either5::Fifth(()) => {
+                    let info = take_pending_keymap_flash_write();
+                    keymap_deadline = keymap_flash_writes_pending().then(Instant::now);
+                    info
                 }
             };
 
@@ -902,8 +1019,22 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 FlashOperationMessage::LayoutOptions(layout_option) => {
                     update_storage_field!(&mut self.flash, &mut self.buffer, LayoutConfig, layout_option)
                 }
-                FlashOperationMessage::Reset => self.flash.erase_all().await,
+                FlashOperationMessage::Reset => {
+                    #[cfg(feature = "host")]
+                    {
+                        pending_macro = None;
+                        MACRO_FLASH_SIGNAL.reset();
+                        keymap_deadline = None;
+                        clear_pending_keymap_flash_writes();
+                    }
+                    self.flash.erase_all().await
+                }
                 FlashOperationMessage::ResetLayout => {
+                    #[cfg(feature = "host")]
+                    {
+                        keymap_deadline = None;
+                        clear_pending_keymap_flash_writes();
+                    }
                     info!("Ignoring ResetLayout at runtime (handled at startup via clear_layout).");
                     Ok(())
                 }
@@ -1216,6 +1347,35 @@ mod tests {
             assert_eq!(decoded, key);
             assert_eq!(used, size);
         }
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn pending_keymap_writes_keep_distinct_positions_and_latest_value() {
+        let mut pending = PendingKeymapWrites::<4>::new();
+
+        assert!(pending.insert(1, KeyAction::No));
+        assert!(pending.insert(3, KeyAction::Transparent));
+        assert!(pending.insert(1, KeyAction::Transparent));
+
+        assert_eq!(pending.take_next(), Some((1, KeyAction::Transparent)));
+        assert_eq!(pending.take_next(), Some((3, KeyAction::Transparent)));
+        assert!(pending.take_next().is_none());
+        assert!(pending.is_empty());
+
+        assert!(pending.insert(0, KeyAction::No));
+        pending.clear();
+        assert!(pending.is_empty());
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn pending_keymap_write_rejects_only_out_of_range_index() {
+        let mut pending = PendingKeymapWrites::<2>::new();
+
+        assert!(pending.insert(0, KeyAction::No));
+        assert!(pending.insert(1, KeyAction::No));
+        assert!(!pending.insert(2, KeyAction::No));
     }
 
     #[test]

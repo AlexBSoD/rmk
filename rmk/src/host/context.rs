@@ -1,8 +1,9 @@
 //! Shared façade for host-facing services (Vial today, rmk_protocol next).
 //!
 //! Bundles every keymap mutation with its flash persistence so callers don't
-//! repeat `keymap.X(); FLASH_CHANNEL.send(FlashOperationMessage::Y).await`
-//! by hand, and exposes synchronous reads of live keyboard state (LED,
+//! repeat storage plumbing by hand. Key positions use a last-write-wins
+//! staging area so the serial host service never waits for flash capacity.
+//! The façade also exposes synchronous reads of live keyboard state (LED,
 //! battery, connection, active layer) that are otherwise scattered across
 //! module-private statics.
 //!
@@ -26,7 +27,10 @@ use crate::event::KeyboardEventPos;
 use crate::keyboard::combo::Combo;
 use crate::keymap::KeyMap;
 #[cfg(feature = "storage")]
-use crate::{channel::FLASH_CHANNEL, storage::FlashOperationMessage};
+use crate::{
+    channel::FLASH_CHANNEL,
+    storage::{FlashOperationMessage, queue_keymap_flash_write},
+};
 
 /// Façade shared between Vial and rmk_protocol host services.
 ///
@@ -62,20 +66,14 @@ impl<'a> KeyboardContext<'a> {
         self.keymap
             .set_action_at(KeyboardEventPos::key_pos(col, row), layer as usize, action);
         #[cfg(feature = "storage")]
-        FLASH_CHANNEL
-            .send(FlashOperationMessage::KeymapKey {
-                layer,
-                row,
-                col,
-                action,
-            })
-            .await;
+        if !queue_keymap_flash_write(layer, row, col, action) {
+            error!("Failed to stage keymap key at layer {} ({},{})", layer, row, col);
+        }
     }
 
     /// Synchronous on purpose: Vial's bulk-write path (`DynamicKeymapSetBuffer`)
-    /// calls this in a tight loop and would otherwise serialize against flash
-    /// for the whole packet. Drops the persist message on a full channel
-    /// rather than awaiting capacity, matching pre-context Vial behavior.
+    /// calls this in a tight loop. Persistence is staged in the key-position
+    /// coalescer, so a full flash channel cannot drop the update or block Vial.
     ///
     /// `rows` / `cols` are passed in so callers can hoist the dimensions read
     /// out of their loop — see `keymap_dimensions()`.
@@ -84,19 +82,8 @@ impl<'a> KeyboardContext<'a> {
         #[cfg(feature = "storage")]
         {
             let (row, col, layer) = position_from_flat_index(index, rows, cols);
-            if FLASH_CHANNEL
-                .try_send(FlashOperationMessage::KeymapKey {
-                    layer: layer as u8,
-                    row: row as u8,
-                    col: col as u8,
-                    action,
-                })
-                .is_err()
-            {
-                error!(
-                    "Failed to persist keymap key at layer {} ({},{}): flash channel full",
-                    layer, row, col
-                );
+            if !queue_keymap_flash_write(layer as u8, row as u8, col as u8, action) {
+                error!("Failed to stage keymap key at layer {} ({},{})", layer, row, col);
             }
         }
         #[cfg(not(feature = "storage"))]

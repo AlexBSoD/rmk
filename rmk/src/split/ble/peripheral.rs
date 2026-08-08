@@ -376,8 +376,7 @@ fn get_peri_advertiser<'a, C: Controller>(
 async fn ble_task<C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(mut runner: Runner<'_, C, P>) {
     loop {
         if let Err(e) = runner.run().await {
-            error!("[ble_task] runner.run() error: {:?}", e);
-            Timer::after_millis(100).await;
+            panic!("[ble_task] error: {:?}", e);
         }
     }
 }
