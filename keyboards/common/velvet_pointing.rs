@@ -1,11 +1,12 @@
 //! Runtime pointing settings shared by Velvet standalone and Velvet + Qube.
 
-use embassy_time::Instant;
 use rmk::event::{
-    publish_event_async, ActionEvent, AutoMouseLayerConfigEvent, LayerChangeEvent, PeripheralSettingsEvent,
-    PointingProcessorEvent, PointingSetCpiEvent, PointingTransformEvent,
+    ActionEvent, AutoMouseLayerConfigEvent, LayerChangeEvent, PeripheralSettingsEvent, PointingProcessorEvent,
+    PointingSetCpiEvent, PointingTransformEvent, publish_event_async,
 };
-use rmk::input_device::pointing::{CaretConfig, CursorConfig, PointingMode, ScrollConfig, SniperConfig};
+use rmk::input_device::pointing::{
+    CaretConfig, CursorConfig, PointingMode, PointingModeKeyState, ScrollConfig, SniperConfig,
+};
 use rmk::macros::processor;
 use rmk::types::action::Action;
 use rmk::types::keycode::HidKeyCode;
@@ -47,7 +48,6 @@ const LAYER_SNIPER: u8 = 6;
 const USER_SNIPER: u8 = 10;
 const USER_SCROLL: u8 = 11;
 const USER_TEXT: u8 = 12;
-const MODE_KEY_TAP_MS: u32 = 220;
 const AUTO_LAYER_TIMEOUT_MS_TABLE: [u32; 6] = [250, 500, 750, 1000, 1250, 1500];
 // Ignore isolated one-count PMW3610 idle jitter. Unlike the old coherent
 // accumulator, this threshold never turns repeated +/-1 noise into activity.
@@ -211,9 +211,7 @@ impl Settings {
 pub struct VelvetPointingMode {
     settings: Settings,
     layer_mode: Option<Mode>,
-    mode_override: Option<Mode>,
-    mode_key_previous: Option<Mode>,
-    mode_key_pressed_at_ms: u32,
+    mode_key: PointingModeKeyState<Mode>,
     published_mode: PointingMode,
     published_axis: u8,
     published_acceleration: bool,
@@ -224,9 +222,7 @@ impl VelvetPointingMode {
         Self {
             settings: Settings::defaults(),
             layer_mode: None,
-            mode_override: None,
-            mode_key_previous: None,
-            mode_key_pressed_at_ms: 0,
+            mode_key: PointingModeKeyState::new(),
             published_mode: PointingMode::default(),
             published_axis: 0,
             published_acceleration: false,
@@ -238,6 +234,7 @@ impl VelvetPointingMode {
             return;
         };
         self.settings = settings;
+        self.mode_key.set_sticky_enabled(self.settings.flag(FLAG_STICKY));
         self.publish_current(true).await;
     }
 
@@ -264,23 +261,16 @@ impl VelvetPointingMode {
             return;
         };
 
-        if event.keyboard_event.pressed {
-            self.mode_key_previous = self.mode_override;
-            self.mode_override = Some(mode);
-            self.mode_key_pressed_at_ms = now_ms_u32();
-        } else {
-            let previous = self.mode_key_previous;
-            self.mode_override = previous;
-            let tapped = now_ms_u32().wrapping_sub(self.mode_key_pressed_at_ms) <= MODE_KEY_TAP_MS;
-            if self.settings.flag(FLAG_STICKY) && tapped {
-                self.mode_override = if previous == Some(mode) { None } else { Some(mode) };
-            }
-        }
+        self.mode_key
+            .handle(mode, event.keyboard_event.pressed, self.settings.flag(FLAG_STICKY));
         self.publish_current(false).await;
     }
 
     fn current_mode(&self) -> Mode {
-        self.mode_override.or(self.layer_mode).unwrap_or(self.settings.mode)
+        self.mode_key
+            .mode_override()
+            .or(self.layer_mode)
+            .unwrap_or(self.settings.mode)
     }
 
     async fn publish_current(&mut self, force: bool) {
@@ -342,8 +332,4 @@ impl VelvetPointingSettingsSync {
         })
         .await;
     }
-}
-
-fn now_ms_u32() -> u32 {
-    Instant::now().as_millis() as u32
 }

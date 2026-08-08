@@ -317,6 +317,62 @@ impl Default for PointingMode {
     }
 }
 
+/// Tracks momentary and sticky pointing-mode key selections.
+///
+/// Without sticky mode a selection is active only while its key is held. With
+/// sticky mode every press latches the selected mode, another mode replaces
+/// it, and pressing the latched mode again returns to the configured mode.
+#[derive(Clone, Copy)]
+pub struct PointingModeKeyState<M> {
+    held: Option<M>,
+    latched: Option<M>,
+}
+
+impl<M> PointingModeKeyState<M> {
+    /// Create an inactive mode-key state.
+    pub const fn new() -> Self {
+        Self {
+            held: None,
+            latched: None,
+        }
+    }
+}
+
+impl<M> Default for PointingModeKeyState<M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<M: Copy + PartialEq> PointingModeKeyState<M> {
+    /// Current key-selected override, if any.
+    pub fn mode_override(&self) -> Option<M> {
+        self.held.or(self.latched)
+    }
+
+    /// Apply one press or release of a pointing-mode key.
+    pub fn handle(&mut self, mode: M, pressed: bool, sticky: bool) {
+        if pressed {
+            if sticky {
+                self.held = None;
+                self.latched = if self.latched == Some(mode) { None } else { Some(mode) };
+            } else {
+                self.latched = None;
+                self.held = Some(mode);
+            }
+        } else if self.held == Some(mode) {
+            self.held = None;
+        }
+    }
+
+    /// Drop a latched selection when sticky mode is disabled in settings.
+    pub fn set_sticky_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.latched = None;
+        }
+    }
+}
+
 /// Configuration for cursor mode
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -605,7 +661,6 @@ const QUBE_USER_RIGHT_SCROLL: u8 = 35;
 const QUBE_USER_RIGHT_TEXT: u8 = 36;
 const QUBE_SETTINGS_VERSION: u8 = 9;
 const QUBE_AUTO_LAYER_NONE: u8 = 0xff;
-const QUBE_MODE_KEY_TAP_MS: u32 = 220;
 const QUBE_TEXT_AXIS_IDLE_MS: u32 = 220;
 const QUBE_TEXT_THRESHOLD: i32 = 1;
 const QUBE_TOUCH_CLICK_MS: u64 = 40;
@@ -626,7 +681,7 @@ const QUBE_AXIS_FLAG_RIGHT_INVERT_SCROLL_X: u8 = 1 << 1;
 const QUBE_AXIS_FLAG_LEFT_INVERT_TEXT_X: u8 = 1 << 2;
 const QUBE_AXIS_FLAG_RIGHT_INVERT_TEXT_X: u8 = 1 << 3;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QubePointingMode {
     Normal,
     Sniper,
@@ -804,9 +859,7 @@ impl QubePointingSettings {
 
 #[derive(Clone, Copy)]
 struct QubePointingSideState {
-    mode_override: Option<QubePointingMode>,
-    mode_key_prev_override: Option<QubePointingMode>,
-    mode_key_pressed_at_ms: u32,
+    mode_key: PointingModeKeyState<QubePointingMode>,
     remainder_x: i32,
     remainder_y: i32,
     text_last_motion_ms: u32,
@@ -815,9 +868,7 @@ struct QubePointingSideState {
 impl QubePointingSideState {
     const fn new() -> Self {
         Self {
-            mode_override: None,
-            mode_key_prev_override: None,
-            mode_key_pressed_at_ms: 0,
+            mode_key: PointingModeKeyState::new(),
             remainder_x: 0,
             remainder_y: 0,
             text_last_motion_ms: 0,
@@ -863,6 +914,11 @@ impl<'a> QubePointingModeProcessor<'a> {
 
     async fn on_peripheral_settings_event(&mut self, event: PeripheralSettingsEvent) {
         self.settings.apply_packet(&event.0);
+        for side in 0..self.sides.len() {
+            self.sides[side]
+                .mode_key
+                .set_sticky_enabled(self.settings.sticky_mode(side));
+        }
         if self.active_auto_layer != QUBE_AUTO_LAYER_NONE
             && !self.settings.auto_layer_enabled(self.mode_for_side(0))
             && !self.settings.auto_layer_enabled(self.mode_for_side(1))
@@ -1034,7 +1090,10 @@ impl<'a> QubePointingModeProcessor<'a> {
     }
 
     fn mode_for_side(&self, side: usize) -> QubePointingMode {
-        self.sides[side].mode_override.unwrap_or(self.settings.mode[side])
+        self.sides[side]
+            .mode_key
+            .mode_override()
+            .unwrap_or(self.settings.mode[side])
     }
 
     fn handle_mode_key(&mut self, sides: [bool; 2], mode: QubePointingMode, pressed: bool) {
@@ -1042,23 +1101,10 @@ impl<'a> QubePointingModeProcessor<'a> {
             if !enabled {
                 continue;
             }
-            if pressed {
-                self.sides[side].mode_key_prev_override = self.sides[side].mode_override;
-                self.sides[side].mode_override = Some(mode);
-                self.sides[side].mode_key_pressed_at_ms = now_ms_u32();
-                self.sides[side].reset_accum();
-            } else {
-                let tapped = now_ms_u32().wrapping_sub(self.sides[side].mode_key_pressed_at_ms) <= QUBE_MODE_KEY_TAP_MS;
-                self.sides[side].mode_override = self.sides[side].mode_key_prev_override;
-                if self.settings.sticky_mode(side) && tapped {
-                    if self.sides[side].mode_override == Some(mode) {
-                        self.sides[side].mode_override = None;
-                    } else {
-                        self.sides[side].mode_override = Some(mode);
-                    }
-                }
-                self.sides[side].reset_accum();
-            }
+            self.sides[side]
+                .mode_key
+                .handle(mode, pressed, self.settings.sticky_mode(side));
+            self.sides[side].reset_accum();
         }
     }
 
@@ -1529,6 +1575,63 @@ mod tests {
         assert_eq!(qube_touch_gesture_buttons(0), 0);
         assert_eq!(qube_touch_gesture_buttons(3), 0);
         assert_eq!(qube_touch_gesture_buttons(-1), 0);
+    }
+
+    #[test]
+    fn pointing_mode_key_state_is_momentary_without_sticky_mode() {
+        let mut state = PointingModeKeyState::new();
+
+        state.handle(1u8, true, false);
+        assert_eq!(state.mode_override(), Some(1));
+
+        state.handle(1, false, false);
+        assert_eq!(state.mode_override(), None);
+    }
+
+    #[test]
+    fn pointing_mode_key_state_sticky_selection_switches_and_toggles_off() {
+        let mut state = PointingModeKeyState::new();
+
+        for mode in [1u8, 2, 3] {
+            state.handle(mode, true, true);
+            state.handle(mode, false, true);
+            assert_eq!(state.mode_override(), Some(mode));
+        }
+
+        state.handle(3, true, true);
+        state.handle(3, false, true);
+        assert_eq!(state.mode_override(), None);
+    }
+
+    #[test]
+    fn pointing_mode_key_state_clears_latch_when_sticky_mode_is_disabled() {
+        let mut state = PointingModeKeyState::new();
+        state.handle(1u8, true, true);
+        assert_eq!(state.mode_override(), Some(1));
+
+        state.set_sticky_enabled(false);
+        assert_eq!(state.mode_override(), None);
+    }
+
+    #[test]
+    fn qube_auto_layer_flags_cover_every_pointing_mode_independently() {
+        let mut settings = QubePointingSettings::new();
+        settings.auto_flags = 0b1111;
+
+        for mode in [
+            QubePointingMode::Normal,
+            QubePointingMode::Sniper,
+            QubePointingMode::Scroll,
+            QubePointingMode::Text,
+        ] {
+            assert!(settings.auto_layer_enabled(mode));
+        }
+
+        settings.auto_flags = 0b0001;
+        assert!(settings.auto_layer_enabled(QubePointingMode::Normal));
+        assert!(!settings.auto_layer_enabled(QubePointingMode::Sniper));
+        assert!(!settings.auto_layer_enabled(QubePointingMode::Scroll));
+        assert!(!settings.auto_layer_enabled(QubePointingMode::Text));
     }
 
     #[test]
