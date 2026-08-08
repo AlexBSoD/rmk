@@ -44,6 +44,7 @@ const NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET: usize = 8;
 const NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET: usize = 8;
 const NATIVE_KEY_ACTION_MAX_PAYLOAD: usize = 32 - NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET;
 const VIAL_MACRO_CHUNK_SIZE: usize = 28;
+const VIAL_MACRO_COUNT: usize = 32;
 
 const _: () = core::assert!(KeyAction::POSTCARD_MAX_SIZE <= NATIVE_KEY_ACTION_MAX_PAYLOAD);
 
@@ -376,7 +377,7 @@ impl<'a> VialService<'a> {
                 boot::jump_to_bootloader();
             }
             ViaCommand::DynamicKeymapMacroGetCount => {
-                report.input_data[1] = 32;
+                report.input_data[1] = VIAL_MACRO_COUNT as u8;
                 warn!("Macro get count -- to be implemented")
             }
             ViaCommand::DynamicKeymapMacroGetBufferSize => {
@@ -408,18 +409,13 @@ impl<'a> VialService<'a> {
                         self.ctx.reset_macro_buffer();
                     }
 
-                    // Entropy and Vial GUI use full 28-byte intermediate chunks
-                    // and a short final chunk for compact macro buffers. Commit
-                    // only after that final chunk so BLE latency cannot start a
-                    // flash write in the middle of the transfer.
-                    let transfer_complete =
-                        (size as usize) < VIAL_MACRO_CHUNK_SIZE || offset as usize + size as usize == MACRO_SPACE_SIZE;
                     info!("Setting macro buffer, offset: {}, size: {}", offset, size);
-                    self.ctx.write_macro_buffer(
+                    let transfer_complete = self.ctx.write_macro_buffer(
                         offset as usize,
                         &report.output_data[4..4 + size as usize],
-                        transfer_complete,
+                        VIAL_MACRO_COUNT,
                     );
+                    info!("Macro transfer complete: {}", transfer_complete);
                 } else {
                     report.input_data[0] = 0xFF;
                 }
@@ -648,30 +644,28 @@ mod tests {
 
     #[cfg(feature = "storage")]
     #[test]
-    fn macro_chunks_commit_only_the_completed_snapshot() {
+    fn macro_chunks_queue_only_the_completed_snapshot() {
         let _guard = macro_signal_test_lock().lock().unwrap();
         crate::channel::MACRO_FLASH_SIGNAL.reset();
 
         with_service(|service| {
             let mut first = macro_set_buffer_report(28);
-            first.output_data[4..32].fill(0x11);
+            first.output_data[4..8].fill(0x11);
+            first.output_data[8..32].fill(0);
             first.input_data = first.output_data;
             block_on(service.process_via_packet(&mut first));
+            assert!(crate::channel::MACRO_FLASH_SIGNAL.try_take().is_none());
 
-            let mut second = macro_set_buffer_report_at(28, 4);
-            second.output_data[4..8].fill(0x22);
+            let mut second = macro_set_buffer_report_at(28, 8);
+            second.output_data[4..12].fill(0);
             second.input_data = second.output_data;
             block_on(service.process_via_packet(&mut second));
 
-            let message = crate::channel::MACRO_FLASH_SIGNAL
+            let snapshot = crate::channel::MACRO_FLASH_SIGNAL
                 .try_take()
                 .expect("latest macro snapshot");
-            let crate::storage::MacroFlashMessage::Commit(snapshot) = message else {
-                panic!("short final macro chunk must commit the completed snapshot");
-            };
-            assert_eq!(&snapshot[..28], &[0x11; 28]);
-            assert_eq!(&snapshot[28..32], &[0x22; 4]);
-            assert!(snapshot[32..].iter().all(|byte| *byte == 0));
+            assert_eq!(&snapshot[..4], &[0x11; 4]);
+            assert!(snapshot[4..].iter().all(|byte| *byte == 0));
         });
 
         crate::channel::MACRO_FLASH_SIGNAL.reset();
@@ -679,7 +673,7 @@ mod tests {
 
     #[cfg(feature = "storage")]
     #[test]
-    fn macro_full_chunk_remains_pending() {
+    fn incomplete_macro_chunk_does_not_copy_a_flash_snapshot() {
         let _guard = macro_signal_test_lock().lock().unwrap();
         crate::channel::MACRO_FLASH_SIGNAL.reset();
 
@@ -689,10 +683,7 @@ mod tests {
             report.input_data = report.output_data;
             block_on(service.process_via_packet(&mut report));
 
-            let message = crate::channel::MACRO_FLASH_SIGNAL
-                .try_take()
-                .expect("pending macro snapshot");
-            assert!(matches!(message, crate::storage::MacroFlashMessage::Update(_)));
+            assert!(crate::channel::MACRO_FLASH_SIGNAL.try_take().is_none());
         });
 
         crate::channel::MACRO_FLASH_SIGNAL.reset();
@@ -711,10 +702,10 @@ mod tests {
             report.input_data = report.output_data;
             block_on(service.process_via_packet(&mut report));
 
-            let message = crate::channel::MACRO_FLASH_SIGNAL
+            let snapshot = crate::channel::MACRO_FLASH_SIGNAL
                 .try_take()
                 .expect("completed macro snapshot");
-            assert!(matches!(message, crate::storage::MacroFlashMessage::Commit(_)));
+            assert_eq!(&snapshot[MACRO_SPACE_SIZE - VIAL_MACRO_CHUNK_SIZE..], &[0x44; 28]);
         });
 
         crate::channel::MACRO_FLASH_SIGNAL.reset();

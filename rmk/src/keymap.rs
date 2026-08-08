@@ -744,6 +744,15 @@ impl<'a> KeyMap<'a> {
         }
     }
 
+    pub(crate) fn macro_buffer_has_terminators(&self, received_end: usize, expected: usize) -> bool {
+        expected > 0
+            && self.inner.borrow().behavior.keyboard_macros.macro_sequences[..received_end.min(MACRO_SPACE_SIZE)]
+                .iter()
+                .filter(|byte| **byte == 0)
+                .count()
+                >= expected
+    }
+
     pub(crate) fn reset_macro_buffer(&self) {
         self.inner.borrow_mut().behavior.keyboard_macros.macro_sequences = [0; MACRO_SPACE_SIZE];
     }

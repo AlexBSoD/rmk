@@ -20,13 +20,13 @@ use rmk_types::connection::ConnectionStatus;
 use rmk_types::led_indicator::LedIndicator;
 use rmk_types::morse::{Morse, MorseProfile};
 
+#[cfg(feature = "storage")]
+use crate::channel::MACRO_FLASH_SIGNAL;
 use crate::event::KeyboardEventPos;
 use crate::keyboard::combo::Combo;
 use crate::keymap::KeyMap;
 #[cfg(feature = "storage")]
 use crate::{channel::FLASH_CHANNEL, storage::FlashOperationMessage};
-#[cfg(feature = "storage")]
-use crate::{channel::MACRO_FLASH_SIGNAL, storage::MacroFlashMessage};
 
 /// Façade shared between Vial and rmk_protocol host services.
 ///
@@ -149,24 +149,20 @@ impl<'a> KeyboardContext<'a> {
         self.keymap.read_macro_buffer(offset, target);
     }
 
-    /// Update the live macro buffer and stage its latest flash snapshot.
-    /// A completed transfer is committed once; intermediate snapshots only
-    /// arm the compatibility fallback used by clients without an end marker.
-    pub fn write_macro_buffer(&self, offset: usize, data: &[u8], transfer_complete: bool) {
+    /// Update the live macro buffer and queue a flash snapshot only after the
+    /// complete set of macro slots has arrived. Vial GUI and Entropy both send
+    /// all slots as NUL-terminated bytecode, including empty trailing slots.
+    pub fn write_macro_buffer(&self, offset: usize, data: &[u8], macro_count: usize) -> bool {
         self.keymap.write_macro_buffer(offset, data);
+        let received_end = (offset + data.len()).min(crate::MACRO_SPACE_SIZE);
+        let transfer_complete = received_end == crate::MACRO_SPACE_SIZE
+            || self.keymap.macro_buffer_has_terminators(received_end, macro_count);
         #[cfg(feature = "storage")]
-        {
-            let buf = self.keymap.get_macro_sequences();
-            let message = if transfer_complete {
-                MacroFlashMessage::Commit(buf)
-            } else {
-                MacroFlashMessage::Update(buf)
-            };
-            MACRO_FLASH_SIGNAL.signal(message);
-            info!("Queue macro snapshot for storage, complete: {}", transfer_complete);
+        if transfer_complete {
+            MACRO_FLASH_SIGNAL.signal(self.keymap.get_macro_sequences());
+            info!("Queue completed macro snapshot for storage");
         }
-        #[cfg(not(feature = "storage"))]
-        let _ = transfer_complete;
+        transfer_complete
     }
 
     pub fn reset_macro_buffer(&self) {
