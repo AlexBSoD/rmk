@@ -523,7 +523,7 @@ pub(crate) async fn run_ble_peripheral_manager<
         publish_peripheral_connection(peri_id, false);
 
         // Connect to peripheral
-        match with_timeout(Duration::from_secs(5), async {
+        match with_timeout(Duration::from_secs(15), async {
             if let Ok(_guard) = SCANNING_MUTEX.try_lock() {
                 info!("Start connecting to peripheral {}", peri_id);
                 central.connect(&config).await
@@ -592,7 +592,7 @@ fn active_central_conn_param(profile: SplitLinkProfile) -> RequestedConnParams {
         // Active split links must attend every event. In particular, a
         // pointing link cannot sustain 125 Hz with peripheral latency.
         max_latency: 0,
-        supervision_timeout: Duration::from_secs(5),
+        supervision_timeout: Duration::from_secs(10),
         ..Default::default()
     }
 }
@@ -1006,6 +1006,7 @@ mod advertisement_tests {
         assert_eq!(params.min_connection_interval, Duration::from_micros(7_500));
         assert_eq!(params.max_connection_interval, Duration::from_micros(7_500));
         assert_eq!(params.max_latency, 0);
+        assert_eq!(params.supervision_timeout, Duration::from_secs(10));
     }
 
     #[test]
@@ -1015,6 +1016,7 @@ mod advertisement_tests {
         assert_eq!(params.min_connection_interval, Duration::from_millis(15));
         assert_eq!(params.max_connection_interval, Duration::from_millis(15));
         assert_eq!(params.max_latency, 0);
+        assert_eq!(params.supervision_timeout, Duration::from_secs(10));
     }
 
     #[test]
