@@ -14,14 +14,14 @@
 use core::fmt::Write as _;
 
 use defmt::{info, warn};
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::peripherals::{P0_02, P0_03, P0_28, P1_10, P1_11, P1_13, SPI3};
 use embassy_nrf::spim::{self, Spim};
-use embassy_nrf::{interrupt, Peri};
+use embassy_nrf::{Peri, interrupt};
 use embassy_time::{Delay, Duration, Instant, Timer};
-use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_8X13, FONT_9X15};
 use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_8X13, FONT_9X15};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle};
@@ -41,7 +41,7 @@ use rmk::event::{
 use rmk::processor::Processor;
 use rmk_types::battery::BatteryStatus;
 use static_cell::StaticCell;
-use u8g2_fonts::{fonts, U8g2TextStyle};
+use u8g2_fonts::{U8g2TextStyle, fonts};
 
 // --- Panel geometry ---------------------------------------------------------
 
@@ -64,14 +64,29 @@ const SAFE_W: u32 = SCREEN_W as u32 - (SAFE_X as u32 * 2);
 const PANEL_RADIUS: u32 = 14;
 const BAR_RADIUS: u32 = 5;
 
-/// Vertical centre of each agent row inside the agent panel (2×2 grid).
-const AGENT_ROW_Y: [i32; 2] = [78, 166];
-/// Left edge of each agent column inside the agent panel.
-const AGENT_COL_X: [i32; 2] = [SAFE_X, SAFE_X + SAFE_W as i32 / 2];
+/// Body band below the header: agent grid flanked by the two battery columns.
+const BODY_Y: i32 = 50;
+const BODY_H: u32 = 182;
+/// Width of a per-half battery column. Position (far left / far right) is what
+/// says which half a column belongs to, so they carry no L/R letter.
+const SIDE_W: u32 = 28;
+const SIDE_RADIUS: u32 = 10;
+const LEFT_BAT_X: i32 = SAFE_X;
+const RIGHT_BAT_X: i32 = SAFE_X + SAFE_W as i32 - SIDE_W as i32;
+/// Gap between a battery column and the agent panel.
+const SIDE_GAP: i32 = 6;
+const AGENT_X: i32 = SAFE_X + SIDE_W as i32 + SIDE_GAP;
+const AGENT_W: u32 = SAFE_W - (SIDE_W + SIDE_GAP as u32) * 2;
+/// 2×2 grid of statuses; a cell is a title on top with its count under it.
+const AGENT_CELL_W: i32 = AGENT_W as i32 / 2;
+const AGENT_CELL_H: i32 = BODY_H as i32 / 2;
+/// Title top and count centre, relative to the top of a cell.
+const AGENT_LABEL_DY: i32 = 12;
+const AGENT_COUNT_DY: i32 = 58;
 
 const HEADER_DIRTY: DirtyRegion = DirtyRegion::range(12, 44);
-const AGENTS_DIRTY: DirtyRegion = DirtyRegion::range(48, 196);
-const BATTERY_DIRTY: DirtyRegion = DirtyRegion::range(198, 234);
+/// Agents and batteries now share one band, so both repaint together.
+const BODY_DIRTY: DirtyRegion = DirtyRegion::range(48, 234);
 
 const COL_BG: Rgb565 = Rgb565::new(0, 2, 4);
 const COL_FG: Rgb565 = Rgb565::new(29, 61, 30);
@@ -468,8 +483,8 @@ where
             host_data.agents != self.last_host_data.agents,
             host_data.hour != self.last_host_data.hour || host_data.minute != self.last_host_data.minute,
         ) {
-            (true, true) => HEADER_DIRTY.union(AGENTS_DIRTY),
-            (true, false) => AGENTS_DIRTY,
+            (true, true) => HEADER_DIRTY.union(BODY_DIRTY),
+            (true, false) => BODY_DIRTY,
             _ => HEADER_DIRTY,
         };
         self.last_host_data = host_data.clone();
@@ -529,7 +544,6 @@ where
                     Self::next_any_or_host_tick(
                         &mut layer_sub,
                         &mut wpm_sub,
-
                         &mut key_sub,
                         &mut sleep_sub,
                         &mut bat_sub,
@@ -550,7 +564,6 @@ where
                 let ev = Self::next_any_or_host_tick(
                     &mut layer_sub,
                     &mut wpm_sub,
-
                     &mut key_sub,
                     &mut sleep_sub,
                     &mut bat_sub,
@@ -571,7 +584,6 @@ where
                     Self::next_any(
                         &mut layer_sub,
                         &mut wpm_sub,
-
                         &mut key_sub,
                         &mut sleep_sub,
                         &mut bat_sub,
@@ -650,16 +662,12 @@ where
     ) -> UiEv {
         // Nested select — a bit verbose but no heap / macro dependency.
         // Prefer input events; depth is fine for status UI.
-        use embassy_futures::select::{select3, Either3};
+        use embassy_futures::select::{Either3, select3};
 
         match select3(
             select3(layer.next_event(), wpm.next_event(), key.next_event()),
             select3(sleep.next_event(), bat.next_event(), conn.next_event()),
-            select3(
-                peri_conn.next_event(),
-                peri_bat.next_event(),
-                central.next_event(),
-            ),
+            select3(peri_conn.next_event(), peri_bat.next_event(), central.next_event()),
         )
         .await
         {
@@ -707,7 +715,7 @@ where
             }
             UiEv::Bat(e) => {
                 self.ctx.battery = e;
-                self.request_redraw_region(BATTERY_DIRTY);
+                self.request_redraw_region(BODY_DIRTY);
                 need_redraw = false;
             }
             UiEv::Conn(e) => self.ctx.ble_status = e.0.ble,
@@ -720,7 +728,7 @@ where
                 if let Some(slot) = self.ctx.peripheral_batteries.get_mut(e.id) {
                     *slot = e.state;
                 }
-                self.request_redraw_region(BATTERY_DIRTY);
+                self.request_redraw_region(BODY_DIRTY);
                 need_redraw = false;
             }
             UiEv::Central(e) => self.ctx.central_connected = e.connected,
@@ -756,10 +764,10 @@ where
 
 // --- Full-screen UI ---------------------------------------------------------
 //
-// Fixed vertical zones (280x240) so nothing overlaps:
-//   14..42   compact header (host clock + active layer)
-//   50..194  host agent summary — the reason to glance at this screen
-//   200..232 battery row
+// Fixed zones (280x240) so nothing overlaps:
+//   14..42            compact header (host clock + active layer)
+//   50..232, x 18/234 per-half battery gauges, one on each side
+//   50..232, centre   host agent summary — the reason to glance at this screen
 
 pub struct QubeStatusRenderer {
     host_data: rmk::host_data::HostData,
@@ -792,7 +800,7 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         };
 
         // Header: clock on the left, active layer on the right.
-        draw_panel(display, SAFE_X, 14, SAFE_W, 28, COL_PANEL, COL_BORDER_DIM);
+        draw_panel(display, SAFE_X, 14, SAFE_W, 28, COL_PANEL, COL_BORDER_DIM, PANEL_RADIUS);
         draw_round_fill(display, SAFE_X + 11, 23, 3, 10, 2, COL_ACCENT);
         let mut s: heapless::String<16> = heapless::String::new();
         push_host_time(&mut s, self.host_data.hour, self.host_data.minute);
@@ -800,53 +808,91 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         let _ =
             Text::with_text_style(name, Point::new(SAFE_X + SAFE_W as i32 - 14, 21), &layer_title, tr).draw(display);
 
-        // Agent summary.
-        draw_panel(display, SAFE_X, 50, SAFE_W, 144, COL_PANEL_HI, COL_BORDER_DIM);
+        // Per-half battery gauges: left column = left half, right = right half.
+        draw_bat_column(display, LEFT_BAT_X, lp, left);
+        draw_bat_column(display, RIGHT_BAT_X, rp, right);
+
+        // Agent summary: 2×2 grid of statuses, each a title with its count below.
+        draw_panel(
+            display,
+            AGENT_X,
+            BODY_Y,
+            AGENT_W,
+            BODY_H,
+            COL_PANEL_HI,
+            COL_BORDER_DIM,
+            PANEL_RADIUS,
+        );
         match self.host_data.agents {
             Some(agents) => {
                 // Blocked agents are the only state worth interrupting typing
                 // for, so they get the warning colour even at a glance.
-                draw_agent_cell(display, AGENT_COL_X[0], AGENT_ROW_Y[0], agents.working, "WORKING", COL_ACCENT);
-                draw_agent_cell(display, AGENT_COL_X[1], AGENT_ROW_Y[0], agents.blocked, "BLOCKED", COL_YELLOW);
-                draw_agent_cell(display, AGENT_COL_X[0], AGENT_ROW_Y[1], agents.idle, "IDLE", COL_MUTED);
-                draw_agent_cell(display, AGENT_COL_X[1], AGENT_ROW_Y[1], agents.done, "DONE", COL_FG);
+                let cells = [
+                    ("WORKING", agents.working, COL_ACCENT),
+                    ("BLOCKED", agents.blocked, COL_YELLOW),
+                    ("IDLE", agents.idle, COL_MUTED),
+                    ("DONE", agents.done, COL_FG),
+                ];
+                // The cross splitting the panel into quadrants.
+                let rule = PrimitiveStyle::with_fill(COL_BORDER_DIM);
+                let _ = Rectangle::new(
+                    Point::new(AGENT_X + 12, BODY_Y + AGENT_CELL_H),
+                    Size::new(AGENT_W - 24, 1),
+                )
+                .into_styled(rule)
+                .draw(display);
+                let _ = Rectangle::new(
+                    Point::new(AGENT_X + AGENT_CELL_W, BODY_Y + 12),
+                    Size::new(1, BODY_H - 24),
+                )
+                .into_styled(rule)
+                .draw(display);
+                for (i, (label, count, accent)) in cells.iter().enumerate() {
+                    let x0 = AGENT_X + (i as i32 % 2) * AGENT_CELL_W;
+                    let y0 = BODY_Y + (i as i32 / 2) * AGENT_CELL_H;
+                    draw_agent_cell(display, x0, y0, label, *count, *accent);
+                }
             }
             None => {
                 let offline = MonoTextStyle::new(&FONT_8X13, COL_DIM);
-                let _ = Text::with_text_style("NO AGENT FEED", Point::new(SCREEN_W as i32 / 2, 122), offline, mc)
+                let _ = Text::with_text_style("NO AGENT FEED", Point::new(SCREEN_W as i32 / 2, 141), offline, mc)
                     .draw(display);
             }
         }
-
-        // Battery row.
-        draw_bat(display, SAFE_X, 200, 116, lp, left, "L");
-        draw_bat(display, 146, 200, 116, rp, right, "R");
     }
 }
 
-/// One `<dot> <count> <LABEL>` cell of the 2×2 agent grid. `accent` is used
-/// when the count is non-zero; an empty state stays deliberately dim so a
-/// screen with nothing running reads as quiet rather than as data.
+/// One quadrant of the agent grid: title on top, count below. The count is
+/// dropped at zero so a screen with nothing running reads as quiet rather than
+/// as data; only the dimmed title stays to keep the quadrant addressable.
 fn draw_agent_cell<D: DrawTarget<Color = Rgb565>>(
     display: &mut D,
     x0: i32,
-    y: i32,
-    count: u8,
+    y0: i32,
     label: &str,
+    count: u8,
     accent: Rgb565,
 ) {
-    let color = if count > 0 { accent } else { COL_DIM };
-    let ml = TextStyleBuilder::new().baseline(Baseline::Middle).build();
+    let cx = x0 + AGENT_CELL_W / 2;
+    let tc = TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Top)
+        .build();
+    let mc = TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Middle)
+        .build();
 
-    draw_round_fill(display, x0 + 8, y - 3, 6, 6, 3, color);
+    let label_style = MonoTextStyle::new(&FONT_6X10, if count > 0 { accent } else { COL_DIM });
+    let _ = Text::with_text_style(label, Point::new(cx, y0 + AGENT_LABEL_DY), label_style, tc).draw(display);
 
+    if count == 0 {
+        return;
+    }
     let mut s: heapless::String<4> = heapless::String::new();
     let _ = write!(&mut s, "{}", count);
-    let count_style = U8g2TextStyle::new(fonts::u8g2_font_logisoso20_tn, color);
-    let _ = Text::with_text_style(&s, Point::new(x0 + 24, y), count_style, ml).draw(display);
-
-    let label_style = MonoTextStyle::new(&FONT_6X10, if count > 0 { COL_FG } else { COL_DIM });
-    let _ = Text::with_text_style(label, Point::new(x0 + 54, y), label_style, ml).draw(display);
+    let count_style = U8g2TextStyle::new(fonts::u8g2_font_logisoso32_tn, accent);
+    let _ = Text::with_text_style(&s, Point::new(cx, y0 + AGENT_COUNT_DY), count_style, mc).draw(display);
 }
 
 fn draw_panel<D: DrawTarget<Color = Rgb565>>(
@@ -857,6 +903,7 @@ fn draw_panel<D: DrawTarget<Color = Rgb565>>(
     h: u32,
     fill: Rgb565,
     stroke: Rgb565,
+    radius: u32,
 ) {
     let rect = Rectangle::new(Point::new(x, y), Size::new(w, h));
     let style = PrimitiveStyleBuilder::new()
@@ -864,7 +911,7 @@ fn draw_panel<D: DrawTarget<Color = Rgb565>>(
         .stroke_color(stroke)
         .stroke_width(1)
         .build();
-    let _ = RoundedRectangle::with_equal_corners(rect, Size::new(PANEL_RADIUS, PANEL_RADIUS))
+    let _ = RoundedRectangle::with_equal_corners(rect, Size::new(radius, radius))
         .into_styled(style)
         .draw(display);
 }
@@ -899,15 +946,10 @@ fn battery_reading(status: Option<BatteryStatus>) -> BatReading {
     }
 }
 
-fn draw_bat<D: DrawTarget<Color = Rgb565>>(
-    display: &mut D,
-    x: i32,
-    y: i32,
-    w: i32,
-    reading: BatReading,
-    connected: bool,
-    side: &str,
-) {
+/// Vertical gauge for one half, filling from the bottom, with the percentage
+/// above it. Which half it reports is said by which side of the screen it is
+/// on, so the column carries no L/R letter.
+fn draw_bat_column<D: DrawTarget<Color = Rgb565>>(display: &mut D, x: i32, reading: BatReading, connected: bool) {
     let (label, col, fill_pct): (heapless::String<8>, Rgb565, Option<u8>) = match (connected, reading) {
         (false, _) => {
             let mut s = heapless::String::new();
@@ -933,24 +975,32 @@ fn draw_bat<D: DrawTarget<Color = Rgb565>>(
         }
     };
 
-    draw_panel(display, x, y, w as u32, 32, COL_PANEL, COL_BORDER_DIM);
+    draw_panel(
+        display,
+        x,
+        BODY_Y,
+        SIDE_W,
+        BODY_H,
+        COL_PANEL,
+        COL_BORDER_DIM,
+        SIDE_RADIUS,
+    );
 
-    let title = MonoTextStyle::new(&FONT_6X10, COL_MUTED);
-    let percent = MonoTextStyle::new(&FONT_9X15, col);
-    let top = TextStyleBuilder::new().baseline(Baseline::Top).build();
-    let tr = TextStyleBuilder::new()
-        .alignment(Alignment::Right)
-        .baseline(Baseline::Top)
+    let cx = x + SIDE_W as i32 / 2;
+    let percent = MonoTextStyle::new(&FONT_6X10, col);
+    let mc = TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Middle)
         .build();
-    let _ = Text::with_text_style(side, Point::new(x + 10, y + 7), title, top).draw(display);
-    let _ = Text::with_text_style(&label, Point::new(x + w - 12, y + 5), percent, tr).draw(display);
+    let _ = Text::with_text_style(&label, Point::new(cx, BODY_Y + 14), percent, mc).draw(display);
 
-    let bx = x + 10;
-    let by = y + 22;
-    let bw = w - 28;
-    let bh = 6u32;
+    // Track runs from just under the reading down to the bottom of the body.
+    let bw = 10u32;
+    let bx = cx - bw as i32 / 2;
+    let by = BODY_Y + 28;
+    let bh = (BODY_Y + BODY_H as i32 - 10 - by) as u32;
     let bar = RoundedRectangle::with_equal_corners(
-        Rectangle::new(Point::new(bx, by), Size::new(bw as u32, bh)),
+        Rectangle::new(Point::new(bx, by), Size::new(bw, bh)),
         Size::new(BAR_RADIUS, BAR_RADIUS),
     );
     let bar_style = PrimitiveStyleBuilder::new()
@@ -959,11 +1009,12 @@ fn draw_bat<D: DrawTarget<Color = Rgb565>>(
         .stroke_width(1)
         .build();
     let _ = bar.into_styled(bar_style).draw(display);
-    draw_round_fill(display, bx + bw + 2, by + 2, 4, 3, 2, COL_BORDER_DIM);
+    // Terminal nub on top, so the column still reads as a battery.
+    draw_round_fill(display, bx + 3, by - 4, 4, 3, 2, COL_BORDER_DIM);
     if let Some(pct) = fill_pct {
         if pct > 0 {
-            let inner = (bw - 4).max(1) as u32;
-            let fw = (inner * pct as u32 / 100).max(2);
+            let inner = bh - 4;
+            let fh = (inner * pct as u32 / 100).max(2);
             let fc = if pct < 10 {
                 COL_RED
             } else if pct < 25 {
@@ -971,7 +1022,7 @@ fn draw_bat<D: DrawTarget<Color = Rgb565>>(
             } else {
                 COL_BAR_FG
             };
-            draw_round_fill(display, bx + 2, by + 2, fw, bh - 4, 3, fc);
+            draw_round_fill(display, bx + 2, by + 2 + (inner - fh) as i32, bw - 4, fh, 3, fc);
         }
     }
 }
@@ -990,4 +1041,3 @@ fn push_host_time(buffer: &mut heapless::String<16>, hour: Option<u8>, minute: O
         }
     }
 }
-
