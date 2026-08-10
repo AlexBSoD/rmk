@@ -1,8 +1,11 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use embassy_time::Instant;
 use postcard::experimental::max_size::MaxSize;
-use rmk_types::action::KeyAction;
+use rmk_types::action::{Action, KeyAction};
 use rmk_types::battery::BatteryStatus;
+use rmk_types::combo::Combo as ComboConfig;
+use rmk_types::constants::{COMBO_MAX_NUM, MORSE_MAX_NUM};
+use rmk_types::morse::{DOUBLE_TAP, HOLD, HOLD_AFTER_TAP, MorsePattern, TAP};
 use rmk_types::protocol::vial::{VIA_PROTOCOL_VERSION, ViaCommand, ViaKeyboardInfo};
 use vial::process_vial;
 
@@ -30,10 +33,16 @@ const ERGOHAVEN_BATTERY_HALVES_VERSION: u8 = 0x01;
 const ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS: u8 = 0x02;
 const ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION: u8 = 0x03;
 const ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION: u8 = 0x04;
+const ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION: u8 = 0x05;
+const ERGOHAVEN_CUSTOM_NEXT_NATIVE_DYNAMIC_ACTION: u8 = 0x06;
 const ERGOHAVEN_NATIVE_KEY_ACTION_VERSION: u8 = 0x01;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET: u16 = 0x0001;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS: u16 = 0x0002;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_RUSSIAN_LETTERS: u16 = 0x0004;
+const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_COMBO_OUTPUT: u16 = 0x0008;
+const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_MORSE_ACTIONS: u16 = 0x0010;
+const NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT: u8 = 0x00;
+const NATIVE_DYNAMIC_ACTION_KIND_MORSE: u8 = 0x01;
 const NATIVE_KEY_ACTION_STATUS_OK: u8 = 0x00;
 const NATIVE_KEY_ACTION_STATUS_END: u8 = 0x01;
 const NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION: u8 = 0x02;
@@ -102,12 +111,97 @@ fn native_key_position_valid(ctx: &KeyboardContext<'_>, layer: u8, row: u8, col:
 }
 
 const fn native_key_action_capabilities() -> u16 {
-    let capabilities = ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET;
+    let capabilities = ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET
+        | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_COMBO_OUTPUT
+        | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_MORSE_ACTIONS;
     #[cfg(feature = "universal_symbols")]
     let capabilities = capabilities
         | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS
         | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_RUSSIAN_LETTERS;
     capabilities
+}
+
+fn native_dynamic_morse_pattern(field: u8) -> Option<MorsePattern> {
+    match field {
+        0 => Some(TAP),
+        1 => Some(HOLD),
+        2 => Some(DOUBLE_TAP),
+        3 => Some(HOLD_AFTER_TAP),
+        _ => None,
+    }
+}
+
+fn native_dynamic_action_get(ctx: &KeyboardContext<'_>, kind: u8, index: u8, field: u8) -> Option<KeyAction> {
+    match kind {
+        NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT if field == 0 => ctx.with_combos(|combos| {
+            combos
+                .get(index as usize)
+                .map(|combo| combo.as_ref().map_or(KeyAction::No, |combo| combo.config.output))
+        }),
+        NATIVE_DYNAMIC_ACTION_KIND_MORSE => {
+            let pattern = native_dynamic_morse_pattern(field)?;
+            ctx.get_morse(index)
+                .map(|morse| morse.get(pattern).map_or(KeyAction::No, KeyAction::Single))
+        }
+        _ => None,
+    }
+}
+
+async fn native_dynamic_action_set(
+    ctx: &KeyboardContext<'_>,
+    kind: u8,
+    index: u8,
+    field: u8,
+    action: KeyAction,
+) -> Result<(), ()> {
+    match kind {
+        NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT if field == 0 => {
+            let Some(mut config) = ctx.with_combos(|combos| {
+                combos.get(index as usize).map(|combo| {
+                    combo
+                        .as_ref()
+                        .map_or_else(ComboConfig::empty, |combo| combo.config.clone())
+                })
+            }) else {
+                return Err(());
+            };
+            config.output = action;
+            ctx.set_combo(index, config).await;
+            Ok(())
+        }
+        NATIVE_DYNAMIC_ACTION_KIND_MORSE => {
+            let Some(pattern) = native_dynamic_morse_pattern(field) else {
+                return Err(());
+            };
+            let action = match action {
+                KeyAction::No => Action::No,
+                KeyAction::Single(action) => action,
+                _ => return Err(()),
+            };
+            let Some(mut updated) = ctx.get_morse(index) else {
+                return Err(());
+            };
+            updated.put(pattern, action).map_err(|_| ())?;
+            ctx.update_morse(index, |morse| *morse = updated).await;
+            Ok(())
+        }
+        _ => Err(()),
+    }
+}
+
+fn native_dynamic_action_at_flat_index(ctx: &KeyboardContext<'_>, flat_index: usize) -> Option<KeyAction> {
+    let combo_count = COMBO_MAX_NUM.min(u8::MAX as usize);
+    let morse_count = MORSE_MAX_NUM.min(u8::MAX as usize);
+    if flat_index < combo_count {
+        return native_dynamic_action_get(ctx, NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT, flat_index as u8, 0);
+    }
+    let morse_flat = flat_index - combo_count;
+    let morse_index = morse_flat / 4;
+    let field = morse_flat % 4;
+    if morse_index >= morse_count {
+        return None;
+    }
+    native_dynamic_action_get(ctx, NATIVE_DYNAMIC_ACTION_KIND_MORSE, morse_index as u8, field as u8)
 }
 
 fn encode_native_key_action(report: &mut ViaReport, payload_offset: usize, action: KeyAction) -> bool {
@@ -176,6 +270,78 @@ fn process_next_native_key_action_get(report: &mut ViaReport, ctx: &KeyboardCont
     let total = rows.saturating_mul(cols).saturating_mul(layers);
     for flat_index in start..total.min(u16::MAX as usize) {
         let action = ctx.get_action_flat(flat_index);
+        if action != KeyAction::No && to_via_keycode(action) == 0 {
+            LittleEndian::write_u16(&mut report.input_data[5..7], flat_index as u16);
+            if !encode_native_key_action(report, NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET, action) {
+                report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+            }
+            return;
+        }
+    }
+    report.input_data[4] = NATIVE_KEY_ACTION_STATUS_END;
+    LittleEndian::write_u16(&mut report.input_data[5..7], u16::MAX);
+}
+
+fn process_native_dynamic_action_get(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION);
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let (kind, index, field) = (report.output_data[4], report.output_data[5], report.output_data[6]);
+    let Some(action) = native_dynamic_action_get(ctx, kind, index, field) else {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_POSITION;
+        return;
+    };
+    if !encode_native_key_action(report, NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET, action) {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+    }
+}
+
+async fn process_native_dynamic_action_set(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION);
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let payload_len = report.output_data[7] as usize;
+    if payload_len == 0 || payload_len > NATIVE_KEY_ACTION_MAX_PAYLOAD {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+        return;
+    }
+    let payload =
+        &report.output_data[NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET + payload_len];
+    let Ok(action) = postcard::from_bytes::<KeyAction>(payload) else {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+        return;
+    };
+    let (kind, index, field) = (report.output_data[4], report.output_data[5], report.output_data[6]);
+    if native_dynamic_action_set(ctx, kind, index, field, action)
+        .await
+        .is_err()
+    {
+        report.input_data[4] = if native_dynamic_action_get(ctx, kind, index, field).is_some() {
+            NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD
+        } else {
+            NATIVE_KEY_ACTION_STATUS_INVALID_POSITION
+        };
+    }
+}
+
+fn process_next_native_dynamic_action_get(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_NEXT_NATIVE_DYNAMIC_ACTION);
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let start = LittleEndian::read_u16(&report.output_data[4..6]) as usize;
+    let combo_count = COMBO_MAX_NUM.min(u8::MAX as usize);
+    let morse_count = MORSE_MAX_NUM.min(u8::MAX as usize);
+    let total = combo_count.saturating_add(morse_count.saturating_mul(4));
+    for flat_index in start..total.min(u16::MAX as usize) {
+        let Some(action) = native_dynamic_action_at_flat_index(ctx, flat_index) else {
+            continue;
+        };
         if action != KeyAction::No && to_via_keycode(action) == 0 {
             LittleEndian::write_u16(&mut report.input_data[5..7], flat_index as u16);
             if !encode_native_key_action(report, NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET, action) {
@@ -310,6 +476,10 @@ impl<'a> VialService<'a> {
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION
                 {
                     process_native_key_action_set(report, self.ctx).await;
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION
+                {
+                    process_native_dynamic_action_set(report, self.ctx).await;
                 } else {
                     // backlight/rgblight/rgb matrix/led matrix/audio settings here
                     warn!("Custom set value -- not supported")
@@ -358,6 +528,14 @@ impl<'a> VialService<'a> {
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION
                 {
                     process_next_native_key_action_get(report, self.ctx);
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION
+                {
+                    process_native_dynamic_action_get(report, self.ctx);
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_NEXT_NATIVE_DYNAMIC_ACTION
+                {
+                    process_next_native_dynamic_action_get(report, self.ctx);
                 } else {
                     // backlight/rgblight/rgb matrix/led matrix/audio settings here
                     warn!("Custom get value -- not supported")
@@ -557,6 +735,30 @@ mod tests {
             input_data: output_data,
             output_data,
         }
+    }
+
+    fn native_dynamic_action_report(command: ViaCommand, kind: u8, index: u8, field: u8) -> ViaReport {
+        let mut report = custom_report(command, ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION);
+        report.output_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+        report.output_data[4] = kind;
+        report.output_data[5] = index;
+        report.output_data[6] = field;
+        report
+    }
+
+    fn native_dynamic_action_set_report(kind: u8, index: u8, field: u8, action: KeyAction) -> ViaReport {
+        let mut report = native_dynamic_action_report(ViaCommand::CustomSetValue, kind, index, field);
+        let mut encoded = [0u8; NATIVE_KEY_ACTION_MAX_PAYLOAD];
+        let payload = postcard::to_slice(&action, &mut encoded).unwrap();
+        report.output_data[7] = payload.len() as u8;
+        report.output_data[NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET + payload.len()]
+            .copy_from_slice(payload);
+        report
+    }
+
+    fn decode_native_action_response(report: &ViaReport, payload_offset: usize) -> KeyAction {
+        let len = report.input_data[payload_offset - 1] as usize;
+        postcard::from_bytes(&report.input_data[payload_offset..payload_offset + len]).unwrap()
     }
 
     fn rich_mod_tap() -> KeyAction {
@@ -795,6 +997,103 @@ mod tests {
             LittleEndian::write_u16(&mut scan_report.output_data[4..6], 1);
             block_on(service.process_via_packet(&mut scan_report));
             assert_eq!(scan_report.input_data[4], NATIVE_KEY_ACTION_STATUS_END);
+        });
+    }
+
+    #[test]
+    fn native_dynamic_combo_output_set_and_get_round_trip() {
+        with_service(|service| {
+            let action = KeyAction::Single(Action::User(0x80));
+            let mut set_report =
+                native_dynamic_action_set_report(NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT, 0, 0, action);
+            block_on(service.process_via_packet(&mut set_report));
+            assert_eq!(set_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+
+            let mut get_report = native_dynamic_action_report(
+                ViaCommand::CustomGetValue,
+                NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT,
+                0,
+                0,
+            );
+            block_on(service.process_via_packet(&mut get_report));
+            assert_eq!(get_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+            assert_eq!(
+                decode_native_action_response(&get_report, NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET),
+                action
+            );
+        });
+    }
+
+    #[test]
+    fn native_dynamic_morse_actions_set_and_get_round_trip() {
+        with_service(|service| {
+            for field in 0..4 {
+                let action = KeyAction::Single(Action::User(0x80 + field));
+                let mut set_report =
+                    native_dynamic_action_set_report(NATIVE_DYNAMIC_ACTION_KIND_MORSE, 0, field, action);
+                block_on(service.process_via_packet(&mut set_report));
+                assert_eq!(set_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+
+                let mut get_report = native_dynamic_action_report(
+                    ViaCommand::CustomGetValue,
+                    NATIVE_DYNAMIC_ACTION_KIND_MORSE,
+                    0,
+                    field,
+                );
+                block_on(service.process_via_packet(&mut get_report));
+                assert_eq!(get_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+                assert_eq!(
+                    decode_native_action_response(&get_report, NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET),
+                    action
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn native_dynamic_action_scan_uses_combo_then_morse_cursor_space() {
+        with_service(|service| {
+            let combo_action = KeyAction::Single(Action::User(0x80));
+            let mut set_combo =
+                native_dynamic_action_set_report(NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT, 0, 0, combo_action);
+            block_on(service.process_via_packet(&mut set_combo));
+
+            let morse_action = KeyAction::Single(Action::User(0x81));
+            let mut set_morse = native_dynamic_action_set_report(NATIVE_DYNAMIC_ACTION_KIND_MORSE, 0, 2, morse_action);
+            block_on(service.process_via_packet(&mut set_morse));
+
+            let mut scan_report =
+                custom_report(ViaCommand::CustomGetValue, ERGOHAVEN_CUSTOM_NEXT_NATIVE_DYNAMIC_ACTION);
+            scan_report.output_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+            block_on(service.process_via_packet(&mut scan_report));
+            assert_eq!(scan_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+            assert_eq!(LittleEndian::read_u16(&scan_report.input_data[5..7]), 0);
+            assert_eq!(
+                decode_native_action_response(&scan_report, NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET),
+                combo_action
+            );
+
+            let combo_count = COMBO_MAX_NUM.min(u8::MAX as usize);
+            LittleEndian::write_u16(&mut scan_report.output_data[4..6], combo_count as u16);
+            block_on(service.process_via_packet(&mut scan_report));
+            assert_eq!(scan_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+            assert_eq!(
+                LittleEndian::read_u16(&scan_report.input_data[5..7]),
+                (combo_count + 2) as u16
+            );
+            assert_eq!(
+                decode_native_action_response(&scan_report, NATIVE_KEY_ACTION_NEXT_PAYLOAD_OFFSET),
+                morse_action
+            );
+        });
+    }
+
+    #[test]
+    fn native_dynamic_morse_rejects_composite_key_actions() {
+        with_service(|service| {
+            let mut report = native_dynamic_action_set_report(NATIVE_DYNAMIC_ACTION_KIND_MORSE, 0, 0, rich_mod_tap());
+            block_on(service.process_via_packet(&mut report));
+            assert_eq!(report.input_data[4], NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD);
         });
     }
 
