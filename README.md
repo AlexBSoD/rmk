@@ -10,7 +10,6 @@ Ready-to-flash UF2 files are available on the
 
 - Keyboards: K:03, K:04, K:04 Mini, K:04 Micro, Imperial44, OP36, and Velvet
 - Qube: K:03, K:04 Series, Imperial44, OP36, and Velvet
-- Trackballs: Mini v3.0, Mini v3.1, and Royale
 
 ## Build
 
