@@ -21,11 +21,11 @@ use crate::ble::led::BleLedReader;
 #[cfg(feature = "passkey_entry")]
 use crate::ble::passkey::{PasskeyInputState, next_gatt_event};
 use crate::ble::profile::{ProfileInfo, ProfileManager, UPDATED_CCCD_TABLE, UPDATED_PROFILE};
-use crate::ble::sleep::{report_activity, request_sleep};
+use crate::ble::sleep::{report_activity, request_sleep, wait_for_input_activity};
 use crate::channel::{BLE_REPORT_CHANNEL, LED_SIGNAL};
 use crate::config::{BleBatteryConfig, RmkConfig};
 use crate::core_traits::Runnable;
-use crate::event::{BleAdvertisingMode, SubscribableEvent};
+use crate::event::BleAdvertisingMode;
 use crate::hid::{HidWriterTrait, run_led_reader};
 use crate::state::set_ble_state;
 
@@ -252,10 +252,9 @@ where
                         warn!("Advertising timeout, sleep and wait for any key");
                         request_sleep();
 
-                        // Wake on key or pointing activity after the advertising timeout.
-                        let mut key_wake = crate::event::KeyboardEvent::subscriber();
-                        let mut pointing_wake = crate::event::PointingEvent::subscriber();
-                        let _ = select(key_wake.next_message_pure(), pointing_wake.next_message_pure()).await;
+                        // Wake on a key or meaningful pointing activity after
+                        // the advertising timeout; ignore sensor settling noise.
+                        wait_for_input_activity().await;
 
                         report_activity();
                     }
@@ -1111,7 +1110,6 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use embassy_futures::join::join;
-    use embassy_futures::select::select;
     use embassy_time::{Duration, Timer};
     use rmk_types::battery::{BatteryStatus, ChargeState};
     use rmk_types::ble::{BleState, BleStatus};
@@ -1120,12 +1118,9 @@ mod tests {
 
     use super::{
         HostPhyUpdateState, Server, advertising_mode, directed_reconnect_should_continue, host_phy_update_state,
-        is_hci_link_update_busy, pairing_window_timeout_secs, seed_battery_level,
+        is_hci_link_update_busy, pairing_window_timeout_secs, seed_battery_level, wait_for_input_activity,
     };
-    use crate::event::{
-        Axis, AxisEvent, AxisValType, BleAdvertisingMode, KeyboardEvent, PointingEvent, SubscribableEvent,
-        publish_event,
-    };
+    use crate::event::{Axis, AxisEvent, AxisValType, BleAdvertisingMode, PointingEvent, publish_event};
     use crate::state::{
         current_ble_advertising_mode, current_ble_status, set_ble_advertising_mode, set_ble_profile, set_ble_state,
     };
@@ -1289,14 +1284,14 @@ mod tests {
     }
 
     #[test]
-    fn wake_activity_includes_pointing_events() {
+    fn wake_activity_ignores_noise_and_accepts_real_pointing() {
         let _guard = ble_status_test_lock().lock().unwrap();
 
         block_on(async {
+            let woke = core::cell::Cell::new(false);
             let wake = async {
-                let mut key_wake = KeyboardEvent::subscriber();
-                let mut pointing_wake = PointingEvent::subscriber();
-                let _ = select(key_wake.next_message_pure(), pointing_wake.next_message_pure()).await;
+                wait_for_input_activity().await;
+                woke.set(true);
             };
             join(wake, async {
                 Timer::after_millis(1).await;
@@ -1319,9 +1314,33 @@ mod tests {
                             value: 0,
                         },
                     ],
-                })
+                });
+                Timer::after_millis(1).await;
+                assert!(!woke.get(), "PMW3610 settling noise must not wake BLE");
+
+                publish_event(PointingEvent {
+                    device_id: 0,
+                    axes: [
+                        AxisEvent {
+                            typ: AxisValType::Rel,
+                            axis: Axis::X,
+                            value: 2,
+                        },
+                        AxisEvent {
+                            typ: AxisValType::Rel,
+                            axis: Axis::Y,
+                            value: 0,
+                        },
+                        AxisEvent {
+                            typ: AxisValType::Rel,
+                            axis: Axis::Z,
+                            value: 0,
+                        },
+                    ],
+                });
             })
             .await;
+            assert!(woke.get());
         });
     }
 }

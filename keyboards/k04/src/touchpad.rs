@@ -1,4 +1,4 @@
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Instant, Timer};
 use rmk::core_traits::Runnable;
@@ -80,12 +80,15 @@ const FILTER_IIR: u8 = 1 << 0;
 const FILTER_MAV: u8 = 1 << 1;
 const FILTER_ALP_COUNT: u8 = 1 << 3;
 const SYSTEM_CONTROL_1_WAKE: u8 = 0;
+const SYSTEM_CONTROL_1_SUSPEND: u8 = 1 << 0;
+const TOUCH_WAKE_SETTLE: Duration = Duration::from_millis(100);
 
 pub struct Touchpad {
     i2c: Twim<'static>,
     device_id: u8,
     side: u8,
     ready: bool,
+    suspended: bool,
     read_failures: u8,
     multi_finger_samples: u8,
     acc_x: i32,
@@ -105,6 +108,7 @@ impl Touchpad {
             device_id,
             side: side_for_device_id(device_id),
             ready: false,
+            suspended: false,
             read_failures: 0,
             multi_finger_samples: 0,
             acc_x: 0,
@@ -122,23 +126,59 @@ impl Touchpad {
         loop {
             let selection = module_settings::module_selection(self.side);
             if selection != module_settings::ModuleSelection::Touchpad {
-                self.deactivate();
+                self.deactivate().await;
                 let _ = module_settings::wait_for_module_selection_change(self.side, selection).await;
                 continue;
             }
 
+            let sleeping = module_settings::module_sleeping();
+            if sleeping {
+                self.enter_sleep().await;
+                match select(
+                    module_settings::wait_for_module_selection_change(
+                        self.side,
+                        module_settings::ModuleSelection::Touchpad,
+                    ),
+                    module_settings::wait_for_module_sleep_change(sleeping),
+                )
+                .await
+                {
+                    Either::First(_) => self.deactivate().await,
+                    Either::Second(_) => self.resume_from_sleep().await,
+                }
+                continue;
+            }
+
+            if self.suspended {
+                self.resume_from_sleep().await;
+            }
+
             let deadline = if self.ready { self.next_poll } else { self.next_probe };
-            match select(
+            match select3(
                 Timer::at(deadline),
                 module_settings::wait_for_module_selection_change(
                     self.side,
                     module_settings::ModuleSelection::Touchpad,
                 ),
+                module_settings::wait_for_module_sleep_change(sleeping),
             )
             .await
             {
-                Either::First(_) => self.poll_once().await,
-                Either::Second(_) => self.deactivate(),
+                Either3::First(_) => {
+                    if module_settings::module_sleeping() {
+                        self.enter_sleep().await;
+                    } else {
+                        self.poll_once().await;
+                    }
+                }
+                Either3::Second(_) => self.deactivate().await,
+                Either3::Third(next_sleeping) => {
+                    if next_sleeping {
+                        self.enter_sleep().await;
+                    } else {
+                        self.resume_from_sleep().await;
+                    }
+                }
             }
         }
     }
@@ -257,6 +297,7 @@ impl Touchpad {
 
         if ok {
             self.ready = true;
+            self.suspended = false;
             self.read_failures = 0;
             let now = Instant::now();
             self.next_probe = Instant::MIN;
@@ -267,6 +308,64 @@ impl Touchpad {
             self.clear_motion_state();
         }
         ok
+    }
+
+    async fn enter_sleep(&mut self) {
+        if self.suspended {
+            return;
+        }
+
+        self.clear_motion_state();
+        self.next_poll = Instant::MIN;
+        if self.ready {
+            self.suspended = self.set_suspend(true).await;
+            if !self.suspended {
+                // Even if the command window was missed, stop forced polling;
+                // the IQS5xx can still downshift to its autonomous LP mode.
+                self.ready = false;
+            }
+        }
+    }
+
+    async fn resume_from_sleep(&mut self) {
+        if self.suspended {
+            let woke = self.set_suspend(false).await;
+            self.suspended = false;
+            if woke && self.ready {
+                let now = Instant::now();
+                self.read_failures = 0;
+                self.clear_motion_state();
+                self.last_activity = now;
+                self.poll_interval = Duration::from_millis(REPORT_RATE_ACTIVE_MS as u64);
+                self.next_poll = now + TOUCH_WAKE_SETTLE;
+                return;
+            }
+            self.ready = false;
+        }
+
+        if !self.ready {
+            self.next_probe = Instant::MIN;
+            self.next_poll = Instant::MIN;
+            self.unavailable_since = None;
+        }
+    }
+
+    async fn set_suspend(&mut self, suspend: bool) -> bool {
+        // Addressing a suspended IQS5xx deliberately NACKs once. read() owns
+        // the required >=150 us retry, then this same communication session
+        // clears SUSPEND before END_COMMS as required by the datasheet.
+        let mut control = [0u8; 1];
+        if !self.read(REG_SYSTEM_CONTROL_1, &mut control).await {
+            return false;
+        }
+        let value = if suspend {
+            control[0] | SYSTEM_CONTROL_1_SUSPEND
+        } else {
+            control[0] & !SYSTEM_CONTROL_1_SUSPEND
+        };
+        let wrote = self.write_u8(REG_SYSTEM_CONTROL_1, value).await;
+        let ended = self.end_session().await;
+        wrote && ended
     }
 
     async fn read_motion(&mut self) -> TouchReadResult {
@@ -360,6 +459,7 @@ impl Touchpad {
     fn reset(&mut self) {
         let now = Instant::now();
         self.ready = false;
+        self.suspended = false;
         self.read_failures = 0;
         self.clear_motion_state();
         self.last_report = Instant::MIN;
@@ -368,7 +468,10 @@ impl Touchpad {
         self.schedule_next_probe(now);
     }
 
-    fn deactivate(&mut self) {
+    async fn deactivate(&mut self) {
+        if self.ready && !self.suspended {
+            self.suspended = self.set_suspend(true).await;
+        }
         self.ready = false;
         self.read_failures = 0;
         self.clear_motion_state();

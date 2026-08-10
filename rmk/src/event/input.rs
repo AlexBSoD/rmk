@@ -117,6 +117,30 @@ pub struct PointingEvent {
 }
 
 impl PointingEvent {
+    /// Whether this event represents deliberate pointing activity.
+    ///
+    /// PMW3610 sensors can emit background +/-1 X/Y reports while settling;
+    /// those reports must not keep the keyboard awake. Scroll, gesture/button,
+    /// and absolute reports remain activity whenever they carry a value.
+    pub fn is_user_activity(&self) -> bool {
+        const RELATIVE_XY_THRESHOLD: u16 = 2;
+
+        self.axes.iter().any(|axis| {
+            if axis.value == 0 {
+                return false;
+            }
+
+            match axis.typ {
+                AxisValType::Abs => true,
+                AxisValType::Rel if matches!(axis.axis, Axis::X | Axis::Y) => {
+                    axis.value.unsigned_abs() >= RELATIVE_XY_THRESHOLD
+                }
+                AxisValType::Rel if matches!(axis.axis, Axis::Z | Axis::H | Axis::V) => true,
+                AxisValType::Rel => false,
+            }
+        })
+    }
+
     /// Whether this event contains relative X/Y cursor motion at or above
     /// `threshold`. Absolute axes and scroll-only reports do not count.
     pub fn has_relative_xy_motion(&self, threshold: u16) -> bool {
@@ -256,6 +280,29 @@ mod pointing_event_tests {
         scroll.axes[1].axis = Axis::V;
         assert!(!accumulated.merge_relative_xy(&scroll));
         assert!(!accumulated.merge_relative_xy(&event(2, 1, 1, 0)));
+    }
+
+    #[test]
+    fn user_activity_ignores_pmw3610_settling_noise() {
+        assert!(!event(0, 0, 0, 0).is_user_activity());
+        assert!(!event(0, 1, -1, 0).is_user_activity());
+        assert!(event(0, 2, 0, 0).is_user_activity());
+        assert!(event(0, 0, -2, 0).is_user_activity());
+    }
+
+    #[test]
+    fn user_activity_includes_scroll_gestures_and_absolute_reports() {
+        let mut scroll = event(2, 0, 0, 0);
+        scroll.axes[0].axis = Axis::H;
+        scroll.axes[0].value = 1;
+        assert!(scroll.is_user_activity());
+
+        assert!(event(2, 0, 0, 1).is_user_activity());
+
+        let mut absolute = event(2, 0, 0, 0);
+        absolute.axes[0].typ = AxisValType::Abs;
+        absolute.axes[0].value = 1;
+        assert!(absolute.is_user_activity());
     }
 }
 

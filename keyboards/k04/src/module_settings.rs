@@ -1,7 +1,7 @@
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use embassy_sync::watch::Watch;
-use rmk::event::PeripheralSettingsEvent;
+use rmk::event::{PeripheralSettingsEvent, SleepStateEvent};
 use rmk::macros::processor;
 use rmk::split::ble::central::{set_split_link_profile, SplitLinkProfile};
 
@@ -46,6 +46,8 @@ const BALL_DPI_TABLE: [u16; 16] = [
 
 static SETTINGS: [AtomicU8; SETTINGS_LEN] = [const { AtomicU8::new(0) }; SETTINGS_LEN];
 static MODULE_SELECTIONS: Watch<rmk::RawMutex, [ModuleSelection; 2], 4> = Watch::new_with([ModuleSelection::None; 2]);
+static MODULE_SLEEPING: AtomicBool = AtomicBool::new(false);
+static MODULE_SLEEP_STATE: Watch<rmk::RawMutex, bool, 4> = Watch::new_with(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleSelection {
@@ -77,7 +79,7 @@ pub struct Rgb {
     pub b: u8,
 }
 
-#[processor(subscribe = [PeripheralSettingsEvent])]
+#[processor(subscribe = [PeripheralSettingsEvent, SleepStateEvent])]
 pub struct ModuleSettingsSync;
 
 impl ModuleSettingsSync {
@@ -88,6 +90,18 @@ impl ModuleSettingsSync {
 
     async fn on_peripheral_settings_event(&mut self, event: PeripheralSettingsEvent) {
         apply_settings_packet(&event.0);
+    }
+
+    async fn on_sleep_state_event(&mut self, event: SleepStateEvent) {
+        MODULE_SLEEPING.store(event.0, Ordering::Release);
+        MODULE_SLEEP_STATE.sender().send_if_modified(|current| {
+            if current.as_ref() == Some(&event.0) {
+                false
+            } else {
+                *current = Some(event.0);
+                true
+            }
+        });
     }
 }
 
@@ -157,6 +171,17 @@ pub async fn wait_for_module_selection_change(side: u8, current: ModuleSelection
         .receiver()
         .expect("K:04 module selection receiver capacity exhausted");
     receiver.get_and(|selections| selections[side] != current).await[side]
+}
+
+pub fn module_sleeping() -> bool {
+    MODULE_SLEEPING.load(Ordering::Acquire)
+}
+
+pub async fn wait_for_module_sleep_change(current: bool) -> bool {
+    let mut receiver = MODULE_SLEEP_STATE
+        .receiver()
+        .expect("K:04 module sleep receiver capacity exhausted");
+    receiver.get_and(|sleeping| *sleeping != current).await
 }
 
 pub(crate) fn apply_settings_packet(data: &[u8; 27]) {

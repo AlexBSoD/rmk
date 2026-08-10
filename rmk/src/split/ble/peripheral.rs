@@ -1,16 +1,15 @@
 use bt_hci::cmd::le::LeSetPhy;
 use bt_hci::controller::ControllerCmdAsync;
 use embassy_futures::join::join;
-use embassy_futures::select::select;
 use embassy_time::{Duration, Timer, with_timeout};
 use rmk_types::connection::ConnectionStatus;
 use trouble_host::prelude::*;
 
 #[cfg(feature = "storage")]
 use super::PeerAddress;
+use crate::ble::sleep::wait_for_input_activity;
 use crate::event::{
-    CentralConnectedEvent, KeyboardEvent, PointingEvent, SleepStateEvent, SplitConnectionState,
-    SplitConnectionStateEvent, SubscribableEvent, publish_event,
+    CentralConnectedEvent, SleepStateEvent, SplitConnectionState, SplitConnectionStateEvent, publish_event,
 };
 use crate::split::driver::{SplitDriverError, SplitReader, SplitWriter};
 use crate::split::peripheral::SplitPeripheral;
@@ -210,11 +209,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<'b, 's: 'b, C: Controll
                     publish_event(SplitConnectionStateEvent(SplitConnectionState::Idle));
                     publish_event(SleepStateEvent::new(true));
 
-                    let mut key_wake = KeyboardEvent::subscriber();
-                    let mut pointing_wake = PointingEvent::subscriber();
-                    key_wake.clear();
-                    pointing_wake.clear();
-                    let _ = select(key_wake.next_message_pure(), pointing_wake.next_message_pure()).await;
+                    wait_for_input_activity().await;
 
                     publish_event(SleepStateEvent::new(false));
                     continue;

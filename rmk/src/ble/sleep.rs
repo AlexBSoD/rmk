@@ -12,7 +12,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 
 use crate::SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS;
-use crate::event::{SleepStateEvent, publish_event};
+use crate::event::{KeyboardEvent, PointingEvent, SleepStateEvent, SubscribableEvent, publish_event};
 
 /// Latched keyboard sleep state for synchronous users such as the battery
 /// service. A blocking mutex keeps this compatible with ARMv6-M targets, which
@@ -34,6 +34,29 @@ fn set_sleeping(next: bool) {
 /// Report keyboard activity: wake the keyboard or restart its idle timeout.
 pub(crate) fn report_activity() {
     SLEEP_INPUT.signal(false);
+}
+
+/// Report pointing activity only when the event represents real user input.
+pub(crate) fn report_pointing_activity(event: &PointingEvent) {
+    if event.is_user_activity() {
+        report_activity();
+    }
+}
+
+/// Wait for a key or a meaningful pointing report, ignoring sensor noise.
+pub(crate) async fn wait_for_input_activity() {
+    let mut key_wake = KeyboardEvent::subscriber();
+    let mut pointing_wake = PointingEvent::subscriber();
+    key_wake.clear();
+    pointing_wake.clear();
+
+    loop {
+        match select(key_wake.next_message_pure(), pointing_wake.next_message_pure()).await {
+            Either::First(_) => return,
+            Either::Second(event) if event.is_user_activity() => return,
+            Either::Second(_) => {}
+        }
+    }
 }
 
 /// Request sleep immediately instead of waiting for the idle timeout.

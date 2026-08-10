@@ -12,7 +12,7 @@ use heapless::VecView;
 use trouble_host::prelude::*;
 
 use crate::SPLIT_PAIRING_TIMEOUT_SECONDS;
-use crate::ble::sleep::report_activity;
+use crate::ble::sleep::{report_activity, report_pointing_activity};
 use crate::ble::{update_ble_phy, update_conn_params};
 use crate::channel::FLASH_CHANNEL;
 use crate::event::{
@@ -934,7 +934,7 @@ fn update_pointing_activity_time(event: &PointingEvent) {
     if event.has_relative_xy_motion(POINTING_ACTIVITY_THRESHOLD) {
         LAST_POINTING_ACTIVITY_MS.store(now_ms, Ordering::Release);
     }
-    report_activity();
+    report_pointing_activity(event);
 }
 
 /// Return the time remaining before pointing has been idle for `quiet_period`.

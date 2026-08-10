@@ -965,7 +965,7 @@ impl<'a> QubePointingModeProcessor<'a> {
         };
 
         #[cfg(feature = "_ble")]
-        crate::ble::sleep::report_activity();
+        crate::ble::sleep::report_pointing_activity(&event);
 
         let mut x = 0i16;
         let mut y = 0i16;
