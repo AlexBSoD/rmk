@@ -416,10 +416,10 @@ mapfile -t build_scripts < <(
         done
 )
 for file in "${build_scripts[@]}"; do
-    rg -q 'const FIRMWARE_VERSION: &str = "0\.1\.6";' "$file" \
-        || fail "$file: firmware version must be 0.1.6"
-    rg -q 'const FIRMWARE_VERSION_BCD: &str = "0x0106";' "$file" \
-        || fail "$file: BCD firmware version must be 0x0106"
+    rg -q 'const FIRMWARE_VERSION: &str = "0\.1\.7";' "$file" \
+        || fail "$file: firmware version must be 0.1.7"
+    rg -q 'const FIRMWARE_VERSION_BCD: &str = "0x0107";' "$file" \
+        || fail "$file: BCD firmware version must be 0x0107"
 done
 
 mapfile -t vial_definitions < <(
@@ -433,8 +433,8 @@ for file in "${vial_definitions[@]}"; do
         || fail "$file: manufacturer must be Ergohaven"
     jq -e '
         .firmware.name == "RMK"
-        and .firmware.version == "0.1.6"
-        and .firmwareVersion == "0.1.6"
+        and .firmware.version == "0.1.7"
+        and .firmwareVersion == "0.1.7"
     ' "$file" >/dev/null \
         || fail "$file: RMK identity and both firmware versions must be present"
 done

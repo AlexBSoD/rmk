@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.1.7
+
+### Features
+
+- Added firmware-native Universal Symbols and Russian letters to dynamic Combo and Tap Dance actions
+- Added persistent per-combo activation layers configurable from Entropy
+- Advertised exact firmware update package identities for all 14 supported Ergohaven keyboard and Qube profiles
+
+### Fixes
+
+- Suspended K:04 trackball and touchpad modules during automatic sleep while preserving their selected type and settings after wake
+- Stabilized repeated macro saves, split BLE traffic, pointing-mode changes, and K:04 thumb-cluster geometry
+
+### Removed
+
+- Removed RMK firmware and release builds for the standalone Trackball Mini v3.0, Mini v3.1, and Royale devices
+
 ## v0.1.5-rc.1
 
 ### Features
