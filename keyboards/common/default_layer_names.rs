@@ -42,11 +42,6 @@ pub const STANDARD_WITH_MOUSE: [&str; LAYER_NAME_COUNT] = [
     "15",
 ];
 
-/// Trackballs do not use the standard keyboard layer order.
-pub const TRACKBALL: [&str; LAYER_NAME_COUNT] = [
-    "Mouse", "1", "2", "Adjust", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
-];
-
 const NUMERIC: [&str; LAYER_NAME_COUNT] = [
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
 ];
@@ -78,7 +73,7 @@ mod tests {
 
     #[test]
     fn factory_names_fit_firmware_limit() {
-        for profile in [STANDARD_NO_MOUSE, STANDARD_WITH_MOUSE, TRACKBALL] {
+        for profile in [STANDARD_NO_MOUSE, STANDARD_WITH_MOUSE] {
             assert!(profile.iter().all(|name| !name.is_empty() && name.len() <= 12));
         }
     }

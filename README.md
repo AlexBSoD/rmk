@@ -1,7 +1,7 @@
 # Ergohaven RMK Firmware
 
-Firmware for Ergohaven nRF52840 keyboards, Qube configurations, and
-standalone trackballs. Built on [RMK](https://github.com/HaoboGu/rmk).
+Firmware for Ergohaven nRF52840 keyboards and Qube configurations. Built on
+[RMK](https://github.com/HaoboGu/rmk).
 
 Ready-to-flash UF2 files are available on the
 [Releases](https://github.com/ergohaven/rmk/releases) page.
@@ -40,9 +40,8 @@ rules are documented in
 
 ## Reset and Migration
 
-Use `settings_reset.uf2` for keyboard halves and standalone trackballs, or
-`settings_reset_qube.uf2` for a Qube dongle. Re-flash the normal firmware after
-the reset.
+Use `settings_reset.uf2` for keyboard halves, or `settings_reset_qube.uf2` for
+a Qube dongle. Re-flash the normal firmware after the reset.
 
 The one-time `storage_migrate` utilities preserve settings from older
 non-K:04 firmware. Upgrade details and the Velvet exception are documented in

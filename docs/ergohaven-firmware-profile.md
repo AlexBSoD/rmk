@@ -17,9 +17,7 @@ profiles share this software contract:
 Standard keyboard profiles expose the factory layer names `Base`,
 `Navigation`, `Symbols`, and `Adjust`. Layer 4 is `Mouse` only on keyboards
 that have the pointing layer there; otherwise it is `4`. Layers 5–15 use their
-decimal indices. Standalone trackballs retain functional `Mouse` and `Adjust`
-names at their real layer positions and use numeric names for the other slots.
-User-defined names remain authoritative.
+decimal indices. User-defined names remain authoritative.
 
 Every Ergohaven profile compiles layers 5–15 as `No`, not `Transparent`, so
 Entropy displays those factory layers as empty instead of inheriting keys from
@@ -59,9 +57,9 @@ All production nRF52840 profiles reserve the same 128 KiB settings partition
 at `0xCC000–0xEC000`. Application linkers stop at `0xCC000`, preventing
 firmware and settings from overlapping.
 
-Use `settings_reset.uf2` for halves and standalone trackballs, and
-`settings_reset_qube.uf2` for a Qube dongle. Both erase only the unified
-partition; separate files are required because the application origins differ.
+Use `settings_reset.uf2` for keyboard halves and `settings_reset_qube.uf2` for
+a Qube dongle. Both erase only the unified partition; separate files are
+required because the application origins differ.
 
 Profiles upgrading from the legacy `0xA0000–0xC0000` partition can preserve
 their raw settings by running the matching one-time storage migration utility

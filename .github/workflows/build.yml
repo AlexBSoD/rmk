@@ -144,83 +144,6 @@ jobs:
             keyboards/${{ matrix.keyboard }}/${{ matrix.peripheral_output_name || format('{0}_right.uf2', matrix.output_name) }}
           retention-days: 30
 
-  build-trackball:
-    name: Build ${{ matrix.keyboard }} firmware
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - keyboard: trackball
-            output_name: trackball_mini_v3.0
-            keyboard_toml: keyboard_mini_v30.toml
-            vial_json: vial_mini_v30.json
-          - keyboard: trackball
-            output_name: trackball_mini_v3.1
-            keyboard_toml: keyboard_mini_v31.toml
-            vial_json: vial_mini_v31.json
-          - keyboard: trackball
-            output_name: trackball_royale
-            keyboard_toml: keyboard_royale.toml
-            vial_json: vial_royale.json
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install ARM toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi clang libclang-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: thumbv7em-none-eabihf
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-trackball-${{ matrix.output_name }}-${{ hashFiles('keyboards/trackball/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-trackball-
-
-      - name: Install flip-link
-        run: cargo install flip-link --locked
-
-      - name: Download uf2conv script
-        run: |
-          curl -fL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o uf2conv.py
-          curl -fL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o uf2families.json
-
-      - name: Build keyboard
-        working-directory: keyboards/${{ matrix.keyboard }}
-        env:
-          BINDGEN_EXTRA_CLANG_ARGS: "--sysroot=/usr/lib/arm-none-eabi --target=arm-none-eabi -I/usr/lib/arm-none-eabi/include -I/usr/lib/gcc/arm-none-eabi/13.2.1/include"
-          RUST_MIN_STACK: "33554432"
-          KEYBOARD_TOML_PATH: ${{ github.workspace }}/keyboards/trackball/${{ matrix.keyboard_toml }}
-          VIAL_JSON_PATH: ${{ github.workspace }}/keyboards/trackball/${{ matrix.vial_json }}
-        run: cargo build --release --bin keyboard
-
-      - name: Convert to UF2
-        working-directory: keyboards/${{ matrix.keyboard }}
-        run: |
-          arm-none-eabi-objcopy -O binary \
-            target/thumbv7em-none-eabihf/release/keyboard keyboard.bin
-          python3 ../../uf2conv.py keyboard.bin \
-            --base 0x26000 --family 0xADA52840 \
-            --output ${{ matrix.output_name }}.uf2
-
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.output_name }}
-          path: keyboards/${{ matrix.keyboard }}/${{ matrix.output_name }}.uf2
-          retention-days: 30
-
   build-qube:
     name: Build ${{ matrix.output_name }} firmware
     runs-on: ubuntu-latest
@@ -404,7 +327,7 @@ jobs:
           host_target="$(rustc -vV | sed -n 's/^host: //p')"
           cargo test --locked --lib --target "$host_target"
 
-      - name: Build Settings Reset for halves and trackballs
+      - name: Build Settings Reset for halves
         working-directory: tools/settings_reset
         env:
           CARGO_TARGET_DIR: target/halves
@@ -416,7 +339,7 @@ jobs:
           CARGO_TARGET_DIR: target/qube
         run: cargo build --release --locked --features qube
 
-      - name: Build Storage Migration for halves and trackballs
+      - name: Build Storage Migration for halves
         working-directory: tools/storage_migrate
         env:
           CARGO_TARGET_DIR: target/halves

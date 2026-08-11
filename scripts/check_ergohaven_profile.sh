@@ -62,9 +62,6 @@ profiles=(
     keyboards/classic_qube/keyboard_imperial44.toml
     keyboards/classic_qube/keyboard_k03.toml
     keyboards/classic_qube/keyboard_velvet.toml
-    keyboards/trackball/keyboard_mini_v30.toml
-    keyboards/trackball/keyboard_mini_v31.toml
-    keyboards/trackball/keyboard_royale.toml
     keyboards/velvet/keyboard.toml
 )
 
@@ -129,9 +126,6 @@ non_k04_profiles=(
     keyboards/classic_qube/keyboard_imperial44.toml
     keyboards/classic_qube/keyboard_k03.toml
     keyboards/classic_qube/keyboard_velvet.toml
-    keyboards/trackball/keyboard_mini_v30.toml
-    keyboards/trackball/keyboard_mini_v31.toml
-    keyboards/trackball/keyboard_royale.toml
     keyboards/velvet/keyboard.toml
 )
 
@@ -158,25 +152,6 @@ for file in "${profiles[@]}"; do
     expect_not_true "$file" clear_storage
     expect_not_true "$file" clear_layout
 done
-
-python3 - <<'PY' || fail "shared trackball profiles must keep their model identities"
-import json
-import tomllib
-
-profiles = [
-    ("keyboards/trackball/keyboard_mini_v30.toml", "keyboards/trackball/vial_mini_v30.json", 0x00C1),
-    ("keyboards/trackball/keyboard_mini_v31.toml", "keyboards/trackball/vial_mini_v31.json", 0x00C2),
-    ("keyboards/trackball/keyboard_royale.toml", "keyboards/trackball/vial_royale.json", 0x00C3),
-]
-
-for keyboard_path, vial_path, expected_product_id in profiles:
-    with open(keyboard_path, "rb") as source:
-        keyboard = tomllib.load(source)
-    with open(vial_path, encoding="utf-8") as source:
-        vial = json.load(source)
-    assert keyboard["keyboard"]["product_id"] == expected_product_id
-    assert int(vial["productId"], 16) == expected_product_id
-PY
 
 python3 - <<'PY' || fail "shared K:04 crate must keep all topology and model identities"
 import json
@@ -417,7 +392,6 @@ memory_files=(
     keyboards/op36/memory.x
     keyboards/classic_qube/memory_halves.x
     keyboards/classic_qube/memory_qube.x
-    keyboards/trackball/memory.x
     keyboards/velvet/memory.x
 )
 
@@ -480,9 +454,6 @@ static_profiles = [
     ("keyboards/k04/vial_qube_mini.json", "k04-mini-qube"),
     ("keyboards/op36/vial.json", "op36"),
     ("keyboards/classic_qube/vial.json", "op36-qube"),
-    ("keyboards/trackball/vial_mini_v30.json", "trackball-mini-v3.0"),
-    ("keyboards/trackball/vial_mini_v31.json", "trackball-mini-v3.1"),
-    ("keyboards/trackball/vial_royale.json", "trackball-royale"),
     ("keyboards/velvet/vial.json", "velvet"),
 ]
 
@@ -504,16 +475,14 @@ for product_id, expected_asset in expected_generated_assets.items():
     pattern = rf'0x{product_id}\s*=>\s*"{re.escape(expected_asset)}"'
     assert re.search(pattern, classic_qube_build), (product_id, expected_asset)
 
-# The static definitions cover 14 binaries. Three additional classic Qube
+# The static definitions cover 11 binaries. Three additional classic Qube
 # variants reuse a standalone definition and are rewritten by build.rs.
-assert len(static_profiles) + 3 == 17
+assert len(static_profiles) + 3 == 14
 PY
 
 for file in "${vial_definitions[@]}"; do
-    if [[ "$file" != keyboards/trackball/* ]]; then
-        jq -e '.entropy.batteryHalves == true' "$file" >/dev/null \
-            || fail "$file: split devices must advertise entropy.batteryHalves"
-    fi
+    jq -e '.entropy.batteryHalves == true' "$file" >/dev/null \
+        || fail "$file: split devices must advertise entropy.batteryHalves"
 done
 
 for file in keyboards/classic_qube/vial.json keyboards/k04/vial_qube{,_mini,_micro}.json; do
@@ -549,9 +518,6 @@ assert rust_array("STANDARD_NO_MOUSE") == [
 assert rust_array("STANDARD_WITH_MOUSE") == [
     "Base", "Navigation", "Symbols", "Adjust", "Mouse", *numeric_tail
 ]
-assert rust_array("TRACKBALL") == [
-    "Mouse", "1", "2", "Adjust", "4", *numeric_tail
-]
 PY
 
 standard_no_mouse_roots=(
@@ -573,9 +539,6 @@ for file in "${standard_with_mouse_roots[@]}"; do
     rg -Fq 'default_layer_names::STANDARD_WITH_MOUSE' "$file" \
         || fail "$file: standard Mouse layer names are missing"
 done
-
-rg -Fq 'default_layer_names::TRACKBALL' keyboards/trackball/src/keyboard.rs \
-    || fail "keyboards/trackball/src/keyboard.rs: functional trackball layer names are missing"
 
 rg -Fq 'crate::default_layer_names::STANDARD_NO_MOUSE' keyboards/classic_qube/build.rs \
     || fail "keyboards/classic_qube/build.rs: generated non-pointing Qube defaults drifted"
@@ -643,9 +606,6 @@ for file in \
     keyboards/imperial44/vial.json \
     keyboards/k03/vial.json \
     keyboards/op36/vial.json \
-    keyboards/trackball/vial_mini_v30.json \
-    keyboards/trackball/vial_mini_v31.json \
-    keyboards/trackball/vial_royale.json \
     keyboards/velvet/vial.json
 do
     actual="$(jq -r '.customKeycodes[0:10] | map(.name) | join(",")' "$file")"
@@ -658,9 +618,9 @@ if find keyboards/velvet_ui -type f -print -quit 2>/dev/null | grep -q .; then
     fail "keyboards/velvet_ui: obsolete duplicate profile must stay removed"
 fi
 
-for directory in keyboards/trackball_v30 keyboards/trackball_v31 keyboards/trackball_royale; do
+for directory in keyboards/trackball keyboards/trackball_v30 keyboards/trackball_v31 keyboards/trackball_royale; do
     if find "$directory" -type f -print -quit 2>/dev/null | grep -q .; then
-        fail "$directory: obsolete duplicate trackball crate must stay removed"
+        fail "$directory: unsupported standalone trackball firmware must stay removed"
     fi
 done
 

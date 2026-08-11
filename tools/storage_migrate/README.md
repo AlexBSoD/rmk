@@ -6,7 +6,7 @@ One-time upgrade utility for non-K:04 firmware that stored RMK settings at
 
 Run it **before** flashing firmware that uses the unified profile:
 
-1. Use `storage_migrate.uf2` on keyboard halves and standalone trackballs.
+1. Use `storage_migrate.uf2` on keyboard halves.
 2. Use `storage_migrate_qube.uf2` on a Qube dongle.
 3. The device returns to the bootloader after the copy.
 4. Flash the normal new firmware.
