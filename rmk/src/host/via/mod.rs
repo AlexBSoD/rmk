@@ -35,12 +35,14 @@ const ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION: u8 = 0x03;
 const ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION: u8 = 0x04;
 const ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION: u8 = 0x05;
 const ERGOHAVEN_CUSTOM_NEXT_NATIVE_DYNAMIC_ACTION: u8 = 0x06;
+const ERGOHAVEN_CUSTOM_COMBO_LAYER: u8 = 0x07;
 const ERGOHAVEN_NATIVE_KEY_ACTION_VERSION: u8 = 0x01;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET: u16 = 0x0001;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS: u16 = 0x0002;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_RUSSIAN_LETTERS: u16 = 0x0004;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_COMBO_OUTPUT: u16 = 0x0008;
 const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_MORSE_ACTIONS: u16 = 0x0010;
+const ERGOHAVEN_NATIVE_KEY_ACTION_CAP_COMBO_LAYER: u16 = 0x0020;
 const NATIVE_DYNAMIC_ACTION_KIND_COMBO_OUTPUT: u8 = 0x00;
 const NATIVE_DYNAMIC_ACTION_KIND_MORSE: u8 = 0x01;
 const NATIVE_KEY_ACTION_STATUS_OK: u8 = 0x00;
@@ -113,7 +115,8 @@ fn native_key_position_valid(ctx: &KeyboardContext<'_>, layer: u8, row: u8, col:
 const fn native_key_action_capabilities() -> u16 {
     let capabilities = ERGOHAVEN_NATIVE_KEY_ACTION_CAP_GET_SET
         | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_COMBO_OUTPUT
-        | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_MORSE_ACTIONS;
+        | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_MORSE_ACTIONS
+        | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_COMBO_LAYER;
     #[cfg(feature = "universal_symbols")]
     let capabilities = capabilities
         | ERGOHAVEN_NATIVE_KEY_ACTION_CAP_UNIVERSAL_SYMBOLS
@@ -187,6 +190,29 @@ async fn native_dynamic_action_set(
         }
         _ => Err(()),
     }
+}
+
+fn combo_layer_get(ctx: &KeyboardContext<'_>, index: u8) -> Option<Option<u8>> {
+    ctx.with_combos(|combos| {
+        combos
+            .get(index as usize)
+            .map(|combo| combo.as_ref().and_then(|combo| combo.config.layer))
+    })
+}
+
+async fn combo_layer_set(ctx: &KeyboardContext<'_>, index: u8, layer: Option<u8>) -> Result<(), ()> {
+    let Some(mut config) = ctx.with_combos(|combos| {
+        combos.get(index as usize).map(|combo| {
+            combo
+                .as_ref()
+                .map_or_else(ComboConfig::empty, |combo| combo.config.clone())
+        })
+    }) else {
+        return Err(());
+    };
+    config.layer = layer;
+    ctx.set_combo(index, config).await;
+    Ok(())
 }
 
 fn native_dynamic_action_at_flat_index(ctx: &KeyboardContext<'_>, flat_index: usize) -> Option<KeyAction> {
@@ -354,6 +380,51 @@ fn process_next_native_dynamic_action_get(report: &mut ViaReport, ctx: &Keyboard
     LittleEndian::write_u16(&mut report.input_data[5..7], u16::MAX);
 }
 
+fn process_combo_layer_get(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_COMBO_LAYER);
+    report.input_data[7] = report.output_data[4];
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let index = report.output_data[4];
+    let Some(layer) = combo_layer_get(ctx, index) else {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_POSITION;
+        return;
+    };
+    report.input_data[5] = u8::from(layer.is_some());
+    report.input_data[6] = layer.unwrap_or(0);
+}
+
+async fn process_combo_layer_set(report: &mut ViaReport, ctx: &KeyboardContext<'_>) {
+    init_native_key_action_response(report, ERGOHAVEN_CUSTOM_COMBO_LAYER);
+    report.input_data[7] = report.output_data[4];
+    if report.output_data[3] != ERGOHAVEN_NATIVE_KEY_ACTION_VERSION {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_UNSUPPORTED_VERSION;
+        return;
+    }
+    let index = report.output_data[4];
+    if combo_layer_get(ctx, index).is_none() {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_POSITION;
+        return;
+    }
+    let layer = match report.output_data[5] {
+        0 => None,
+        1 => Some(report.output_data[6]),
+        _ => {
+            report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD;
+            return;
+        }
+    };
+    if layer.is_some_and(|layer| layer as usize >= ctx.keymap_dimensions().2) {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_POSITION;
+        return;
+    }
+    if combo_layer_set(ctx, index, layer).await.is_err() {
+        report.input_data[4] = NATIVE_KEY_ACTION_STATUS_INVALID_POSITION;
+    }
+}
+
 fn battery_halves_for_split(
     central: BatteryStatus,
     peripheral_0: BatteryStatus,
@@ -480,6 +551,10 @@ impl<'a> VialService<'a> {
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION
                 {
                     process_native_dynamic_action_set(report, self.ctx).await;
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_COMBO_LAYER
+                {
+                    process_combo_layer_set(report, self.ctx).await;
                 } else {
                     // backlight/rgblight/rgb matrix/led matrix/audio settings here
                     warn!("Custom set value -- not supported")
@@ -536,6 +611,10 @@ impl<'a> VialService<'a> {
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NEXT_NATIVE_DYNAMIC_ACTION
                 {
                     process_next_native_dynamic_action_get(report, self.ctx);
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_COMBO_LAYER
+                {
+                    process_combo_layer_get(report, self.ctx);
                 } else {
                     // backlight/rgblight/rgb matrix/led matrix/audio settings here
                     warn!("Custom get value -- not supported")
@@ -754,6 +833,24 @@ mod tests {
         report.output_data[NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET..NATIVE_KEY_ACTION_SET_PAYLOAD_OFFSET + payload.len()]
             .copy_from_slice(payload);
         report
+    }
+
+    fn combo_layer_report(command: ViaCommand, index: u8) -> ViaReport {
+        let mut report = custom_report(command, ERGOHAVEN_CUSTOM_COMBO_LAYER);
+        report.output_data[3] = ERGOHAVEN_NATIVE_KEY_ACTION_VERSION;
+        report.output_data[4] = index;
+        report
+    }
+
+    fn combo_layer_set_report(index: u8, layer: Option<u8>) -> ViaReport {
+        let mut report = combo_layer_report(ViaCommand::CustomSetValue, index);
+        report.output_data[5] = u8::from(layer.is_some());
+        report.output_data[6] = layer.unwrap_or(0);
+        report
+    }
+
+    fn decode_combo_layer_response(report: &ViaReport) -> Option<u8> {
+        (report.input_data[5] != 0).then_some(report.input_data[6])
     }
 
     fn decode_native_action_response(report: &ViaReport, payload_offset: usize) -> KeyAction {
@@ -1021,6 +1118,63 @@ mod tests {
                 decode_native_action_response(&get_report, NATIVE_KEY_ACTION_GET_PAYLOAD_OFFSET),
                 action
             );
+        });
+    }
+
+    #[test]
+    fn combo_layer_set_and_get_round_trip() {
+        with_service(|service| {
+            let mut set_report = combo_layer_set_report(0, Some(0));
+            block_on(service.process_via_packet(&mut set_report));
+            assert_eq!(set_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+
+            let mut get_report = combo_layer_report(ViaCommand::CustomGetValue, 0);
+            block_on(service.process_via_packet(&mut get_report));
+            assert_eq!(get_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+            assert_eq!(decode_combo_layer_response(&get_report), Some(0));
+
+            let mut clear_report = combo_layer_set_report(0, None);
+            block_on(service.process_via_packet(&mut clear_report));
+            assert_eq!(clear_report.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+
+            block_on(service.process_via_packet(&mut get_report));
+            assert_eq!(decode_combo_layer_response(&get_report), None);
+        });
+    }
+
+    #[test]
+    fn combo_layer_rejects_out_of_range_layer() {
+        with_service(|service| {
+            let mut report = combo_layer_set_report(0, Some(1));
+            block_on(service.process_via_packet(&mut report));
+            assert_eq!(report.input_data[4], NATIVE_KEY_ACTION_STATUS_INVALID_POSITION);
+        });
+    }
+
+    #[test]
+    fn standard_vial_combo_write_preserves_native_layer() {
+        with_service(|service| {
+            let mut set_layer = combo_layer_set_report(0, Some(0));
+            block_on(service.process_via_packet(&mut set_layer));
+            assert_eq!(set_layer.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+
+            let mut output_data = [0u8; 32];
+            output_data[0] = ViaCommand::Vial as u8;
+            output_data[1] = rmk_types::protocol::vial::VialCommand::DynamicEntryOp as u8;
+            output_data[2] = rmk_types::protocol::vial::VialDynamic::DynamicVialComboSet as u8;
+            LittleEndian::write_u16(&mut output_data[4..6], 0x0004);
+            LittleEndian::write_u16(&mut output_data[6..8], 0x0005);
+            LittleEndian::write_u16(&mut output_data[12..14], 0x0006);
+            let mut vial_set = ViaReport {
+                input_data: output_data,
+                output_data,
+            };
+            block_on(service.process_via_packet(&mut vial_set));
+
+            let mut get_layer = combo_layer_report(ViaCommand::CustomGetValue, 0);
+            block_on(service.process_via_packet(&mut get_layer));
+            assert_eq!(get_layer.input_data[4], NATIVE_KEY_ACTION_STATUS_OK);
+            assert_eq!(decode_combo_layer_response(&get_layer), Some(0));
         });
     }
 

@@ -395,11 +395,13 @@ pub(crate) async fn process_vial<'a>(
                     let output = from_via_keycode(LittleEndian::read_u16(
                         &report.output_data[4 + COMBO_MAX_LENGTH * 2..6 + COMBO_MAX_LENGTH * 2],
                     ));
-                    let config = ComboConfig {
-                        actions,
-                        output,
-                        layer: None,
-                    };
+                    let layer = ctx.with_combos(|combos| {
+                        combos
+                            .get(combo_idx as usize)
+                            .and_then(Option::as_ref)
+                            .and_then(|combo| combo.config.layer)
+                    });
+                    let config = ComboConfig { actions, output, layer };
                     ctx.set_combo(combo_idx, config).await;
                 }
                 VialDynamic::DynamicVialKeyOverrideGet => {

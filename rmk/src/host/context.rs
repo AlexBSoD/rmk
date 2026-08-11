@@ -162,18 +162,19 @@ impl<'a> KeyboardContext<'a> {
         self.keymap.with_combos(f)
     }
 
-    /// Replace the combo at `idx` with `config` (or remove it if `config` is
-    /// empty) and persist. No-op if `idx` is out of range.
+    /// Replace the combo at `idx` with `config` (or remove it if actions,
+    /// output, and layer are all empty) and persist. No-op if `idx` is out of range.
     pub async fn set_combo(&self, idx: u8, config: ComboConfig) {
         let valid = self.keymap.with_combos_mut(|combos| {
             if (idx as usize) >= combos.len() {
                 return false;
             }
-            combos[idx as usize] = if config.actions.is_empty() && config.output == KeyAction::No {
-                None
-            } else {
-                Some(Combo::new(config.clone()))
-            };
+            combos[idx as usize] =
+                if config.actions.is_empty() && config.output == KeyAction::No && config.layer.is_none() {
+                    None
+                } else {
+                    Some(Combo::new(config.clone()))
+                };
             true
         });
         if !valid {
