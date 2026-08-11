@@ -3,7 +3,11 @@
     "manufacturer": "Ergohaven",
     "vendorId": "0xE126",
     "productId": "0x00C1",
+    "entropy": {
+        "firmwareUpdate": { "asset": "trackball-mini-v3.0" }
+    },
     "firmware": {
+        "name": "RMK",
         "version": "0.1.6"
     },
     "firmwareVersion": "0.1.6",

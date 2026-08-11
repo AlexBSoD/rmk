@@ -457,9 +457,57 @@ mapfile -t vial_definitions < <(
 for file in "${vial_definitions[@]}"; do
     jq -e '.manufacturer == "Ergohaven"' "$file" >/dev/null \
         || fail "$file: manufacturer must be Ergohaven"
-    jq -e '.firmware.version == "0.1.6" and .firmwareVersion == "0.1.6"' "$file" >/dev/null \
-        || fail "$file: both firmware versions must be 0.1.6"
+    jq -e '
+        .firmware.name == "RMK"
+        and .firmware.version == "0.1.6"
+        and .firmwareVersion == "0.1.6"
+    ' "$file" >/dev/null \
+        || fail "$file: RMK identity and both firmware versions must be present"
 done
+
+python3 - <<'PY' || fail "all production profiles must advertise their release package identity"
+import json
+import re
+
+static_profiles = [
+    ("keyboards/imperial44/vial.json", "imperial44"),
+    ("keyboards/k03/vial.json", "k03"),
+    ("keyboards/k04/vial.json", "k04"),
+    ("keyboards/k04/vial_micro.json", "k04-micro"),
+    ("keyboards/k04/vial_mini.json", "k04-mini"),
+    ("keyboards/k04/vial_qube.json", "k04-qube"),
+    ("keyboards/k04/vial_qube_micro.json", "k04-micro-qube"),
+    ("keyboards/k04/vial_qube_mini.json", "k04-mini-qube"),
+    ("keyboards/op36/vial.json", "op36"),
+    ("keyboards/classic_qube/vial.json", "op36-qube"),
+    ("keyboards/trackball/vial_mini_v30.json", "trackball-mini-v3.0"),
+    ("keyboards/trackball/vial_mini_v31.json", "trackball-mini-v3.1"),
+    ("keyboards/trackball/vial_royale.json", "trackball-royale"),
+    ("keyboards/velvet/vial.json", "velvet"),
+]
+
+for path, expected_asset in static_profiles:
+    with open(path, encoding="utf-8") as source:
+        definition = json.load(source)
+    assert definition["firmware"]["name"] == "RMK", path
+    assert definition["entropy"]["firmwareUpdate"]["asset"] == expected_asset, path
+
+with open("keyboards/classic_qube/build.rs", encoding="utf-8") as source:
+    classic_qube_build = source.read()
+expected_generated_assets = {
+    "0036": "op36-qube",
+    "0044": "imperial44-qube",
+    "0070": "k03-qube",
+    "00BE": "velvet-qube",
+}
+for product_id, expected_asset in expected_generated_assets.items():
+    pattern = rf'0x{product_id}\s*=>\s*"{re.escape(expected_asset)}"'
+    assert re.search(pattern, classic_qube_build), (product_id, expected_asset)
+
+# The static definitions cover 14 binaries. Three additional classic Qube
+# variants reuse a standalone definition and are rewritten by build.rs.
+assert len(static_profiles) + 3 == 17
+PY
 
 for file in "${vial_definitions[@]}"; do
     if [[ "$file" != keyboards/trackball/* ]]; then
