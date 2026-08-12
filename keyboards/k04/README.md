@@ -69,3 +69,44 @@ The repository build matrix builds all six profiles:
 
 The halves use `src/battery_nrf.rs`, which samples `P0_31` without
 `calibrate().await` and re-publishes `BatteryStatusEvent` periodically.
+
+## Host agent status (Qube screen)
+
+The Qube dongle's ST7789 screen is laid out in three fixed zones over the
+280×240 panel (`src/qube_display.rs`):
+
+| Zone | Content |
+|------|---------|
+| `y 14..42` | header — host clock on the left, active layer name on the right |
+| `y 50..232`, `x 18` / `x 234` | per-half battery gauges, left column = left half |
+| `y 50..232`, centre | host agent summary, the reason to glance at the screen |
+
+The agent panel is a 2×2 grid — `WORKING`, `BLOCKED` on the top row, `IDLE`,
+`DONE` below — each quadrant showing a label and a count. `BLOCKED` is the only
+state worth interrupting typing for, so it keeps the second slot and a distinct
+colour. While no counts are known the panel renders `NO AGENT FEED` instead.
+
+Counts come from the host, not from the firmware. A daemon pushes them over the
+existing raw-HID (Via) OUT endpoint as a 32-byte packet handled by
+`process_host_data_packet` in `rmk/src/host/via/mod.rs`:
+
+| Byte | Meaning |
+|------|---------|
+| `0` | `0xB0` — `HOST_DATA_AGENTS` |
+| `1` | payload version, currently `0x01` |
+| `2..7` | counts: working, idle, blocked, done, unknown |
+| `7` | reserved flags |
+
+A packet whose version byte is unknown is swallowed rather than answered, so a
+newer daemon can never have its data mistaken for a Via command. Packets sit
+alongside the other `HOST_DATA_*` kinds (`0xAA` time, `0xAC` layout, `0xAD` /
+`0xAE` media) and land in `rmk/src/host_data.rs`, which keeps them in RAM only —
+nothing here is persisted to flash.
+
+The summary carries a 30-second TTL (`AGENTS_TTL`). A daemon that dies or loses
+the socket it watches would otherwise leave the screen advertising "1 working"
+forever; past the TTL `snapshot()` reports `None` and the panel falls back to
+`NO AGENT FEED`.
+
+The host side of this lives in a separate personal project (`qubeherd`, bridging
+`herdr` to the dongle) and is not part of this repository.
