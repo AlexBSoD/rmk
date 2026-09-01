@@ -19,6 +19,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", keyboard_path.display());
     println!("cargo:rerun-if-changed=memory_halves.x");
     println!("cargo:rerun-if-changed=memory_qube.x");
+    println!("cargo:rerun-if-changed=memory_xiao.x");
     let product_id = generate_vial_config(&vial_path);
     validate_keyboard_product_id(&keyboard_path, product_id);
     validate_topology_feature(product_id);
@@ -26,7 +27,13 @@ fn main() {
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION={FIRMWARE_VERSION}");
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION_BCD={FIRMWARE_VERSION_BCD}");
 
-    if is_standalone(product_id) || env::var_os("CARGO_FEATURE_QUBE").is_some() {
+    if env::var_os("CARGO_FEATURE_QUBE_XIAO").is_some() {
+        // The XIAO dongle talks to the host over USB only. Advertising as a
+        // pairable BLE keyboard would just invite a host to bond with the
+        // dongle; the BLE stack itself stays, the split links need it.
+        println!("cargo:rustc-env=RMK_DISABLE_BLE_HOST=1");
+    }
+    if is_standalone(product_id) || is_qube_dongle_build() {
         println!("cargo:rustc-env=RMK_VIAL_DEVICE_SETTINGS_FN=crate::layer_names::vial_device_settings");
     }
     if is_standalone(product_id) {
@@ -34,7 +41,9 @@ fn main() {
     }
 
     let out = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let memory = if env::var_os("CARGO_FEATURE_QUBE").is_some() {
+    let memory = if env::var_os("CARGO_FEATURE_QUBE_XIAO").is_some() {
+        include_bytes!("memory_xiao.x").as_slice()
+    } else if env::var_os("CARGO_FEATURE_QUBE").is_some() {
         include_bytes!("memory_qube.x").as_slice()
     } else {
         include_bytes!("memory_halves.x").as_slice()
@@ -119,9 +128,13 @@ fn validate_keyboard_product_id(keyboard_path: &Path, expected: u16) {
 }
 
 fn validate_topology_feature(product_id: u16) {
-    if env::var_os("CARGO_FEATURE_QUBE").is_some() && !is_qube(product_id) {
-        panic!("The qube feature requires a K:04 Qube profile, got productId 0x{product_id:04X}");
+    if is_qube_dongle_build() && !is_qube(product_id) {
+        panic!("The qube features require a K:04 Qube profile, got productId 0x{product_id:04X}");
     }
+}
+
+fn is_qube_dongle_build() -> bool {
+    env::var_os("CARGO_FEATURE_QUBE").is_some() || env::var_os("CARGO_FEATURE_QUBE_XIAO").is_some()
 }
 
 fn parse_hex_u16(value: &str) -> Option<u16> {
