@@ -154,11 +154,63 @@ args = [
 ]
 dependencies = ["objcopy-right"]
 
+[tasks.build-qube-xiao]
+command = "cargo"
+args = [
+    "build",
+    "--release",
+    "--no-default-features",
+    "--bin",
+    "qube_xiao",
+    "--features",
+    "qube-xiao",
+]
+dependencies = ["install-llvm-tools", "flip-link"]
+
+[tasks.objcopy-qube-xiao]
+install_crate = { crate_name = "cargo-binutils", binary = "cargo", test_arg = [
+    "objcopy",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "objcopy",
+    "--release",
+    "--no-default-features",
+    "--bin",
+    "qube_xiao",
+    "--features",
+    "qube-xiao",
+    "--",
+    "-O",
+    "ihex",
+    "firmware/k04-qube-xiao.hex",
+]
+dependencies = ["build-qube-xiao", "make-firmware-dir"]
+
+[tasks.uf2-qube-xiao]
+install_crate = { crate_name = "cargo-hex-to-uf2", binary = "cargo", test_arg = [
+    "hex-to-uf2",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "hex-to-uf2",
+    "--input-path",
+    "firmware/k04-qube-xiao.hex",
+    "--output-path",
+    "firmware/k04-qube-xiao.uf2",
+    "--family",
+    "nrf52840",
+]
+dependencies = ["objcopy-qube-xiao"]
+
 [tasks.clean-hex]
 command = "rm"
 args = [
     "-f",
     "firmware/k04-qube.hex",
+    "firmware/k04-qube-xiao.hex",
     "firmware/k04-left.hex",
     "firmware/k04-right.hex",
 ]
