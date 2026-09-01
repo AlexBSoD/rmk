@@ -279,11 +279,18 @@ pub(crate) fn rmk_entry_unibody(
 /// active communication config. The prelude must be emitted before the join so
 /// that `transport.run()` can borrow each transport for the lifetime of the
 /// program.
+fn ble_host_disabled() -> bool {
+    std::env::var("RMK_DISABLE_BLE_HOST").is_ok_and(|value| value == "1")
+}
+
 fn transport_setup(communication: &CommunicationConfig) -> (TokenStream2, Vec<TokenStream2>) {
     let wpm_prelude = quote! {
         let mut wpm_processor = ::rmk::processor::builtin::wpm::WpmProcessor::new();
     };
     let wpm_task = quote! { wpm_processor.run() };
+    if ble_host_disabled() && matches!(communication, CommunicationConfig::Ble(_)) {
+        panic!("RMK_DISABLE_BLE_HOST removes the only host transport of a BLE-only keyboard");
+    }
     match communication {
         CommunicationConfig::Usb(_) => {
             let prelude = quote! {
@@ -302,6 +309,17 @@ fn transport_setup(communication: &CommunicationConfig) -> (TokenStream2, Vec<To
                 ).await;
             };
             (prelude, vec![quote! { ble_transport.run() }, wpm_task])
+        }
+        // A USB dongle needs the BLE stack for its split links, but has no use for
+        // the host-facing BLE transport: advertising as a pairable keyboard only
+        // invites a host to bond with the dongle itself.
+        CommunicationConfig::Both(_, _) if ble_host_disabled() => {
+            let prelude = quote! {
+                #wpm_prelude
+                let _: ::core::option::Option<::rmk::config::BleHostPowerConfig> = ble_host_power_config;
+                let mut usb_transport = ::rmk::usb::UsbTransport::new(driver, rmk_config.device_config);
+            };
+            (prelude, vec![quote! { usb_transport.run() }, wpm_task])
         }
         CommunicationConfig::Both(_, _) => {
             let prelude = quote! {
