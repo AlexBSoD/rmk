@@ -38,6 +38,10 @@ qube = [
     "dep:rmk-types",
     "dep:u8g2-fonts",
 ]
+# Qube dongle on a Seeed XIAO nRF52840 (Sense): same central, no screen, no logging.
+qube-xiao = []
+# Same dongle with the USB-CDC log backend, for debugging a board that misbehaves.
+qube-xiao-log = ["qube-xiao", "rmk/usb_log"]
 # Diagnostic Qube halves use RTT/defmt. Enabling usb_log at the same time asks
 # trouble-host for mutually exclusive `log` and `defmt` backends.
 qube-half = ["rmk/defmt"]
@@ -124,6 +128,13 @@ bench = false
 name = "qube"
 path = "src/qube.rs"
 required-features = ["qube"]
+test = false
+bench = false
+
+[[bin]]
+name = "qube_xiao"
+path = "src/qube_xiao.rs"
+required-features = ["qube-xiao"]
 test = false
 bench = false
 
