@@ -11,6 +11,7 @@ else is upstream's and should be read there.
 |--------|------|---------|-----------|
 | `main` | — | Plain mirror of `ergohaven/rmk@main`. Fast-forward only, never commit here. | n/a |
 | `feat/k04-agent-status` | `main` | Host coding-agent summary on the Qube dongle screen. | No — fork only |
+| `screenless` | `main` | Screenless XIAO nRF52840 dongle profile, USB-only host transport. | No — fork only |
 | `fix/flake-libclang` | `main` | `LIBCLANG_PATH` for the Nix dev shell, so `bindgen` builds. | Candidate |
 
 `main` is kept byte-identical to upstream on purpose: it is the base every topic
@@ -36,6 +37,21 @@ packet format and the feed's TTL.
 This is personal daemon integration — the host side is `qubeherd`, bridging
 `herdr` to the dongle — so it stays here and no PR is opened against
 `ergohaven/rmk` for it.
+
+## `screenless`
+
+A second dongle built on a stock Seeed XIAO nRF52840 for travel, while the
+Ergohaven dongle with the screen stays on the desk. Two commits: the
+`RMK_DISABLE_BLE_HOST` escape hatch in `rmk-macro`, which lets a USB dongle skip
+the host-facing BLE transport it has no use for, and the `qube_xiao` profile
+itself in `keyboards/k04`. See [`keyboards/k04/README.md`](keyboards/k04/README.md)
+for the flash layout — the XIAO bootloader keeps S140 resident, so the
+application links at `0x27000` rather than `0x1000`.
+
+The two dongles share Product ID `0x0071` and never run at the same time. A half
+remembers exactly one central, so swapping dongles costs one directed
+advertising window — around 30 seconds — before the half rebinds. That is
+accepted rather than fixed.
 
 ## Building test firmware
 
