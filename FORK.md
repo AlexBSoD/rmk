@@ -11,7 +11,7 @@ else is upstream's and should be read there.
 |--------|------|---------|-----------|
 | `main` | — | Plain mirror of `ergohaven/rmk@main`. Fast-forward only, never commit here. | n/a |
 | `feat/k04-agent-status` | `main` | Host coding-agent summary on the Qube dongle screen. | No — fork only |
-| `screenless` | `main` | Screenless XIAO nRF52840 dongle profile, USB-only host transport. | No — fork only |
+| `xiao-screenless` | `main` | Screenless XIAO nRF52840 dongle profile, USB-only host transport. | No — fork only |
 | `fix/flake-libclang` | `main` | `LIBCLANG_PATH` for the Nix dev shell, so `bindgen` builds. | Candidate |
 
 `main` is kept byte-identical to upstream on purpose: it is the base every topic
@@ -38,7 +38,7 @@ This is personal daemon integration — the host side is `qubeherd`, bridging
 `herdr` to the dongle — so it stays here and no PR is opened against
 `ergohaven/rmk` for it.
 
-## `screenless`
+## `xiao-screenless`
 
 A second dongle built on a stock Seeed XIAO nRF52840 for travel, while the
 Ergohaven dongle with the screen stays on the desk. Two commits: the
