@@ -108,6 +108,10 @@ pub(crate) fn rmk_entry_select(
     };
     let board = &hardware.board;
     let communication = &hardware.communication;
+    let use_2m_phy = communication
+        .get_ble_config()
+        .and_then(|config| config.use_2m_phy)
+        .unwrap_or(true);
     let (transport_prelude, transport_tasks) = transport_setup(communication);
 
     let entry = match board {
@@ -148,11 +152,12 @@ pub(crate) fn rmk_entry_select(
                         quote! { ::rmk::split::ble::central::SplitLinkProfile::Keyboard }
                     };
                     tasks.push(quote! {
-                        ::rmk::split::central::run_peripheral_manager_with_profile::<#row, #col, #row_offset, #col_offset, _>(
+                        ::rmk::split::central::run_peripheral_manager_with_profile_and_phy::<#row, #col, #row_offset, #col_offset, _>(
                             #idx,
                             &peripheral_addrs,
                             &stack,
                             #split_link_profile,
+                            #use_2m_phy,
                         )
                     });
                 });
@@ -280,6 +285,10 @@ pub(crate) fn rmk_entry_unibody(
 /// that `transport.run()` can borrow each transport for the lifetime of the
 /// program.
 fn transport_setup(communication: &CommunicationConfig) -> (TokenStream2, Vec<TokenStream2>) {
+    let use_2m_phy = communication
+        .get_ble_config()
+        .and_then(|config| config.use_2m_phy)
+        .unwrap_or(true);
     let wpm_prelude = quote! {
         let mut wpm_processor = ::rmk::processor::builtin::wpm::WpmProcessor::new();
     };
@@ -295,10 +304,11 @@ fn transport_setup(communication: &CommunicationConfig) -> (TokenStream2, Vec<To
         CommunicationConfig::Ble(_) => {
             let prelude = quote! {
                 #wpm_prelude
-                let mut ble_transport = ::rmk::ble::BleTransport::new_with_host_power_config(
+                let mut ble_transport = ::rmk::ble::BleTransport::new_with_host_power_and_phy_config(
                     &stack,
                     rmk_config,
                     ble_host_power_config,
+                    #use_2m_phy,
                 ).await;
             };
             (prelude, vec![quote! { ble_transport.run() }, wpm_task])
@@ -307,10 +317,11 @@ fn transport_setup(communication: &CommunicationConfig) -> (TokenStream2, Vec<To
             let prelude = quote! {
                 #wpm_prelude
                 let mut usb_transport = ::rmk::usb::UsbTransport::new(driver, rmk_config.device_config);
-                let mut ble_transport = ::rmk::ble::BleTransport::new_with_host_power_config(
+                let mut ble_transport = ::rmk::ble::BleTransport::new_with_host_power_and_phy_config(
                     &stack,
                     rmk_config,
                     ble_host_power_config,
+                    #use_2m_phy,
                 ).await;
             };
             (

@@ -28,17 +28,17 @@ Product ID, Vial keyboard ID, storage, and UF2 artifact.
 KEYBOARD_TOML_PATH="$PWD/keyboard.toml" \
 VIAL_JSON_PATH="$PWD/vial.json" \
 CARGO_TARGET_DIR=target/k04 \
-cargo build --release --bin central --bin peripheral --bin hardreset
+cargo build --release --bin central --bin peripheral --bin hardreset --features production_v30g
 
 KEYBOARD_TOML_PATH="$PWD/keyboard_mini.toml" \
 VIAL_JSON_PATH="$PWD/vial_mini.json" \
 CARGO_TARGET_DIR=target/mini \
-cargo build --release --bin central --bin peripheral --bin hardreset
+cargo build --release --bin central --bin peripheral --bin hardreset --features production_v30g
 
 KEYBOARD_TOML_PATH="$PWD/keyboard_micro.toml" \
 VIAL_JSON_PATH="$PWD/vial_micro.json" \
 CARGO_TARGET_DIR=target/micro \
-cargo build --release --bin central --bin peripheral --bin hardreset
+cargo build --release --bin central --bin peripheral --bin hardreset --features production_v30g
 ```
 
 Qube K:04:

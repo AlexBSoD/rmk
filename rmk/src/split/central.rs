@@ -49,8 +49,14 @@ pub async fn run_peripheral_manager<
     #[cfg(feature = "_ble")]
     {
         use crate::split::ble::central::{SplitLinkProfile, run_ble_peripheral_manager};
-        run_ble_peripheral_manager::<C, ROW, COL, ROW_OFFSET, COL_OFFSET>(id, addr, stack, SplitLinkProfile::Keyboard)
-            .await;
+        run_ble_peripheral_manager::<C, ROW, COL, ROW_OFFSET, COL_OFFSET>(
+            id,
+            addr,
+            stack,
+            SplitLinkProfile::Keyboard,
+            true,
+        )
+        .await;
     };
 
     #[cfg(not(feature = "_ble"))]
@@ -66,10 +72,10 @@ pub async fn run_peripheral_manager<
     }
 }
 
-/// Run a BLE split peripheral manager with a connection profile selected from
-/// the complete keyboard configuration. Macro-generated keyboards use this
-/// entry point; the legacy [`run_peripheral_manager`] API keeps its standard
-/// keyboard profile for hand-written integrations.
+/// Run a BLE split peripheral manager with an explicit connection profile and
+/// the legacy 2M PHY default. Hand-written integrations can keep using this
+/// source-compatible entry point; generated keyboards use the PHY-aware
+/// variant below.
 #[cfg(feature = "_ble")]
 pub async fn run_peripheral_manager_with_profile<
     'b,
@@ -91,8 +97,37 @@ pub async fn run_peripheral_manager_with_profile<
 ) where
     's: 'b,
 {
+    run_peripheral_manager_with_profile_and_phy::<ROW, COL, ROW_OFFSET, COL_OFFSET, C>(id, addr, stack, profile, true)
+        .await;
+}
+
+/// Run a BLE split peripheral manager with an explicit connection profile and
+/// PHY policy. Macro-generated keyboards use this entry point so their
+/// configured `use_2m_phy` value is respected.
+#[cfg(feature = "_ble")]
+pub async fn run_peripheral_manager_with_profile_and_phy<
+    'b,
+    's,
+    const ROW: usize,
+    const COL: usize,
+    const ROW_OFFSET: usize,
+    const COL_OFFSET: usize,
+    C: Controller
+        + ControllerCmdSync<LeSetScanParams>
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdSync<ReadRssi>,
+>(
+    id: usize,
+    addr: &RefCell<VecView<Option<[u8; 6]>>>,
+    stack: &'b Stack<'s, C, DefaultPacketPool>,
+    profile: crate::split::ble::central::SplitLinkProfile,
+    use_2m_phy: bool,
+) where
+    's: 'b,
+{
     crate::split::ble::central::run_ble_peripheral_manager::<C, ROW, COL, ROW_OFFSET, COL_OFFSET>(
-        id, addr, stack, profile,
+        id, addr, stack, profile, use_2m_phy,
     )
     .await;
 }

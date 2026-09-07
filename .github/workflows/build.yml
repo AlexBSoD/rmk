@@ -36,17 +36,17 @@ jobs:
             output_name: k04_series_k04
             keyboard_toml: keyboard.toml
             vial_json: vial.json
-            build_features: "--features production_v22"
+            build_features: "--features production_v30g"
           - keyboard: k04
             output_name: k04_series_mini
             keyboard_toml: keyboard_mini.toml
             vial_json: vial_mini.json
-            build_features: "--features production_v22"
+            build_features: "--features production_v30g"
           - keyboard: k04
             output_name: k04_series_micro
             keyboard_toml: keyboard_micro.toml
             vial_json: vial_micro.json
-            build_features: "--features production_v22"
+            build_features: "--features production_v30g"
           - keyboard: imperial44
             output_name: imperial44
             keyboard_toml: keyboard.toml

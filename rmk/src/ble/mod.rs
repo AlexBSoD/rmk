@@ -4,6 +4,8 @@ use embassy_futures::join::join3;
 use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
+#[cfg(feature = "host_first_split_wake")]
+use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use rmk_types::battery::BatteryStatus;
 use rmk_types::ble::BleState;
@@ -62,6 +64,10 @@ const HOST_DISCONNECT_EVENT_TIMEOUT_MS: u64 = 750;
 const HOST_SESSION_RELEASE_GRACE_MS: u64 = 100;
 const HOST_SESSION_RELEASE_SETTLE_MS: u64 = 100;
 const HOST_CONN_PARAM_UPDATE_TIMEOUT_SECS: u64 = 2;
+#[cfg(feature = "host_first_split_wake")]
+const HOST_ACTIVE_CONN_PARAM_ATTEMPTS: u8 = 2;
+#[cfg(feature = "host_first_split_wake")]
+const HOST_ACTIVE_CONN_PARAM_RETRY_MS: u64 = 100;
 #[cfg(feature = "host_fixed_15ms")]
 const HOST_FIXED_CONN_PARAM_ATTEMPTS: u8 = 3;
 #[cfg(feature = "host_fixed_15ms")]
@@ -70,15 +76,24 @@ const HID_WRITE_TIMEOUT_SECS: u64 = 2;
 #[cfg(all(
     feature = "mouse_interval_control",
     feature = "mouse_vector_preserve",
-    not(feature = "host_fixed_15ms")
+    not(any(feature = "host_fixed_15ms", feature = "fixed_mouse_pacing_15ms"))
 ))]
 const MOUSE_CONTROL_INTERVAL: Duration = Duration::from_micros(7_500);
 #[cfg(all(
     feature = "mouse_interval_control",
-    any(not(feature = "mouse_vector_preserve"), feature = "host_fixed_15ms")
+    any(
+        not(feature = "mouse_vector_preserve"),
+        feature = "host_fixed_15ms",
+        feature = "fixed_mouse_pacing_15ms"
+    )
 ))]
 const MOUSE_CONTROL_INTERVAL: Duration = Duration::from_millis(15);
+#[cfg(not(feature = "host_first_split_wake"))]
 const HOST_IDLE_MAX_LATENCY: u16 = 30;
+#[cfg(feature = "host_first_split_wake")]
+const HOST_IDLE_MAX_LATENCY: u16 = 4;
+#[cfg(feature = "host_first_split_wake")]
+const HOST_LOW_DUTY_EFFECTIVE_INTERVAL_US: u64 = 150_000;
 const HOST_INTERACTIVE_MAX_LATENCY: u16 = 0;
 const VIAL_LINK_IDLE_TIMEOUT_SECS: u64 = 30;
 const HCI_LINK_UPDATE_ATTEMPTS: u8 = 12;
@@ -95,6 +110,112 @@ static VIAL_BLE_ACTIVITY: Signal<crate::RawMutex, ()> = Signal::new();
 /// Wakes the connected host-power task when a runtime policy changes.
 static HOST_POWER_CONFIG_CHANGED: Signal<crate::RawMutex, ()> = Signal::new();
 
+/// Latched cross-link ordering state for an opt-in keyboard-wide wake.
+#[cfg(feature = "host_first_split_wake")]
+static HOST_WAKE_ORDER_GATE: Watch<crate::RawMutex, HostWakeOrderGate, CONNECTIONS_MAX> =
+    Watch::new_with(HostWakeOrderGate::Open);
+
+#[cfg(feature = "host_first_split_wake")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HostWakeOrderGate {
+    Open,
+    Pending,
+}
+
+#[cfg(feature = "host_first_split_wake")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostWakeOrderEvent {
+    HostEnteredIdle,
+    HostActiveConfirmed,
+    SessionEnded,
+}
+
+#[cfg(feature = "host_first_split_wake")]
+const fn next_host_wake_order_gate(_current: HostWakeOrderGate, event: HostWakeOrderEvent) -> HostWakeOrderGate {
+    match event {
+        HostWakeOrderEvent::HostEnteredIdle => HostWakeOrderGate::Pending,
+        HostWakeOrderEvent::HostActiveConfirmed | HostWakeOrderEvent::SessionEnded => HostWakeOrderGate::Open,
+    }
+}
+
+#[cfg(feature = "host_first_split_wake")]
+fn set_host_wake_order_gate_on<const N: usize>(
+    gate: &Watch<crate::RawMutex, HostWakeOrderGate, N>,
+    event: HostWakeOrderEvent,
+) {
+    let current = gate.try_get().unwrap_or(HostWakeOrderGate::Open);
+    gate.sender().send(next_host_wake_order_gate(current, event));
+}
+
+#[cfg(feature = "host_first_split_wake")]
+pub(crate) fn host_wake_order_gate() -> HostWakeOrderGate {
+    HOST_WAKE_ORDER_GATE.try_get().unwrap_or(HostWakeOrderGate::Open)
+}
+
+#[cfg(feature = "host_first_split_wake")]
+async fn wait_for_host_wake_order_gate_on<const N: usize>(gate: &Watch<crate::RawMutex, HostWakeOrderGate, N>) {
+    let Some(mut receiver) = gate.receiver() else {
+        // Capacity is sized for every possible connection. Fail open if a
+        // future topology violates that invariant rather than deadlocking.
+        warn!("[WAKE_ORDER_V30G] split_waiter_capacity_exhausted gate=bypass");
+        return;
+    };
+    receiver.get_and(|state| *state == HostWakeOrderGate::Open).await;
+}
+
+#[cfg(feature = "host_first_split_wake")]
+pub(crate) async fn wait_for_host_wake_order_gate() {
+    wait_for_host_wake_order_gate_on(&HOST_WAKE_ORDER_GATE).await;
+}
+
+/// Opens the gate when a host-power task is cancelled or leaves its session.
+#[cfg(feature = "host_first_split_wake")]
+struct HostWakeOrderSession<'a, const N: usize> {
+    gate: &'a Watch<crate::RawMutex, HostWakeOrderGate, N>,
+    pending: bool,
+}
+
+#[cfg(feature = "host_first_split_wake")]
+impl<'a, const N: usize> HostWakeOrderSession<'a, N> {
+    fn new_on(gate: &'a Watch<crate::RawMutex, HostWakeOrderGate, N>) -> Self {
+        set_host_wake_order_gate_on(gate, HostWakeOrderEvent::SessionEnded);
+        Self { gate, pending: false }
+    }
+
+    fn close_for_idle(&mut self) {
+        self.pending = true;
+        set_host_wake_order_gate_on(self.gate, HostWakeOrderEvent::HostEnteredIdle);
+        info!("[WAKE_ORDER_V30G] event=host_idle gate=closed");
+    }
+
+    fn open_after_confirmation(&mut self, applied: HostConnParamsSnapshot) {
+        self.pending = false;
+        set_host_wake_order_gate_on(self.gate, HostWakeOrderEvent::HostActiveConfirmed);
+        info!(
+            "[WAKE_ORDER_V30G] event=host_active_confirmed gate=open interval_us={} latency={}",
+            applied.interval.as_micros(),
+            applied.latency
+        );
+    }
+}
+
+#[cfg(feature = "host_first_split_wake")]
+impl HostWakeOrderSession<'static, CONNECTIONS_MAX> {
+    fn new() -> Self {
+        Self::new_on(&HOST_WAKE_ORDER_GATE)
+    }
+}
+
+#[cfg(feature = "host_first_split_wake")]
+impl<const N: usize> Drop for HostWakeOrderSession<'_, N> {
+    fn drop(&mut self) {
+        if self.pending {
+            warn!("[WAKE_ORDER_V30G] event=host_session_end gate=open reason=teardown_or_failure");
+        }
+        set_host_wake_order_gate_on(self.gate, HostWakeOrderEvent::SessionEnded);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct HostConnParamsSnapshot {
     interval: Duration,
@@ -105,6 +226,12 @@ struct HostConnParamsSnapshot {
 /// bootstrap task distinguish a host that accepted 7.5 ms from an Apple host
 /// that retained 15 ms and would otherwise keep the preceding slave latency.
 static HOST_CONN_PARAMS_UPDATED: Signal<crate::RawMutex, HostConnParamsSnapshot> = Signal::new();
+
+/// Fixed pacing starts a fresh 15 ms slot after every completed HID write.
+#[cfg(feature = "fixed_mouse_pacing_15ms")]
+fn fixed_mouse_pacing_deadline(completed_at: Instant) -> Instant {
+    completed_at + MOUSE_CONTROL_INTERVAL
+}
 
 /// Notify the BLE transport that its runtime host-power policy changed.
 pub fn notify_host_power_config_changed() {
@@ -141,6 +268,7 @@ where
     product_name: &'static str,
     config: BleBatteryConfig<'b>,
     host_power_config: Option<BleHostPowerConfig>,
+    use_2m_phy: bool,
 }
 
 impl<'b, 's, C> BleTransport<'b, 's, C>
@@ -152,7 +280,7 @@ where
         + ControllerCmdSync<LeReadPhy>,
 {
     pub async fn new(stack: &'b Stack<'s, C, DefaultPacketPool>, rmk_config: RmkConfig<'static>) -> Self {
-        Self::new_with_host_power_config(stack, rmk_config, None).await
+        Self::new_with_host_power_and_phy_config(stack, rmk_config, None, true).await
     }
 
     /// Create a BLE transport with an optional host-link power policy.
@@ -163,6 +291,19 @@ where
         stack: &'b Stack<'s, C, DefaultPacketPool>,
         rmk_config: RmkConfig<'static>,
         host_power_config: Option<BleHostPowerConfig>,
+    ) -> Self {
+        Self::new_with_host_power_and_phy_config(stack, rmk_config, host_power_config, true).await
+    }
+
+    /// Create a BLE transport with the complete generated host-link policy.
+    ///
+    /// Keeping the PHY choice explicit prevents generated configurations with
+    /// `use_2m_phy = false` from issuing unsupported runtime PHY requests.
+    pub async fn new_with_host_power_and_phy_config(
+        stack: &'b Stack<'s, C, DefaultPacketPool>,
+        rmk_config: RmkConfig<'static>,
+        host_power_config: Option<BleHostPowerConfig>,
+        use_2m_phy: bool,
     ) -> Self {
         #[cfg(feature = "_nrf_ble")]
         let serial_number = crate::ble::nrf::get_serial_number();
@@ -214,6 +355,7 @@ where
             product_name: rmk_config.device_config.product_name,
             config: rmk_config.ble_battery_config,
             host_power_config,
+            use_2m_phy,
         }
     }
 }
@@ -244,6 +386,7 @@ where
         let profile_manager = &mut self.profile_manager;
         let product_name = self.product_name;
         let host_power_config = self.host_power_config;
+        let use_2m_phy = self.use_2m_phy;
 
         let connection_loop = async {
             let mut resuming_from_sleep = false;
@@ -265,11 +408,11 @@ where
                 let active_peer = active_bond_info.as_ref().map(|info| info.info.identity.addr);
                 #[cfg(feature = "storage")]
                 let host_link_policy =
-                    host_link_startup_policy(active_bond_info.is_some(), host_power_config.is_some());
+                    host_link_startup_policy(active_bond_info.is_some(), host_power_config.is_some(), use_2m_phy);
                 #[cfg(not(feature = "storage"))]
                 let active_peer = None;
                 #[cfg(not(feature = "storage"))]
-                let host_link_policy = host_link_startup_policy(false, host_power_config.is_some());
+                let host_link_policy = host_link_startup_policy(false, host_power_config.is_some(), use_2m_phy);
 
                 // During wake advertising, subscribe before opening the radio
                 // window so a second input can request another attempt even if
@@ -357,6 +500,23 @@ where
                                 // reconnect an all-up keyboard state. Sleeping
                                 // keeps any new local input queued while the
                                 // bonded host reconnects.
+                                report_activity();
+                                prepare_hid_write_recovery();
+
+                                if conn.raw().is_connected() {
+                                    disconnect_and_wait(&conn).await;
+                                }
+                                resuming_from_sleep = true;
+                            }
+                            #[cfg(feature = "host_first_split_wake")]
+                            Either::First(BleKeyboardExit::ConnectionParamsStalled) => {
+                                error!(
+                                    "BLE active connection parameters were not restored, disconnecting for a fail-closed reconnect"
+                                );
+
+                                // Reports produced while the host remained in
+                                // low-duty mode are stale; reconnect from a
+                                // clean all-up HID state.
                                 report_activity();
                                 prepare_hid_write_recovery();
 
@@ -1056,6 +1216,8 @@ enum BleKeyboardExit {
     Disconnected,
     IdleTimeout,
     HidWriteStalled,
+    #[cfg(feature = "host_first_split_wake")]
+    ConnectionParamsStalled,
 }
 
 /// Owns the temporary input subscriptions used only while a sleeping host is
@@ -1113,7 +1275,11 @@ struct HostLinkStartupPolicy {
     conn_params: HostConnParamBootstrap,
 }
 
-fn host_link_startup_policy(has_active_bond: bool, preserve_bonded_link: bool) -> HostLinkStartupPolicy {
+fn host_link_startup_policy(
+    has_active_bond: bool,
+    preserve_bonded_link: bool,
+    use_2m_phy: bool,
+) -> HostLinkStartupPolicy {
     if has_active_bond && preserve_bonded_link {
         HostLinkStartupPolicy {
             update_phy: false,
@@ -1121,7 +1287,7 @@ fn host_link_startup_policy(has_active_bond: bool, preserve_bonded_link: bool) -
         }
     } else {
         HostLinkStartupPolicy {
-            update_phy: true,
+            update_phy: use_2m_phy,
             conn_params: HostConnParamBootstrap::Legacy,
         }
     }
@@ -1174,10 +1340,283 @@ async fn wait_for_vial_activity() {
     core::future::pending::<()>().await;
 }
 
+#[cfg(feature = "host_first_split_wake")]
+const fn host_input_requires_active_confirmation(idle_connection: bool, _vial_active: bool) -> bool {
+    idle_connection
+}
+
 fn host_power_transition_allowed(active_transport: Option<ConnectionType>) -> bool {
     active_transport != Some(ConnectionType::Usb)
 }
 
+#[cfg(feature = "host_first_split_wake")]
+async fn set_conn_params<'a, 'b, C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>, P: PacketPool>(
+    stack: &Stack<'_, C, P>,
+    conn: &GattConnection<'a, 'b, P>,
+    host_power_config: Option<BleHostPowerConfig>,
+    bootstrap: HostConnParamBootstrap,
+) -> BleKeyboardExit {
+    // The guard also clears any stale pending value before bootstrap. Once the
+    // task enters host-power idle it owns the gate until confirmation or Drop.
+    let mut wake_order_session = HostWakeOrderSession::new();
+
+    if host_power_config.is_some() {
+        reset_host_power_input();
+        HOST_POWER_CONFIG_CHANGED.reset();
+    }
+
+    match bootstrap {
+        HostConnParamBootstrap::Legacy => info!("Fresh BLE session, applying current host connection parameters"),
+        HostConnParamBootstrap::BondedRefresh => {
+            info!("Bonded BLE session, refreshing host connection parameters")
+        }
+    }
+
+    #[cfg(feature = "host_fixed_15ms")]
+    let mut active_params = {
+        info!("[HOST_DIAG_V9] mode=fixed15 requested_interval_ms=15 requested_latency=0");
+        Timer::after_secs(5).await;
+        let target = HostConnParamsSnapshot {
+            interval: Duration::from_millis(15),
+            latency: HOST_INTERACTIVE_MAX_LATENCY,
+        };
+        match request_confirmed_active_params(
+            stack,
+            conn.raw(),
+            target,
+            0,
+            HOST_FIXED_CONN_PARAM_ATTEMPTS,
+            HOST_FIXED_CONN_PARAM_RETRY_MS,
+        )
+        .await
+        {
+            Some(applied) => applied,
+            None if host_power_config.is_some() => return BleKeyboardExit::ConnectionParamsStalled,
+            None => target,
+        }
+    };
+
+    #[cfg(not(feature = "host_fixed_15ms"))]
+    let mut active_params = {
+        // Ported narrowly from upstream RMK #1088. Apple hosts accept the first
+        // 15 ms request; other hosts can accept the later 7.5 ms request. Run the
+        // sequence for bonded sessions too so an old 15 ms bond can be upgraded
+        // without deleting the profile. The delay keeps link-control procedures
+        // away from pairing/encryption and mirrors the upstream timing.
+        let requests = host_bootstrap_connection_requests();
+        let mut fast_applied = None;
+        for (request_index, (interval, max_latency, supervision_timeout)) in requests.into_iter().enumerate() {
+            Timer::after_secs(5).await;
+            let mut params = host_connection_params(interval, max_latency);
+            params.supervision_timeout = supervision_timeout;
+            HOST_CONN_PARAMS_UPDATED.reset();
+            update_conn_params(stack, conn.raw(), &params).await;
+
+            if request_index == 1 {
+                fast_applied = with_timeout(
+                    Duration::from_secs(HOST_CONN_PARAM_UPDATE_TIMEOUT_SECS),
+                    HOST_CONN_PARAMS_UPDATED.wait(),
+                )
+                .await
+                .ok();
+            }
+        }
+
+        let target = host_interactive_target(fast_applied);
+        if host_requires_apple_safe_fallback(fast_applied) {
+            match fast_applied {
+                Some(snapshot) => info!(
+                    "Host retained {:?}ms latency {}; restoring 15ms latency 0",
+                    snapshot.interval.as_millis(),
+                    snapshot.latency
+                ),
+                None => info!("No 7.5ms parameter update observed; restoring 15ms latency 0"),
+            }
+        } else {
+            info!("Host accepted 7.5ms; removing bootstrap slave latency");
+        }
+
+        match request_confirmed_active_params(
+            stack,
+            conn.raw(),
+            target,
+            0,
+            HOST_ACTIVE_CONN_PARAM_ATTEMPTS,
+            HOST_ACTIVE_CONN_PARAM_RETRY_MS,
+        )
+        .await
+        {
+            Some(applied) => applied,
+            None if host_power_config.is_some() => return BleKeyboardExit::ConnectionParamsStalled,
+            None => target,
+        }
+    };
+
+    if let Some(config) = host_power_config {
+        let mut last_activity = Instant::now();
+        let mut last_vial_activity = last_activity;
+        let mut idle_connection = false;
+        let mut vial_active = false;
+
+        loop {
+            let (deadline, timer_action) =
+                next_host_power_timer(config, idle_connection, last_activity, vial_active, last_vial_activity);
+            let timer = async move {
+                Timer::at(deadline).await;
+                timer_action
+            };
+
+            match select4(
+                wait_for_host_power_input(),
+                HOST_POWER_CONFIG_CHANGED.wait(),
+                wait_for_vial_activity(),
+                timer,
+            )
+            .await
+            {
+                Either4::First(immediate_suspend) => {
+                    if immediate_suspend {
+                        set_ble_state(BleState::Sleeping);
+                        // The producer already signalled the persistent sleep
+                        // manager. Re-signalling here can overwrite a key's
+                        // concurrent activity notification in HOST_POWER_INPUT.
+                        return BleKeyboardExit::IdleTimeout;
+                    }
+
+                    last_activity = Instant::now();
+                    if host_input_requires_active_confirmation(idle_connection, vial_active) {
+                        info!("Host BLE activity, restoring active connection parameters");
+                        match request_confirmed_active_params(
+                            stack,
+                            conn.raw(),
+                            active_params,
+                            1,
+                            HOST_ACTIVE_CONN_PARAM_ATTEMPTS,
+                            HOST_ACTIVE_CONN_PARAM_RETRY_MS,
+                        )
+                        .await
+                        {
+                            Some(applied) => {
+                                active_params = applied;
+                                wake_order_session.open_after_confirmation(applied);
+                            }
+                            None => return BleKeyboardExit::ConnectionParamsStalled,
+                        }
+                    }
+                    idle_connection = false;
+                }
+                Either4::Second(()) => {
+                    // Preserve last_activity and recalculate the deadline from
+                    // the caller's updated runtime policy.
+                }
+                Either4::Third(()) => {
+                    let now = Instant::now();
+                    last_activity = now;
+                    last_vial_activity = now;
+                    if !vial_active || idle_connection {
+                        if idle_connection {
+                            match request_confirmed_active_params(
+                                stack,
+                                conn.raw(),
+                                active_params,
+                                2,
+                                HOST_ACTIVE_CONN_PARAM_ATTEMPTS,
+                                HOST_ACTIVE_CONN_PARAM_RETRY_MS,
+                            )
+                            .await
+                            {
+                                Some(applied) => {
+                                    active_params = applied;
+                                    wake_order_session.open_after_confirmation(applied);
+                                }
+                                None => return BleKeyboardExit::ConnectionParamsStalled,
+                            }
+                        } else {
+                            update_conn_params(
+                                stack,
+                                conn.raw(),
+                                &host_connection_params(active_params.interval, HOST_INTERACTIVE_MAX_LATENCY),
+                            )
+                            .await;
+                        }
+                    }
+                    vial_active = true;
+                    idle_connection = false;
+                }
+                Either4::Fourth(HostPowerTimer::VialIdle) => {
+                    vial_active = false;
+                    update_conn_params(
+                        stack,
+                        conn.raw(),
+                        &host_connection_params(active_params.interval, HOST_IDLE_MAX_LATENCY),
+                    )
+                    .await;
+                }
+                Either4::Fourth(HostPowerTimer::Power(HostPowerTransition::EnterIdle)) => {
+                    if !host_power_transition_allowed(crate::state::active_transport()) {
+                        info!("Host BLE idle transition deferred while USB is active");
+                        last_activity = Instant::now();
+                        continue;
+                    }
+
+                    let low_duty = host_low_duty_connection_params(active_params.interval);
+                    info!(
+                        "[HOST_IDLE_V26] state=request interval_us={} latency={} effective_us={}",
+                        low_duty.max_connection_interval.as_micros(),
+                        low_duty.max_latency,
+                        low_duty.max_connection_interval.as_micros() * (u64::from(low_duty.max_latency) + 1)
+                    );
+                    // Close before HCI submission so a concurrent keyboard
+                    // wake cannot observe a stale open gate in this window.
+                    wake_order_session.close_for_idle();
+                    update_conn_params(stack, conn.raw(), &low_duty).await;
+                    idle_connection = true;
+                }
+                Either4::Fourth(HostPowerTimer::Power(HostPowerTransition::Disconnect)) => {
+                    if !host_power_transition_allowed(crate::state::active_transport()) {
+                        info!("Host BLE disconnect deferred while USB is active");
+                        last_activity = Instant::now();
+                        continue;
+                    }
+
+                    set_ble_state(BleState::Sleeping);
+                    request_sleep();
+                    return BleKeyboardExit::IdleTimeout;
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "host")]
+    loop {
+        // Slave latency reduces radio duty while idle, but it also stretches
+        // every sequential Vial round trip. Switch only the configuration
+        // session to latency 0;
+        // repeated Vial traffic extends the session without polling.
+        VIAL_BLE_ACTIVITY.wait().await;
+        update_conn_params(
+            stack,
+            conn.raw(),
+            &host_active_connection_params(HOST_INTERACTIVE_MAX_LATENCY),
+        )
+        .await;
+
+        while with_timeout(
+            Duration::from_secs(VIAL_LINK_IDLE_TIMEOUT_SECS),
+            VIAL_BLE_ACTIVITY.wait(),
+        )
+        .await
+        .is_ok()
+        {}
+
+        update_conn_params(stack, conn.raw(), &host_active_connection_params(HOST_IDLE_MAX_LATENCY)).await;
+    }
+
+    #[cfg(not(feature = "host"))]
+    core::future::pending::<BleKeyboardExit>().await
+}
+
+#[cfg(not(feature = "host_first_split_wake"))]
 async fn set_conn_params<'a, 'b, C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>, P: PacketPool>(
     stack: &Stack<'_, C, P>,
     conn: &GattConnection<'a, 'b, P>,
@@ -1418,6 +1857,14 @@ fn host_connection_params(interval: Duration, max_latency: u16) -> RequestedConn
     }
 }
 
+#[cfg(feature = "host_first_split_wake")]
+fn host_low_duty_connection_params(active_interval: Duration) -> RequestedConnParams {
+    let interval_us = active_interval.as_micros().max(1);
+    let event_count = HOST_LOW_DUTY_EFFECTIVE_INTERVAL_US.saturating_add(interval_us - 1) / interval_us;
+    let max_latency = event_count.saturating_sub(1).min(u64::from(u16::MAX)) as u16;
+    host_connection_params(active_interval, max_latency)
+}
+
 fn host_active_connection_params(max_latency: u16) -> RequestedConnParams {
     #[cfg(feature = "host_fixed_15ms")]
     {
@@ -1439,6 +1886,93 @@ fn host_bootstrap_connection_requests() -> [(Duration, u16, Duration); 2] {
 
 fn host_requires_apple_safe_fallback(applied: Option<HostConnParamsSnapshot>) -> bool {
     applied.is_none_or(|snapshot| snapshot.interval > Duration::from_micros(7500))
+}
+
+#[cfg(feature = "host_first_split_wake")]
+fn host_interactive_target(applied_fast: Option<HostConnParamsSnapshot>) -> HostConnParamsSnapshot {
+    HostConnParamsSnapshot {
+        interval: if host_requires_apple_safe_fallback(applied_fast) {
+            Duration::from_millis(15)
+        } else {
+            Duration::from_micros(7500)
+        },
+        latency: HOST_INTERACTIVE_MAX_LATENCY,
+    }
+}
+
+#[cfg(feature = "host_first_split_wake")]
+fn host_active_params_confirmed(target: HostConnParamsSnapshot, applied: HostConnParamsSnapshot) -> bool {
+    applied.latency == HOST_INTERACTIVE_MAX_LATENCY && applied.interval <= target.interval
+}
+
+#[cfg(feature = "host_first_split_wake")]
+async fn request_confirmed_active_params<
+    'a,
+    'b,
+    C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    P: PacketPool,
+>(
+    stack: &Stack<'a, C, P>,
+    conn: &Connection<'b, P>,
+    target: HostConnParamsSnapshot,
+    phase: u8,
+    attempts: u8,
+    retry_ms: u64,
+) -> Option<HostConnParamsSnapshot> {
+    for attempt in 1..=attempts {
+        info!(
+            "[HOST_ACTIVE_V25] phase={} state=request interval_us={} latency={} attempt={}",
+            phase,
+            target.interval.as_micros(),
+            target.latency,
+            attempt
+        );
+        HOST_CONN_PARAMS_UPDATED.reset();
+        let submitted = update_conn_params(stack, conn, &host_connection_params(target.interval, target.latency)).await;
+
+        if submitted {
+            match with_timeout(
+                Duration::from_secs(HOST_CONN_PARAM_UPDATE_TIMEOUT_SECS),
+                HOST_CONN_PARAMS_UPDATED.wait(),
+            )
+            .await
+            {
+                Ok(applied) if host_active_params_confirmed(target, applied) => {
+                    info!(
+                        "[HOST_ACTIVE_V25] phase={} state=confirmed interval_us={} latency={} attempt={}",
+                        phase,
+                        applied.interval.as_micros(),
+                        applied.latency,
+                        attempt
+                    );
+                    return Some(applied);
+                }
+                Ok(applied) => warn!(
+                    "[HOST_ACTIVE_V25] phase={} state=mismatch interval_us={} latency={} attempt={}",
+                    phase,
+                    applied.interval.as_micros(),
+                    applied.latency,
+                    attempt
+                ),
+                Err(_) => warn!(
+                    "[HOST_ACTIVE_V25] phase={} state=confirmation_timeout attempt={}",
+                    phase, attempt
+                ),
+            }
+        } else {
+            warn!(
+                "[HOST_ACTIVE_V25] phase={} state=request_rejected attempt={}",
+                phase, attempt
+            );
+        }
+
+        if attempt < attempts {
+            Timer::after_millis(retry_ms).await;
+        }
+    }
+
+    error!("[HOST_ACTIVE_V25] phase={} state=not_confirmed", phase);
+    None
 }
 
 /// Seed the battery characteristic before the host can read it.
@@ -1755,6 +2289,12 @@ where
                     if let Err(exit) = write_ble_hid_report(writer, &report, fail_closed, None).await {
                         return exit;
                     }
+                    #[cfg(feature = "fixed_mouse_pacing_15ms")]
+                    {
+                        // Keyboard and consumer reports consume a host event
+                        // just like mouse notifications.
+                        next_mouse_slot = Some(fixed_mouse_pacing_deadline(Instant::now()));
+                    }
                     continue;
                 }
             }
@@ -1816,13 +2356,19 @@ where
             chunk_diag.residual_x,
             chunk_diag.residual_y,
         );
-        #[cfg(feature = "mouse_interval_control")]
+        #[cfg(all(feature = "mouse_interval_control", not(feature = "fixed_mouse_pacing_15ms")))]
         {
             next_mouse_slot = Some(Instant::now() + MOUSE_CONTROL_INTERVAL);
         }
 
         if let Err(exit) = write_ble_hid_report(writer, &report, fail_closed, Some(mouse_diag)).await {
             return exit;
+        }
+        #[cfg(feature = "fixed_mouse_pacing_15ms")]
+        {
+            // Start the next slot after completion so slow GATT writes cannot
+            // create an expired deadline and an immediate catch-up report.
+            next_mouse_slot = Some(fixed_mouse_pacing_deadline(Instant::now()));
         }
     }
 }
@@ -2234,8 +2780,12 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use embassy_futures::join::join;
+    #[cfg(feature = "host_first_split_wake")]
+    use embassy_futures::join::join3;
     use embassy_futures::select::{Either, select};
     use embassy_sync::signal::Signal;
+    #[cfg(feature = "host_first_split_wake")]
+    use embassy_sync::watch::Watch;
     use embassy_time::{Duration, Instant, Timer};
     use rmk_types::battery::{BatteryStatus, ChargeState};
     use rmk_types::ble::{BleState, BleStatus};
@@ -2397,7 +2947,7 @@ mod tests {
     #[test]
     fn fresh_session_always_keeps_the_production_link_bootstrap() {
         assert_eq!(
-            host_link_startup_policy(false, true),
+            host_link_startup_policy(false, true, true),
             HostLinkStartupPolicy {
                 update_phy: true,
                 conn_params: HostConnParamBootstrap::Legacy,
@@ -2408,7 +2958,7 @@ mod tests {
     #[test]
     fn bonded_host_power_session_refreshes_params_without_repeating_phy_update() {
         assert_eq!(
-            host_link_startup_policy(true, true),
+            host_link_startup_policy(true, true, true),
             HostLinkStartupPolicy {
                 update_phy: false,
                 conn_params: HostConnParamBootstrap::BondedRefresh,
@@ -2419,9 +2969,20 @@ mod tests {
     #[test]
     fn bonded_session_without_host_power_policy_uses_legacy_bootstrap() {
         assert_eq!(
-            host_link_startup_policy(true, false),
+            host_link_startup_policy(true, false, true),
             HostLinkStartupPolicy {
                 update_phy: true,
+                conn_params: HostConnParamBootstrap::Legacy,
+            }
+        );
+    }
+
+    #[test]
+    fn disabled_2m_phy_is_preserved_for_fresh_sessions() {
+        assert_eq!(
+            host_link_startup_policy(false, true, false),
+            HostLinkStartupPolicy {
+                update_phy: false,
                 conn_params: HostConnParamBootstrap::Legacy,
             }
         );
@@ -2484,6 +3045,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "host_first_split_wake"))]
     #[test]
     fn vial_interactive_connection_params_remove_only_slave_latency() {
         let idle = super::host_connection_params(Duration::from_micros(7500), super::HOST_IDLE_MAX_LATENCY);
@@ -2521,6 +3083,103 @@ mod tests {
             latency: 30,
         })));
         assert!(host_requires_apple_safe_fallback(None));
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn interactive_target_uses_zero_latency_and_the_host_supported_interval() {
+        use super::{HostConnParamsSnapshot, host_interactive_target};
+
+        assert_eq!(
+            host_interactive_target(Some(HostConnParamsSnapshot {
+                interval: Duration::from_micros(7500),
+                latency: 60,
+            })),
+            HostConnParamsSnapshot {
+                interval: Duration::from_micros(7500),
+                latency: 0,
+            }
+        );
+        assert_eq!(
+            host_interactive_target(Some(HostConnParamsSnapshot {
+                interval: Duration::from_millis(15),
+                latency: 30,
+            })),
+            HostConnParamsSnapshot {
+                interval: Duration::from_millis(15),
+                latency: 0,
+            }
+        );
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn active_parameters_require_zero_latency_and_no_slower_interval() {
+        use super::{HostConnParamsSnapshot, host_active_params_confirmed};
+
+        let target = HostConnParamsSnapshot {
+            interval: Duration::from_millis(15),
+            latency: 0,
+        };
+        assert!(host_active_params_confirmed(target, target));
+        assert!(host_active_params_confirmed(
+            target,
+            HostConnParamsSnapshot {
+                interval: Duration::from_micros(7500),
+                latency: 0,
+            }
+        ));
+        assert!(!host_active_params_confirmed(
+            target,
+            HostConnParamsSnapshot {
+                interval: Duration::from_millis(15),
+                latency: 1,
+            }
+        ));
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn host_input_reconfirms_idle_connection_even_while_vial_is_active() {
+        assert!(super::host_input_requires_active_confirmation(true, true));
+        assert!(super::host_input_requires_active_confirmation(true, false));
+        assert!(!super::host_input_requires_active_confirmation(false, true));
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn host_confirmation_and_session_end_open_wake_order_gate() {
+        use super::{HostWakeOrderEvent, HostWakeOrderGate, HostWakeOrderSession, next_host_wake_order_gate};
+
+        assert_eq!(
+            next_host_wake_order_gate(HostWakeOrderGate::Open, HostWakeOrderEvent::HostEnteredIdle),
+            HostWakeOrderGate::Pending
+        );
+        assert_eq!(
+            next_host_wake_order_gate(HostWakeOrderGate::Pending, HostWakeOrderEvent::HostActiveConfirmed),
+            HostWakeOrderGate::Open
+        );
+        let gate: Watch<crate::RawMutex, HostWakeOrderGate, 1> = Watch::new_with(HostWakeOrderGate::Open);
+        let mut session = HostWakeOrderSession::new_on(&gate);
+        session.close_for_idle();
+        assert_eq!(gate.try_get(), Some(HostWakeOrderGate::Pending));
+        drop(session);
+        assert_eq!(gate.try_get(), Some(HostWakeOrderGate::Open));
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn host_confirmation_releases_existing_and_late_split_waiters() {
+        use super::{HostWakeOrderGate, wait_for_host_wake_order_gate_on};
+
+        let gate: Watch<crate::RawMutex, HostWakeOrderGate, 2> = Watch::new_with(HostWakeOrderGate::Pending);
+        block_on(async {
+            let first = wait_for_host_wake_order_gate_on(&gate);
+            let second = wait_for_host_wake_order_gate_on(&gate);
+            let confirm = async { gate.sender().send(HostWakeOrderGate::Open) };
+            join3(first, second, confirm).await;
+            wait_for_host_wake_order_gate_on(&gate).await;
+        });
     }
 
     #[cfg(feature = "host_fixed_15ms")]
@@ -2580,6 +3239,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "host_first_split_wake"))]
     #[test]
     fn low_duty_connection_params_use_a_longer_interval() {
         let active = super::host_connection_params(Duration::from_micros(7500), super::HOST_IDLE_MAX_LATENCY);
@@ -2589,6 +3249,23 @@ mod tests {
         assert!(low_duty.is_valid());
         assert!(low_duty.min_connection_interval > active.min_connection_interval);
         assert_eq!(low_duty.max_latency, active.max_latency);
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn low_duty_connection_params_keep_active_anchor_and_150ms_cadence() {
+        for (interval, expected_latency) in [(Duration::from_micros(7500), 19), (Duration::from_millis(15), 9)] {
+            let low_duty = super::host_low_duty_connection_params(interval);
+
+            assert!(low_duty.is_valid());
+            assert_eq!(low_duty.min_connection_interval, interval);
+            assert_eq!(low_duty.max_connection_interval, interval);
+            assert_eq!(low_duty.max_latency, expected_latency);
+            assert_eq!(
+                low_duty.max_connection_interval.as_micros() * (u64::from(low_duty.max_latency) + 1),
+                super::HOST_LOW_DUTY_EFFECTIVE_INTERVAL_US
+            );
+        }
     }
 
     #[test]
@@ -2710,6 +3387,19 @@ mod tests {
         assert_eq!(chunk.buttons, 1);
         assert_eq!((chunk.x, chunk.y, chunk.wheel, chunk.pan), (90, -50, 5, -4));
         assert!(!accumulated.has_relative_motion());
+    }
+
+    #[cfg(feature = "fixed_mouse_pacing_15ms")]
+    #[test]
+    fn fixed_mouse_pacing_uses_completion_time_and_one_host_event() {
+        let write_started = Instant::from_millis(100);
+        let completed_at = write_started + Duration::from_millis(38);
+        let deadline = super::fixed_mouse_pacing_deadline(completed_at);
+
+        assert!(cfg!(feature = "mouse_vector_preserve"));
+        assert_eq!(super::MOUSE_CONTROL_INTERVAL, Duration::from_millis(15));
+        assert_eq!(deadline, completed_at + Duration::from_millis(15));
+        assert!(deadline > write_started + Duration::from_millis(15));
     }
 
     #[test]
