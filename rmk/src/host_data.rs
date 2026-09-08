@@ -8,10 +8,10 @@ use crate::RawMutex;
 
 const UNKNOWN: u8 = u8::MAX;
 const HOST_TEXT_LEN: usize = 32;
-/// The agent feed is pushed by a host daemon that can die or lose the socket it
-/// watches. Without an expiry the display would keep showing a stale "1 working"
-/// forever, so treat anything older than this as "no data".
-const AGENTS_TTL: Duration = Duration::from_secs(30);
+/// The agent and usage feeds are pushed by a host daemon that can die or lose
+/// the socket it watches. Without an expiry the display would keep showing a
+/// stale "1 working" forever, so treat anything older than this as "no data".
+const HOST_FEED_TTL: Duration = Duration::from_secs(30);
 
 static HOST_HOUR: AtomicU8 = AtomicU8::new(UNKNOWN);
 static HOST_MINUTE: AtomicU8 = AtomicU8::new(UNKNOWN);
@@ -21,6 +21,7 @@ static HOST_MEDIA_ARTIST: Mutex<RawMutex, RefCell<heapless::String<HOST_TEXT_LEN
 static HOST_MEDIA_TITLE: Mutex<RawMutex, RefCell<heapless::String<HOST_TEXT_LEN>>> =
     Mutex::new(RefCell::new(heapless::String::new()));
 static HOST_AGENTS: Mutex<RawMutex, RefCell<Option<AgentSnapshot>>> = Mutex::new(RefCell::new(None));
+static HOST_USAGE: Mutex<RawMutex, RefCell<Option<UsageSnapshot>>> = Mutex::new(RefCell::new(None));
 
 /// How many host-side coding agents sit in each state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,9 +33,25 @@ pub struct AgentSummary {
     pub unknown: u8,
 }
 
+/// How much of each Claude subscription window the host has burned through, in
+/// percent. A window the host cannot report stays `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UsageSummary {
+    /// Rolling 5-hour session limit.
+    pub five_hour: Option<u8>,
+    /// 7-day limit.
+    pub seven_day: Option<u8>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AgentSnapshot {
     summary: AgentSummary,
+    received: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UsageSnapshot {
+    summary: UsageSummary,
     received: Instant,
 }
 
@@ -47,6 +64,8 @@ pub struct HostData {
     pub media_title: heapless::String<HOST_TEXT_LEN>,
     /// `None` while no agent packet has arrived, or once the last one expired.
     pub agents: Option<AgentSummary>,
+    /// `None` while no usage packet has arrived, or once the last one expired.
+    pub usage: Option<UsageSummary>,
 }
 
 pub fn update_time(hour: u8, minute: u8) {
@@ -83,6 +102,14 @@ pub fn update_agents(summary: AgentSummary) {
     HOST_AGENTS.lock(|cell| cell.replace(Some(snapshot)));
 }
 
+pub fn update_usage(summary: UsageSummary) {
+    let snapshot = UsageSnapshot {
+        summary,
+        received: Instant::now(),
+    };
+    HOST_USAGE.lock(|cell| cell.replace(Some(snapshot)));
+}
+
 pub fn snapshot() -> HostData {
     HostData {
         hour: known(HOST_HOUR.load(Ordering::Relaxed)),
@@ -92,7 +119,11 @@ pub fn snapshot() -> HostData {
         media_title: HOST_MEDIA_TITLE.lock(|cell| cell.borrow().clone()),
         agents: HOST_AGENTS.lock(|cell| {
             let snapshot = (*cell.borrow())?;
-            (snapshot.received.elapsed() < AGENTS_TTL).then_some(snapshot.summary)
+            (snapshot.received.elapsed() < HOST_FEED_TTL).then_some(snapshot.summary)
+        }),
+        usage: HOST_USAGE.lock(|cell| {
+            let snapshot = (*cell.borrow())?;
+            (snapshot.received.elapsed() < HOST_FEED_TTL).then_some(snapshot.summary)
         }),
     }
 }

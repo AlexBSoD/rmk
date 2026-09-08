@@ -21,7 +21,7 @@ use embassy_nrf::spim::{self, Spim};
 use embassy_nrf::{Peri, interrupt};
 use embassy_time::{Delay, Duration, Instant, Timer};
 use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_8X13, FONT_9X15};
+use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_8X13};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle};
@@ -64,9 +64,18 @@ const SAFE_W: u32 = SCREEN_W as u32 - (SAFE_X as u32 * 2);
 const PANEL_RADIUS: u32 = 14;
 const BAR_RADIUS: u32 = 5;
 
+/// Header band: the two Claude Code limit bars, stacked.
+const LIMIT_Y: i32 = 10;
+const LIMIT_ROW_H: i32 = 20;
+const LIMIT_ROW_GAP: i32 = 4;
+/// Room reserved inside a row for the window label and for the percentage.
+const LIMIT_LABEL_W: i32 = 24;
+const LIMIT_PCT_W: i32 = 34;
+const LIMIT_TRACK_H: u32 = 10;
+
 /// Body band below the header: agent grid flanked by the two battery columns.
-const BODY_Y: i32 = 50;
-const BODY_H: u32 = 182;
+const BODY_Y: i32 = 60;
+const BODY_H: u32 = 174;
 /// Width of a per-half battery column. Position (far left / far right) is what
 /// says which half a column belongs to, so they carry no L/R letter.
 const SIDE_W: u32 = 28;
@@ -82,11 +91,11 @@ const AGENT_CELL_W: i32 = AGENT_W as i32 / 2;
 const AGENT_CELL_H: i32 = BODY_H as i32 / 2;
 /// Title top and count centre, relative to the top of a cell.
 const AGENT_LABEL_DY: i32 = 12;
-const AGENT_COUNT_DY: i32 = 58;
+const AGENT_COUNT_DY: i32 = 54;
 
-const HEADER_DIRTY: DirtyRegion = DirtyRegion::range(12, 44);
+const HEADER_DIRTY: DirtyRegion = DirtyRegion::range(8, 56);
 /// Agents and batteries now share one band, so both repaint together.
-const BODY_DIRTY: DirtyRegion = DirtyRegion::range(48, 234);
+const BODY_DIRTY: DirtyRegion = DirtyRegion::range(58, 236);
 
 const COL_BG: Rgb565 = Rgb565::new(0, 2, 4);
 const COL_FG: Rgb565 = Rgb565::new(29, 61, 30);
@@ -94,6 +103,7 @@ const COL_MUTED: Rgb565 = Rgb565::new(11, 24, 20);
 const COL_DIM: Rgb565 = Rgb565::new(5, 12, 14);
 const COL_ACCENT: Rgb565 = Rgb565::new(3, 38, 31);
 const COL_YELLOW: Rgb565 = Rgb565::new(31, 50, 0);
+const COL_ORANGE: Rgb565 = Rgb565::new(31, 28, 0);
 const COL_RED: Rgb565 = Rgb565::new(31, 5, 5);
 const COL_BAR_BG: Rgb565 = Rgb565::new(2, 7, 9);
 const COL_BAR_FG: Rgb565 = Rgb565::new(3, 42, 30);
@@ -380,7 +390,6 @@ where
     renderer: QubeStatusRenderer,
     ctx: RenderContext,
     last_host_data: rmk::host_data::HostData,
-    last_layer_names_version: u8,
     last_render: Instant,
     pending: bool,
     dirty: DirtyRegion,
@@ -424,7 +433,6 @@ where
         },
         ctx: RenderContext::default(),
         last_host_data: host_data,
-        last_layer_names_version: crate::layer_names::version(),
         last_render: Instant::from_ticks(0),
         pending: true,
         dirty: DirtyRegion::Full,
@@ -440,7 +448,6 @@ where
 {
     async fn redraw(&mut self) {
         self.sync_host_data();
-        self.sync_layer_names();
         let now = Instant::now();
         if now.duration_since(self.last_render) < self.min_interval {
             self.pending = true;
@@ -477,27 +484,24 @@ where
         if host_data == self.last_host_data {
             return;
         }
-        // The agent panel and the clock live in different bands; repainting
-        // both on every clock minute would drag the whole frame through SPI.
+        // The limit bars and the agent panel live in different bands, and the
+        // host also feeds fields this screen does not show (clock, media), so a
+        // changed snapshot is not by itself a reason to push pixels over SPI.
         let dirty = match (
             host_data.agents != self.last_host_data.agents,
-            host_data.hour != self.last_host_data.hour || host_data.minute != self.last_host_data.minute,
+            host_data.usage != self.last_host_data.usage,
         ) {
             (true, true) => HEADER_DIRTY.union(BODY_DIRTY),
             (true, false) => BODY_DIRTY,
-            _ => HEADER_DIRTY,
+            (false, true) => HEADER_DIRTY,
+            (false, false) => {
+                self.last_host_data = host_data;
+                return;
+            }
         };
         self.last_host_data = host_data.clone();
         self.renderer.host_data = host_data;
         self.request_redraw_region(dirty);
-    }
-
-    fn sync_layer_names(&mut self) {
-        let version = crate::layer_names::version();
-        if version != self.last_layer_names_version {
-            self.last_layer_names_version = version;
-            self.request_redraw_region(HEADER_DIRTY);
-        }
     }
 }
 
@@ -688,9 +692,10 @@ where
         // keys — skip redraw for those so multipass can keep up with layer.
         let mut need_redraw = true;
         match ev {
+            // The screen no longer names the active layer, but the context is
+            // what a renderer would read if it ever does again.
             UiEv::Layer(e) => {
                 self.ctx.layer = e.0;
-                self.request_redraw_region(HEADER_DIRTY);
                 need_redraw = false;
             }
             UiEv::Wpm(e) => {
@@ -734,7 +739,6 @@ where
             UiEv::Central(e) => self.ctx.central_connected = e.connected,
             UiEv::HostDataTick => {
                 self.sync_host_data();
-                self.sync_layer_names();
                 need_redraw = false;
             }
         }
@@ -765,9 +769,9 @@ where
 // --- Full-screen UI ---------------------------------------------------------
 //
 // Fixed zones (280x240) so nothing overlaps:
-//   14..42            compact header (host clock + active layer)
-//   50..232, x 18/234 per-half battery gauges, one on each side
-//   50..232, centre   host agent summary — the reason to glance at this screen
+//   10..54            Claude Code limit bars (5-hour window over 7-day)
+//   60..234, x 18/234 per-half battery gauges, one on each side
+//   60..234, centre   host agent summary — the reason to glance at this screen
 
 pub struct QubeStatusRenderer {
     host_data: rmk::host_data::HostData,
@@ -777,13 +781,6 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
     fn render<D: DrawTarget<Color = Rgb565>>(&mut self, ctx: &RenderContext, display: &mut D) {
         let _ = display.clear(COL_BG);
 
-        let clock = MonoTextStyle::new(&FONT_9X15, COL_FG);
-        let layer_title = U8g2TextStyle::new(fonts::u8g2_font_8x13_t_cyrillic, COL_ACCENT);
-        let top = TextStyleBuilder::new().baseline(Baseline::Top).build();
-        let tr = TextStyleBuilder::new()
-            .alignment(Alignment::Right)
-            .baseline(Baseline::Top)
-            .build();
         let mc = TextStyleBuilder::new()
             .alignment(Alignment::Center)
             .baseline(Baseline::Middle)
@@ -792,21 +789,10 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         let right = ctx.peripherals_connected.get(1).copied().unwrap_or(false);
         let lp = battery_reading(ctx.peripheral_batteries.first().map(|b| b.0));
         let rp = battery_reading(ctx.peripheral_batteries.get(1).map(|b| b.0));
-        let mut layer_name_buf = crate::layer_names::LayerNameString::new();
-        let name = if crate::layer_names::copy_layer_name(ctx.layer, &mut layer_name_buf) {
-            layer_name_buf.as_str()
-        } else {
-            layer_name(ctx.layer)
-        };
-
-        // Header: clock on the left, active layer on the right.
-        draw_panel(display, SAFE_X, 14, SAFE_W, 28, COL_PANEL, COL_BORDER_DIM, PANEL_RADIUS);
-        draw_round_fill(display, SAFE_X + 11, 23, 3, 10, 2, COL_ACCENT);
-        let mut s: heapless::String<16> = heapless::String::new();
-        push_host_time(&mut s, self.host_data.hour, self.host_data.minute);
-        let _ = Text::with_text_style(&s, Point::new(SAFE_X + 22, 21), clock, top).draw(display);
-        let _ =
-            Text::with_text_style(name, Point::new(SAFE_X + SAFE_W as i32 - 14, 21), &layer_title, tr).draw(display);
+        // Header: how much of each Claude Code window is already spent.
+        let usage = self.host_data.usage.unwrap_or_default();
+        draw_limit_bar(display, LIMIT_Y, "5H", usage.five_hour);
+        draw_limit_bar(display, LIMIT_Y + LIMIT_ROW_H + LIMIT_ROW_GAP, "7D", usage.seven_day);
 
         // Per-half battery gauges: left column = left half, right = right half.
         draw_bat_column(display, LEFT_BAT_X, lp, left);
@@ -859,6 +845,67 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
                     .draw(display);
             }
         }
+    }
+}
+
+/// One usage window: label, track filling left to right, percentage on the right.
+/// `pct` is `None` while the host feed is quiet, and the row then reads as an
+/// empty dimmed track rather than as a confident 0%.
+fn draw_limit_bar<D: DrawTarget<Color = Rgb565>>(display: &mut D, y: i32, label: &str, pct: Option<u8>) {
+    let cy = y + LIMIT_ROW_H / 2;
+    let ml = TextStyleBuilder::new().baseline(Baseline::Middle).build();
+    let mr = TextStyleBuilder::new()
+        .alignment(Alignment::Right)
+        .baseline(Baseline::Middle)
+        .build();
+
+    let label_col = if pct.is_some() { COL_MUTED } else { COL_DIM };
+    let _ = Text::with_text_style(
+        label,
+        Point::new(SAFE_X, cy),
+        MonoTextStyle::new(&FONT_6X10, label_col),
+        ml,
+    )
+    .draw(display);
+
+    let mut reading: heapless::String<8> = heapless::String::new();
+    match pct {
+        Some(pct) => {
+            let _ = write!(&mut reading, "{}%", pct);
+        }
+        None => {
+            let _ = reading.push_str("--");
+        }
+    }
+    let reading_col = if pct.is_some() { COL_FG } else { COL_DIM };
+    let _ = Text::with_text_style(
+        &reading,
+        Point::new(SAFE_X + SAFE_W as i32, cy),
+        MonoTextStyle::new(&FONT_6X10, reading_col),
+        mr,
+    )
+    .draw(display);
+
+    let tx = SAFE_X + LIMIT_LABEL_W;
+    let tw = SAFE_W - (LIMIT_LABEL_W + LIMIT_PCT_W) as u32;
+    let ty = cy - LIMIT_TRACK_H as i32 / 2;
+    let track = RoundedRectangle::with_equal_corners(
+        Rectangle::new(Point::new(tx, ty), Size::new(tw, LIMIT_TRACK_H)),
+        Size::new(BAR_RADIUS, BAR_RADIUS),
+    );
+    let track_style = PrimitiveStyleBuilder::new()
+        .fill_color(COL_BAR_BG)
+        .stroke_color(COL_BORDER)
+        .stroke_width(1)
+        .build();
+    let _ = track.into_styled(track_style).draw(display);
+
+    // A window barely touched still gets a visible stub, so an alive feed never
+    // looks like a dead one.
+    if let Some(pct) = pct.filter(|pct| *pct > 0) {
+        let inner = tw - 4;
+        let fill = (inner * pct as u32 / 100).max(2);
+        draw_round_fill(display, tx + 2, ty + 2, fill, LIMIT_TRACK_H - 4, 3, COL_ORANGE);
     }
 }
 
@@ -1023,21 +1070,6 @@ fn draw_bat_column<D: DrawTarget<Color = Rgb565>>(display: &mut D, x: i32, readi
                 COL_BAR_FG
             };
             draw_round_fill(display, bx + 2, by + 2 + (inner - fh) as i32, bw - 4, fh, 3, fc);
-        }
-    }
-}
-
-fn layer_name(layer: u8) -> &'static str {
-    crate::DEFAULT_LAYER_NAMES.get(layer as usize).copied().unwrap_or("?")
-}
-
-fn push_host_time(buffer: &mut heapless::String<16>, hour: Option<u8>, minute: Option<u8>) {
-    match (hour, minute) {
-        (Some(hour), Some(minute)) => {
-            let _ = write!(buffer, "{:02}:{:02}", hour, minute);
-        }
-        _ => {
-            let _ = buffer.push_str("--:--");
         }
     }
 }
