@@ -8,6 +8,8 @@ use rmk_macro::{input_device, processor};
 #[cfg(feature = "split")]
 use rmk_types::action::Action;
 use rmk_types::keycode::HidKeyCode;
+#[cfg(feature = "split")]
+use rmk_types::keycode::KeyCode;
 use usbd_hid::descriptor::MouseReport;
 
 use crate::channel::{send_hid_mouse_report, send_hid_report};
@@ -668,6 +670,7 @@ const QUBE_TOUCH_LEFT_BUTTON: u8 = 1 << 0;
 const QUBE_TOUCH_RIGHT_BUTTON: u8 = 1 << 1;
 const QUBE_AUTO_LAYER_TIMEOUT_MS_TABLE: [u32; 6] = [250, 500, 750, 1000, 1250, 1500];
 const QUBE_DEFAULT_AUTO_LAYER_TIMEOUT_INDEX: u8 = 1;
+const QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT: u8 = 7;
 const QUBE_FLAG_LEFT_INVERT_SCROLL_Y: u8 = 1 << 0;
 const QUBE_FLAG_RIGHT_INVERT_SCROLL_Y: u8 = 1 << 1;
 const QUBE_FLAG_LEFT_INVERT_TEXT_Y: u8 = 1 << 2;
@@ -798,6 +801,10 @@ impl QubePointingSettings {
 
     fn auto_layer_timeout_ms(&self) -> u32 {
         QUBE_AUTO_LAYER_TIMEOUT_MS_TABLE[usize::from(self.auto_layer_timeout_index.min(5))]
+    }
+
+    fn deactivate_auto_layer_on_key(&self) -> bool {
+        (self.auto_flags & (1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT)) != 0
     }
 
     fn acceleration(&self, side: usize) -> bool {
@@ -940,6 +947,14 @@ impl<'a> QubePointingModeProcessor<'a> {
     }
 
     async fn on_action_event(&mut self, event: ActionEvent) {
+        if event.keyboard_event.pressed
+            && self.active_auto_layer != QUBE_AUTO_LAYER_NONE
+            && self.settings.deactivate_auto_layer_on_key()
+            && qube_action_deactivates_auto_layer(event.action)
+        {
+            self.deactivate_auto_layer();
+        }
+
         let Action::User(id) = event.action else {
             return;
         };
@@ -1139,6 +1154,27 @@ impl<'a> QubePointingModeProcessor<'a> {
         if previous != QUBE_AUTO_LAYER_NONE && previous != 0 {
             self.keymap.deactivate_layer_if_active(previous);
         }
+    }
+}
+
+/// Does this resolved action deactivate the auto layer when `deactivate_on_key` is set?
+///
+/// Mirrors the classification in [`crate::keyboard::auto_mouse_layer`], minus
+/// `extra_mouse_keys`: the Qube auto layer is configured over Vial QMK settings,
+/// which cannot carry a keycode list.
+#[cfg(feature = "split")]
+fn qube_action_deactivates_auto_layer(action: Action) -> bool {
+    match action {
+        // The repeated keycode is unknown here; treat as unclassifiable so a
+        // repeated mouse key is not misclassified as non-mouse.
+        Action::Key(KeyCode::Hid(HidKeyCode::Again)) => false,
+        Action::Key(KeyCode::Hid(hid)) => !hid.is_mouse_key(),
+        Action::Key(_) => true,
+        Action::KeyWithModifier(hid, _) | Action::OneShotKey(hid) => !hid.is_mouse_key(),
+        Action::Modifier(modifiers) => modifiers.into_bits() != 0,
+        // Unclassifiable (layer switches, macros, pointer-mode user keys, ...):
+        // leave the layer intact; the timeout path handles it.
+        _ => false,
     }
 }
 
@@ -1625,6 +1661,53 @@ mod tests {
         assert!(!settings.auto_layer_enabled(QubePointingMode::Sniper));
         assert!(!settings.auto_layer_enabled(QubePointingMode::Scroll));
         assert!(!settings.auto_layer_enabled(QubePointingMode::Text));
+    }
+
+    #[test]
+    fn qube_deactivate_on_key_is_independent_of_the_four_mode_flags() {
+        let mut settings = QubePointingSettings::new();
+
+        settings.auto_flags = 0b1111;
+        assert!(!settings.deactivate_auto_layer_on_key());
+
+        settings.auto_flags = 1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT;
+        assert!(settings.deactivate_auto_layer_on_key());
+        assert!(!settings.auto_layer_enabled(QubePointingMode::Normal));
+    }
+
+    #[cfg(feature = "split")]
+    #[test]
+    fn qube_key_classification_spares_mouse_keys_and_unclassifiable_actions() {
+        use rmk_types::modifier::ModifierCombination;
+
+        // Mouse keys on the auto layer must not tear it down.
+        for hid in [HidKeyCode::MouseUp, HidKeyCode::MouseBtn1, HidKeyCode::MouseAccel2] {
+            assert!(!qube_action_deactivates_auto_layer(Action::Key(KeyCode::Hid(hid))));
+            assert!(!qube_action_deactivates_auto_layer(Action::OneShotKey(hid)));
+        }
+
+        // A repeated keycode is unknown here, so it must not be treated as non-mouse.
+        assert!(!qube_action_deactivates_auto_layer(Action::Key(KeyCode::Hid(
+            HidKeyCode::Again
+        ))));
+
+        // Ordinary typing tears the layer down.
+        assert!(qube_action_deactivates_auto_layer(Action::Key(KeyCode::Hid(
+            HidKeyCode::A
+        ))));
+        assert!(qube_action_deactivates_auto_layer(Action::KeyWithModifier(
+            HidKeyCode::A,
+            ModifierCombination::new()
+        )));
+        assert!(qube_action_deactivates_auto_layer(Action::Modifier(
+            ModifierCombination::new().with_left_ctrl(true)
+        )));
+
+        // Unclassifiable actions leave the layer to the timeout path. The Qube
+        // pointer-mode keys are `Action::User`, so sniper/scroll/text keep it.
+        assert!(!qube_action_deactivates_auto_layer(Action::User(QUBE_USER_SNIPER)));
+        assert!(!qube_action_deactivates_auto_layer(Action::LayerOn(3)));
+        assert!(!qube_action_deactivates_auto_layer(Action::No));
     }
 
     #[test]
