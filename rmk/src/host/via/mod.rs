@@ -29,6 +29,10 @@ const HOST_DATA_MEDIA_ARTIST: u8 = 0xAD;
 const HOST_DATA_MEDIA_TITLE: u8 = 0xAE;
 const HOST_DATA_AGENTS: u8 = 0xB0;
 const HOST_DATA_AGENTS_VERSION: u8 = 0x01;
+const HOST_DATA_USAGE: u8 = 0xB1;
+const HOST_DATA_USAGE_VERSION: u8 = 0x01;
+/// A window the host daemon could not read at all, as opposed to one sitting at 0%.
+const HOST_DATA_USAGE_UNKNOWN: u8 = 0xFF;
 const ERGOHAVEN_CUSTOM_NAMESPACE: u8 = 0xE8;
 const ERGOHAVEN_CUSTOM_BATTERY_HALVES: u8 = 0x01;
 const ERGOHAVEN_BATTERY_HALVES_VERSION: u8 = 0x01;
@@ -96,9 +100,25 @@ fn process_host_data_packet(data: &[u8; 32]) -> bool {
             // let it fall through and get answered as a Via command.
             true
         }
+        // [1] version, [2] 5-hour window, [3] 7-day window, both in percent.
+        HOST_DATA_USAGE => {
+            if data[1] == HOST_DATA_USAGE_VERSION {
+                crate::host_data::update_usage(crate::host_data::UsageSummary {
+                    five_hour: usage_percent(data[2]),
+                    seven_day: usage_percent(data[3]),
+                });
+            }
+            true
+        }
         HOST_DATA_VOLUME => true,
         _ => false,
     }
+}
+
+/// The host reports whole percent, so anything above 100 is a daemon bug rather
+/// than a reading; clamp it so the bar cannot overflow its track.
+fn usage_percent(value: u8) -> Option<u8> {
+    (value != HOST_DATA_USAGE_UNKNOWN).then(|| value.min(100))
 }
 
 fn host_data_text(data: &[u8; 32]) -> &str {
@@ -1355,5 +1375,52 @@ mod tests {
         assert!(crate::host_data::snapshot().agents.is_some());
         embassy_time::MockDriver::get().advance(embassy_time::Duration::from_secs(31));
         assert_eq!(crate::host_data::snapshot().agents, None);
+    }
+
+    fn usage_packet(version: u8, five_hour: u8, seven_day: u8) -> [u8; 32] {
+        let mut data = [0u8; 32];
+        data[0] = HOST_DATA_USAGE;
+        data[1] = version;
+        data[2] = five_hour;
+        data[3] = seven_day;
+        data
+    }
+
+    #[test]
+    fn usage_packet_lands_in_the_host_snapshot() {
+        assert!(process_host_data_packet(&usage_packet(HOST_DATA_USAGE_VERSION, 24, 2)));
+        assert_eq!(
+            crate::host_data::snapshot().usage,
+            Some(crate::host_data::UsageSummary {
+                five_hour: Some(24),
+                seven_day: Some(2),
+            })
+        );
+    }
+
+    #[test]
+    fn usage_packet_marks_a_window_the_host_could_not_read() {
+        assert!(process_host_data_packet(&usage_packet(
+            HOST_DATA_USAGE_VERSION,
+            HOST_DATA_USAGE_UNKNOWN,
+            180
+        )));
+        assert_eq!(
+            crate::host_data::snapshot().usage,
+            Some(crate::host_data::UsageSummary {
+                five_hour: None,
+                seven_day: Some(100),
+            })
+        );
+    }
+
+    #[test]
+    fn usage_packet_from_a_newer_daemon_is_swallowed_without_updating_state() {
+        assert!(process_host_data_packet(&usage_packet(
+            HOST_DATA_USAGE_VERSION + 1,
+            50,
+            50
+        )));
+        assert_eq!(crate::host_data::snapshot().usage, None);
     }
 }

@@ -77,9 +77,13 @@ The Qube dongle's ST7789 screen is laid out in three fixed zones over the
 
 | Zone | Content |
 |------|---------|
-| `y 14..42` | header — host clock on the left, active layer name on the right |
-| `y 50..232`, `x 18` / `x 234` | per-half battery gauges, left column = left half |
-| `y 50..232`, centre | host agent summary, the reason to glance at the screen |
+| `y 10..54` | header — the two Claude Code limit bars, 5-hour window over 7-day |
+| `y 60..234`, `x 18` / `x 234` | per-half battery gauges, left column = left half |
+| `y 60..234`, centre | host agent summary, the reason to glance at the screen |
+
+Each limit row is a short window label, a track filling left to right in orange,
+and the percentage on the right. A window the host cannot read renders as an
+empty dimmed track with `--` rather than as a confident 0%.
 
 The agent panel is a 2×2 grid — `WORKING`, `BLOCKED` on the top row, `IDLE`,
 `DONE` below — each quadrant showing a label and a count. `BLOCKED` is the only
@@ -97,16 +101,31 @@ existing raw-HID (Via) OUT endpoint as a 32-byte packet handled by
 | `2..7` | counts: working, idle, blocked, done, unknown |
 | `7` | reserved flags |
 
+The limit bars arrive the same way, in their own packet:
+
+| Byte | Meaning |
+|------|---------|
+| `0` | `0xB1` — `HOST_DATA_USAGE` |
+| `1` | payload version, currently `0x01` |
+| `2` | 5-hour window, percent used, `0xFF` when the host cannot read it |
+| `3` | 7-day window, same encoding |
+
+On the host these two percentages sit in `~/.claude.json` under
+`cachedUsageUtilization.utilization.{five_hour,seven_day}.utilization`, each
+with its own `resets_at`. The cache only refreshes while a Claude Code session
+is running, so a daemon should report a window whose `resets_at` has passed as
+`0` rather than replaying the last reading.
+
 A packet whose version byte is unknown is swallowed rather than answered, so a
 newer daemon can never have its data mistaken for a Via command. Packets sit
 alongside the other `HOST_DATA_*` kinds (`0xAA` time, `0xAC` layout, `0xAD` /
 `0xAE` media) and land in `rmk/src/host_data.rs`, which keeps them in RAM only —
 nothing here is persisted to flash.
 
-The summary carries a 30-second TTL (`AGENTS_TTL`). A daemon that dies or loses
+Both feeds carry a 30-second TTL (`HOST_FEED_TTL`). A daemon that dies or loses
 the socket it watches would otherwise leave the screen advertising "1 working"
-forever; past the TTL `snapshot()` reports `None` and the panel falls back to
-`NO AGENT FEED`.
+forever; past the TTL `snapshot()` reports `None`, the panel falls back to
+`NO AGENT FEED` and the limit bars go empty.
 
 The host side of this lives in a separate personal project (`qubeherd`, bridging
 `herdr` to the dongle) and is not part of this repository.
