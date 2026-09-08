@@ -121,6 +121,13 @@ mouse_interval_control = []
 ## retaining BLE pacing from mouse_interval_control.
 mouse_vector_preserve = ["mouse_interval_control"]
 
+## Keep vector-preserving mouse HID traffic at one report per 15 ms slot.
+fixed_mouse_pacing_15ms = ["mouse_vector_preserve"]
+
+## Order pointing-split wake behind confirmed host-active parameters and use
+## the field-validated low-duty host/split profiles.
+host_first_split_wake = []
+
 ## Diagnostic control: keep the active host link at 15 ms / latency 0 so
 ## A/B builds cannot diverge through the 7.5 ms bootstrap timing race.
 host_fixed_15ms = []

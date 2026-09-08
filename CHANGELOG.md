@@ -4,6 +4,7 @@
 
 ### Fixes
 
+- Switched all six standalone K:04 Series images to the `production_v30g` profile derived from the field-validated K:04 build: host-first split wake ordering, accepted-anchor low-duty BLE parameters, fixed 15 ms vector-preserving HID pacing, and configured 1M PHY preservation; K:04 Qube and other keyboards retain their existing production profiles
 - Prevented K:04 split LED reconciliation from starting a status phase after the render timestamp, avoiding an `Instant` underflow panic during reconnect
 
 ## v0.1.9

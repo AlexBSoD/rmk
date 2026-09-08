@@ -14,6 +14,8 @@ use trouble_host::prelude::*;
 
 use crate::SPLIT_PAIRING_TIMEOUT_SECONDS;
 use crate::ble::sleep::{is_sleeping, report_activity, report_pointing_activity};
+#[cfg(feature = "host_first_split_wake")]
+use crate::ble::{HostWakeOrderGate, host_wake_order_gate, wait_for_host_wake_order_gate};
 use crate::ble::{update_ble_phy, update_conn_params};
 use crate::channel::FLASH_CHANNEL;
 use crate::event::{
@@ -586,6 +588,7 @@ pub(crate) async fn run_ble_peripheral_manager<
     addrs: &RefCell<VecView<Option<[u8; 6]>>>,
     stack: &'b Stack<'s, C, DefaultPacketPool>,
     profile: SplitLinkProfile,
+    use_2m_phy: bool,
 ) {
     trace!("SPLIT_MESSAGE_MAX_SIZE: {}", SPLIT_MESSAGE_MAX_SIZE);
     let mut peer_retry_state = PeerRetryState::default();
@@ -648,6 +651,7 @@ pub(crate) async fn run_ble_peripheral_manager<
                     &conn,
                     &peer_validated,
                     profile,
+                    use_2m_phy,
                 )
                 .await
                 {
@@ -695,18 +699,78 @@ fn active_central_conn_param(profile: SplitLinkProfile) -> RequestedConnParams {
     }
 }
 
-fn sleeping_central_conn_param() -> RequestedConnParams {
+fn sleeping_central_conn_param(profile: SplitLinkProfile) -> RequestedConnParams {
+    #[cfg(feature = "host_first_split_wake")]
+    let (interval, max_latency) = match profile {
+        SplitLinkProfile::Keyboard => (Duration::from_millis(30), 6),
+        SplitLinkProfile::Pointing => (Duration::from_millis(15), 13),
+    };
+    #[cfg(not(feature = "host_first_split_wake"))]
+    let (interval, max_latency) = {
+        let _ = profile;
+        (Duration::from_millis(30), 6)
+    };
+
     RequestedConnParams {
-        // Keep a short base interval so a peripheral with queued key events
-        // can attend the next connection event and drain the burst promptly.
-        // Slave latency retains an effective idle cadence of about 210 ms
-        // (30 ms * 7) while avoiding the old 200 ms-per-event wake backlog.
-        min_connection_interval: Duration::from_millis(30),
-        max_connection_interval: Duration::from_millis(30),
-        max_latency: 6,
+        // Keep a short base interval so queued input can attend promptly;
+        // slave latency retains an effective idle cadence of about 210 ms.
+        min_connection_interval: interval,
+        max_connection_interval: interval,
+        max_latency,
         supervision_timeout: Duration::from_secs(11),
         ..Default::default()
     }
+}
+
+#[cfg(feature = "host_first_split_wake")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SplitWakeOrderAction {
+    Proceed,
+    WaitForHost,
+}
+
+#[cfg(feature = "host_first_split_wake")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SplitLinkUpdatePlan {
+    None,
+    Sleeping(SplitLinkProfile),
+    Active(SplitLinkProfile),
+}
+
+#[cfg(feature = "host_first_split_wake")]
+const fn split_wake_order_action(
+    profile: SplitLinkProfile,
+    link_was_sleeping: bool,
+    host_gate: HostWakeOrderGate,
+) -> SplitWakeOrderAction {
+    if link_was_sleeping
+        && matches!(profile, SplitLinkProfile::Pointing)
+        && matches!(host_gate, HostWakeOrderGate::Pending)
+    {
+        SplitWakeOrderAction::WaitForHost
+    } else {
+        SplitWakeOrderAction::Proceed
+    }
+}
+
+#[cfg(feature = "host_first_split_wake")]
+fn split_link_update_plan(
+    applied_profile: SplitLinkProfile,
+    applied_sleeping: bool,
+    current_profile: SplitLinkProfile,
+    current_sleeping: bool,
+) -> SplitLinkUpdatePlan {
+    if current_sleeping == applied_sleeping && current_profile == applied_profile {
+        SplitLinkUpdatePlan::None
+    } else if current_sleeping {
+        SplitLinkUpdatePlan::Sleeping(current_profile)
+    } else {
+        SplitLinkUpdatePlan::Active(current_profile)
+    }
+}
+
+const fn split_phy_update_requested(use_2m_phy: bool) -> bool {
+    use_2m_phy
 }
 
 async fn validate_split_product<T: SplitReader + SplitWriter>(driver: &mut T) -> bool {
@@ -764,11 +828,15 @@ async fn run_central_manager_task<
     conn: &Connection<'b, P>,
     peer_validated: &Cell<bool>,
     profile: SplitLinkProfile,
+    use_2m_phy: bool,
 ) -> Result<(), BleHostError<C::Error>> {
     let client = GattClient::<C, P, 10>::new(stack, conn).await?;
 
-    // Use 2M Phy.
-    update_ble_phy(stack, conn).await;
+    if split_phy_update_requested(use_2m_phy) {
+        update_ble_phy(stack, conn).await;
+    } else {
+        info!("Split link preserving configured LE 1M PHY");
+    }
 
     info!("Updating connection parameters for peripheral");
     let active_profile = effective_split_link_profile(id, profile);
@@ -997,6 +1065,7 @@ pub(crate) async fn wait_for_stack_started() {
 /// Keep one split link synchronized with the keyboard-wide sleep manager.
 /// The manager outlives every connection; this follower is recreated with the
 /// link and owns only that link's connection parameters.
+#[cfg(feature = "host_first_split_wake")]
 async fn follow_sleep_state<
     'b,
     's: 'b,
@@ -1013,13 +1082,108 @@ async fn follow_sleep_state<
 
     // A new link must follow the already-latched keyboard state. Treating link
     // creation as user input can wake the host and every other split link.
+    let mut applied_profile = effective_split_link_profile(peripheral_id, generated_profile);
     let mut applied_sleeping = if is_sleeping() {
         info!("New split link inherits sleep mode");
-        update_conn_params(stack, conn, &sleeping_central_conn_param()).await
+        update_conn_params(stack, conn, &sleeping_central_conn_param(applied_profile)).await
     } else {
         false
     };
+    loop {
+        let update = if let Some(profile_changed) = profile_changed {
+            select(sleep_events.next_event(), profile_changed.wait()).await
+        } else {
+            Either::First(sleep_events.next_event().await)
+        };
+        match update {
+            Either::First(event) => {
+                let mut sleeping = event.0;
+                if sleeping == applied_sleeping {
+                    continue;
+                }
+
+                let mut profile = effective_split_link_profile(peripheral_id, generated_profile);
+                if !sleeping
+                    && split_wake_order_action(profile, applied_sleeping, host_wake_order_gate())
+                        == SplitWakeOrderAction::WaitForHost
+                {
+                    info!(
+                        "[WAKE_ORDER_V30G] split_id={} event=wake state=waiting_for_host_active",
+                        peripheral_id
+                    );
+                    wait_for_host_wake_order_gate().await;
+
+                    // Sleep state and runtime profile can both change while
+                    // the host gate is pending. Re-read the authoritative
+                    // values before choosing params; never apply the stale
+                    // active target captured by the original wake event.
+                    sleeping = is_sleeping();
+                    profile = effective_split_link_profile(peripheral_id, generated_profile);
+                    info!(
+                        "[WAKE_ORDER_V30G] split_id={} event=wake state=gate_open_revalidated",
+                        peripheral_id
+                    );
+                }
+                let conn_params = match split_link_update_plan(applied_profile, applied_sleeping, profile, sleeping) {
+                    SplitLinkUpdatePlan::None => continue,
+                    SplitLinkUpdatePlan::Sleeping(profile) => {
+                        info!("Split link entering sleep mode");
+                        sleeping_central_conn_param(profile)
+                    }
+                    SplitLinkUpdatePlan::Active(profile) => {
+                        info!("Split link restoring active mode");
+                        active_central_conn_param(profile)
+                    }
+                };
+                if update_conn_params(stack, conn, &conn_params).await {
+                    applied_sleeping = sleeping;
+                    applied_profile = profile;
+                }
+            }
+            Either::Second(_) => {
+                let profile = effective_split_link_profile(peripheral_id, generated_profile);
+                if profile == applied_profile {
+                    continue;
+                }
+                let conn_params = if applied_sleeping {
+                    info!("Split link applying runtime sleep profile");
+                    sleeping_central_conn_param(profile)
+                } else {
+                    info!("Split link applying runtime active profile");
+                    active_central_conn_param(profile)
+                };
+                if update_conn_params(stack, conn, &conn_params).await {
+                    applied_profile = profile;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "host_first_split_wake"))]
+async fn follow_sleep_state<
+    'b,
+    's: 'b,
+    C: Controller + ControllerCmdAsync<LeSetPhy> + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    P: PacketPool,
+>(
+    stack: &'b Stack<'s, C, P>,
+    conn: &Connection<'b, P>,
+    peripheral_id: usize,
+    generated_profile: SplitLinkProfile,
+) -> Result<(), BleHostError<C::Error>> {
+    let mut sleep_events = SleepStateEvent::subscriber();
+    let profile_changed = LINK_PROFILE_CHANGED.get(peripheral_id);
+
+    // A new link must follow the already-latched keyboard state. Treating link
+    // creation as user input can wake the host and every other split link.
     let mut applied_profile = effective_split_link_profile(peripheral_id, generated_profile);
+    let mut applied_sleeping = if is_sleeping() {
+        info!("New split link inherits sleep mode");
+        update_conn_params(stack, conn, &sleeping_central_conn_param(applied_profile)).await
+    } else {
+        false
+    };
     loop {
         let update = if let Some(profile_changed) = profile_changed {
             select(sleep_events.next_event(), profile_changed.wait()).await
@@ -1036,7 +1200,7 @@ async fn follow_sleep_state<
                 let profile = effective_split_link_profile(peripheral_id, generated_profile);
                 let conn_params = if sleeping {
                     info!("Split link entering sleep mode");
-                    sleeping_central_conn_param()
+                    sleeping_central_conn_param(profile)
                 } else {
                     info!("Split link restoring active mode");
                     active_central_conn_param(profile)
@@ -1299,7 +1463,7 @@ mod advertisement_tests {
 
     #[test]
     fn sleeping_split_link_keeps_short_burst_interval() {
-        let params = sleeping_central_conn_param();
+        let params = sleeping_central_conn_param(SplitLinkProfile::Keyboard);
 
         assert_eq!(params.min_connection_interval, Duration::from_millis(30));
         assert_eq!(params.max_connection_interval, Duration::from_millis(30));
@@ -1307,6 +1471,76 @@ mod advertisement_tests {
         assert_eq!(
             params.max_connection_interval.as_millis() * (u64::from(params.max_latency) + 1),
             210
+        );
+    }
+
+    #[cfg(not(feature = "host_first_split_wake"))]
+    #[test]
+    fn pointing_sleep_profile_is_unchanged_without_opt_in() {
+        let params = sleeping_central_conn_param(SplitLinkProfile::Pointing);
+
+        assert_eq!(params.min_connection_interval, Duration::from_millis(30));
+        assert_eq!(params.max_connection_interval, Duration::from_millis(30));
+        assert_eq!(params.max_latency, 6);
+    }
+
+    #[test]
+    fn configured_1m_phy_skips_split_phy_update() {
+        assert!(!split_phy_update_requested(false));
+        assert!(split_phy_update_requested(true));
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn sleeping_pointing_link_uses_15_ms_anchor_and_210ms_cadence() {
+        let params = sleeping_central_conn_param(SplitLinkProfile::Pointing);
+
+        assert!(params.is_valid());
+        assert_eq!(params.min_connection_interval, Duration::from_millis(15));
+        assert_eq!(params.max_connection_interval, Duration::from_millis(15));
+        assert_eq!(params.max_latency, 13);
+        assert_eq!(
+            params.max_connection_interval.as_micros() * (u64::from(params.max_latency) + 1),
+            210_000
+        );
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn pointing_wake_waits_only_while_host_gate_is_pending() {
+        assert_eq!(
+            split_wake_order_action(SplitLinkProfile::Pointing, true, HostWakeOrderGate::Pending),
+            SplitWakeOrderAction::WaitForHost
+        );
+        assert_eq!(
+            split_wake_order_action(SplitLinkProfile::Pointing, true, HostWakeOrderGate::Open),
+            SplitWakeOrderAction::Proceed
+        );
+        assert_eq!(
+            split_wake_order_action(SplitLinkProfile::Keyboard, true, HostWakeOrderGate::Pending),
+            SplitWakeOrderAction::Proceed
+        );
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn wake_revalidation_drops_stale_active_target_after_resleep() {
+        assert_eq!(
+            split_link_update_plan(SplitLinkProfile::Pointing, true, SplitLinkProfile::Pointing, false),
+            SplitLinkUpdatePlan::Active(SplitLinkProfile::Pointing)
+        );
+        assert_eq!(
+            split_link_update_plan(SplitLinkProfile::Pointing, true, SplitLinkProfile::Pointing, true),
+            SplitLinkUpdatePlan::None
+        );
+    }
+
+    #[cfg(feature = "host_first_split_wake")]
+    #[test]
+    fn wake_revalidation_uses_latest_runtime_profile() {
+        assert_eq!(
+            split_link_update_plan(SplitLinkProfile::Pointing, true, SplitLinkProfile::Keyboard, false),
+            SplitLinkUpdatePlan::Active(SplitLinkProfile::Keyboard)
         );
     }
 }
