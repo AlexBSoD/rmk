@@ -104,6 +104,7 @@ const COL_DIM: Rgb565 = Rgb565::new(5, 12, 14);
 const COL_ACCENT: Rgb565 = Rgb565::new(3, 38, 31);
 const COL_YELLOW: Rgb565 = Rgb565::new(31, 50, 0);
 const COL_ORANGE: Rgb565 = Rgb565::new(31, 28, 0);
+const COL_ORANGE_DIM: Rgb565 = Rgb565::new(12, 11, 0);
 const COL_RED: Rgb565 = Rgb565::new(31, 5, 5);
 const COL_BAR_BG: Rgb565 = Rgb565::new(2, 7, 9);
 const COL_BAR_FG: Rgb565 = Rgb565::new(3, 42, 30);
@@ -791,8 +792,14 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
         let rp = battery_reading(ctx.peripheral_batteries.get(1).map(|b| b.0));
         // Header: how much of each Claude Code window is already spent.
         let usage = self.host_data.usage.unwrap_or_default();
-        draw_limit_bar(display, LIMIT_Y, "5H", usage.five_hour);
-        draw_limit_bar(display, LIMIT_Y + LIMIT_ROW_H + LIMIT_ROW_GAP, "7D", usage.seven_day);
+        draw_limit_bar(display, LIMIT_Y, "5H", usage.five_hour, usage.stale);
+        draw_limit_bar(
+            display,
+            LIMIT_Y + LIMIT_ROW_H + LIMIT_ROW_GAP,
+            "7D",
+            usage.seven_day,
+            usage.stale,
+        );
 
         // Per-half battery gauges: left column = left half, right = right half.
         draw_bat_column(display, LEFT_BAT_X, lp, left);
@@ -851,7 +858,18 @@ impl DisplayRenderer<Rgb565> for QubeStatusRenderer {
 /// One usage window: label, track filling left to right, percentage on the right.
 /// `pct` is `None` while the host feed is quiet, and the row then reads as an
 /// empty dimmed track rather than as a confident 0%.
-fn draw_limit_bar<D: DrawTarget<Color = Rgb565>>(display: &mut D, y: i32, label: &str, pct: Option<u8>) {
+///
+/// `stale` means the host still has a reading but nothing has refreshed it
+/// lately — the percentages only move while a Claude Code session renders. The
+/// row keeps the number and loses its brightness, because a dropped reading and
+/// an old one are not the same thing to look at.
+fn draw_limit_bar<D: DrawTarget<Color = Rgb565>>(
+    display: &mut D,
+    y: i32,
+    label: &str,
+    pct: Option<u8>,
+    stale: bool,
+) {
     let cy = y + LIMIT_ROW_H / 2;
     let ml = TextStyleBuilder::new().baseline(Baseline::Middle).build();
     let mr = TextStyleBuilder::new()
@@ -877,7 +895,11 @@ fn draw_limit_bar<D: DrawTarget<Color = Rgb565>>(display: &mut D, y: i32, label:
             let _ = reading.push_str("--");
         }
     }
-    let reading_col = if pct.is_some() { COL_FG } else { COL_DIM };
+    let reading_col = match (pct.is_some(), stale) {
+        (true, false) => COL_FG,
+        (true, true) => COL_MUTED,
+        (false, _) => COL_DIM,
+    };
     let _ = Text::with_text_style(
         &reading,
         Point::new(SAFE_X + SAFE_W as i32, cy),
@@ -905,7 +927,8 @@ fn draw_limit_bar<D: DrawTarget<Color = Rgb565>>(display: &mut D, y: i32, label:
     if let Some(pct) = pct.filter(|pct| *pct > 0) {
         let inner = tw - 4;
         let fill = (inner * pct as u32 / 100).max(2);
-        draw_round_fill(display, tx + 2, ty + 2, fill, LIMIT_TRACK_H - 4, 3, COL_ORANGE);
+        let colour = if stale { COL_ORANGE_DIM } else { COL_ORANGE };
+        draw_round_fill(display, tx + 2, ty + 2, fill, LIMIT_TRACK_H - 4, 3, colour);
     }
 }
 

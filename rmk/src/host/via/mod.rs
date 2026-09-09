@@ -33,6 +33,8 @@ const HOST_DATA_USAGE: u8 = 0xB1;
 const HOST_DATA_USAGE_VERSION: u8 = 0x01;
 /// A window the host daemon could not read at all, as opposed to one sitting at 0%.
 const HOST_DATA_USAGE_UNKNOWN: u8 = 0xFF;
+/// Nothing has refreshed the host's reading recently, so the bars are dimmed.
+const HOST_DATA_USAGE_FLAG_STALE: u8 = 0x01;
 const ERGOHAVEN_CUSTOM_NAMESPACE: u8 = 0xE8;
 const ERGOHAVEN_CUSTOM_BATTERY_HALVES: u8 = 0x01;
 const ERGOHAVEN_BATTERY_HALVES_VERSION: u8 = 0x01;
@@ -100,12 +102,15 @@ fn process_host_data_packet(data: &[u8; 32]) -> bool {
             // let it fall through and get answered as a Via command.
             true
         }
-        // [1] version, [2] 5-hour window, [3] 7-day window, both in percent.
+        // [1] version, [2] 5-hour window, [3] 7-day window, both in percent,
+        // [4] flags. A daemon that predates the flags byte sends zeros there,
+        // which reads as a fresh reading — the state it could only have meant.
         HOST_DATA_USAGE => {
             if data[1] == HOST_DATA_USAGE_VERSION {
                 crate::host_data::update_usage(crate::host_data::UsageSummary {
                     five_hour: usage_percent(data[2]),
                     seven_day: usage_percent(data[3]),
+                    stale: data[4] & HOST_DATA_USAGE_FLAG_STALE != 0,
                 });
             }
             true
@@ -1387,6 +1392,21 @@ mod tests {
     }
 
     #[test]
+    fn usage_packet_carries_the_hosts_staleness() {
+        let mut data = usage_packet(HOST_DATA_USAGE_VERSION, 60, 30);
+        data[4] = HOST_DATA_USAGE_FLAG_STALE;
+        assert!(process_host_data_packet(&data));
+        assert_eq!(
+            crate::host_data::snapshot().usage,
+            Some(crate::host_data::UsageSummary {
+                five_hour: Some(60),
+                seven_day: Some(30),
+                stale: true,
+            })
+        );
+    }
+
+    #[test]
     fn usage_packet_lands_in_the_host_snapshot() {
         assert!(process_host_data_packet(&usage_packet(HOST_DATA_USAGE_VERSION, 24, 2)));
         assert_eq!(
@@ -1394,6 +1414,7 @@ mod tests {
             Some(crate::host_data::UsageSummary {
                 five_hour: Some(24),
                 seven_day: Some(2),
+                stale: false,
             })
         );
     }
@@ -1410,6 +1431,7 @@ mod tests {
             Some(crate::host_data::UsageSummary {
                 five_hour: None,
                 seven_day: Some(100),
+                stale: false,
             })
         );
     }

@@ -109,12 +109,19 @@ The limit bars arrive the same way, in their own packet:
 | `1` | payload version, currently `0x01` |
 | `2` | 5-hour window, percent used, `0xFF` when the host cannot read it |
 | `3` | 7-day window, same encoding |
+| `4` | flags: bit 0 marks a reading nothing has refreshed lately |
 
-On the host these two percentages sit in `~/.claude.json` under
-`cachedUsageUtilization.utilization.{five_hour,seven_day}.utilization`, each
-with its own `resets_at`. The cache only refreshes while a Claude Code session
-is running, so a daemon should report a window whose `resets_at` has passed as
-`0` rather than replaying the last reading.
+A stale reading keeps its number and loses its brightness — a dropped feed and
+an old one are not the same thing to look at. A daemon that predates the flags
+byte sends zeros there, which reads as fresh, the only state it could have meant.
+
+On the host, Claude Code hands those percentages to its status-line command on
+every render, as `rate_limits.{five_hour,seven_day}.used_percentage`. That is
+the live source: the `cachedUsageUtilization` block in `~/.claude.json` only
+refreshes when `/usage` is actually run, and the `/api/oauth/usage` endpoint
+behind it answers 429 to anything that polls it. Each window also carries its
+own `resets_at`, and a window whose moment has passed should be reported as `0`
+rather than replayed.
 
 A packet whose version byte is unknown is swallowed rather than answered, so a
 newer daemon can never have its data mistaken for a Via command. Packets sit
