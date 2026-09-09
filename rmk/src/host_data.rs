@@ -41,6 +41,9 @@ pub struct UsageSummary {
     pub five_hour: Option<u8>,
     /// 7-day limit.
     pub seven_day: Option<u8>,
+    /// The host has not refreshed these in a while: the numbers are the last
+    /// ones seen rather than the current ones.
+    pub stale: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
