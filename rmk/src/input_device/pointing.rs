@@ -902,6 +902,10 @@ pub struct QubePointingModeProcessor<'a> {
     sides: [QubePointingSideState; 2],
     settings: QubePointingSettings,
     active_auto_layer: u8,
+    /// `true` while the auto layer was turned on by this processor. Stays
+    /// `false` when motion started on a target layer that was already active
+    /// (`MO`/`TG`), so a keypress never tears down a manually held layer.
+    auto_layer_self_activated: bool,
     auto_layer_held_keys: u8,
     last_auto_motion_ms: u32,
 }
@@ -914,6 +918,7 @@ impl<'a> QubePointingModeProcessor<'a> {
             sides: [QubePointingSideState::new(), QubePointingSideState::new()],
             settings: QubePointingSettings::new(),
             active_auto_layer: QUBE_AUTO_LAYER_NONE,
+            auto_layer_self_activated: false,
             auto_layer_held_keys: 0,
             last_auto_motion_ms: 0,
         }
@@ -948,7 +953,7 @@ impl<'a> QubePointingModeProcessor<'a> {
 
     async fn on_action_event(&mut self, event: ActionEvent) {
         if event.keyboard_event.pressed
-            && self.active_auto_layer != QUBE_AUTO_LAYER_NONE
+            && self.auto_layer_self_activated
             && self.settings.deactivate_auto_layer_on_key()
             && qube_action_deactivates_auto_layer(event.action)
         {
@@ -1142,14 +1147,13 @@ impl<'a> QubePointingModeProcessor<'a> {
         self.deactivate_auto_layer();
         self.active_auto_layer = layer;
         self.auto_layer_held_keys = 0;
-        if layer != 0 {
-            self.keymap.activate_layer_if_inactive(layer);
-        }
+        self.auto_layer_self_activated = self.keymap.activate_layer_if_inactive(layer);
     }
 
     fn deactivate_auto_layer(&mut self) {
         let previous = self.active_auto_layer;
         self.active_auto_layer = QUBE_AUTO_LAYER_NONE;
+        self.auto_layer_self_activated = false;
         self.auto_layer_held_keys = 0;
         if previous != QUBE_AUTO_LAYER_NONE && previous != 0 {
             self.keymap.deactivate_layer_if_active(previous);
@@ -1579,7 +1583,10 @@ mod tests {
     use embedded_hal_async::digital::Wait;
 
     use super::*;
+    use crate::config::{BehaviorConfig, PositionalConfig};
     use crate::input_device::InputDevice;
+    use crate::k;
+    use crate::keymap::KeymapData;
     use crate::test_support::test_block_on as block_on;
 
     // Init logger for tests
@@ -1708,6 +1715,102 @@ mod tests {
         assert!(!qube_action_deactivates_auto_layer(Action::User(QUBE_USER_SNIPER)));
         assert!(!qube_action_deactivates_auto_layer(Action::LayerOn(3)));
         assert!(!qube_action_deactivates_auto_layer(Action::No));
+    }
+
+    /// The Vial auto-layer target used by the ownership tests below.
+    #[cfg(feature = "split")]
+    const TEST_AUTO_LAYER: u8 = 2;
+
+    /// `auto_flags` with the Normal-mode auto layer enabled (bit 0).
+    #[cfg(feature = "split")]
+    const TEST_AUTO_FLAGS_NORMAL: u8 = 0b0001;
+
+    #[cfg(feature = "split")]
+    fn press_ordinary_key() -> ActionEvent {
+        ActionEvent {
+            action: Action::Key(KeyCode::Hid(HidKeyCode::A)),
+            keyboard_event: KeyboardEvent::key(0, 0, true),
+        }
+    }
+
+    #[cfg(feature = "split")]
+    #[test]
+    fn qube_keypress_keeps_a_manually_activated_target_layer() {
+        block_on(async {
+            let mut data = KeymapData::<1, 1, 4>::new([[[k!(A)]], [[k!(B)]], [[k!(C)]], [[k!(D)]]]);
+            let mut behavior = BehaviorConfig::default();
+            let positional = PositionalConfig::<1, 1>::default();
+            let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+            let mut processor = QubePointingModeProcessor::new(&keymap);
+            processor.settings.auto_layer = TEST_AUTO_LAYER;
+            processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL | (1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT);
+
+            // The target layer is already held by the keymap, exactly as `MO`/`TG` hold it.
+            keymap.activate_layer(TEST_AUTO_LAYER);
+            assert!(keymap.is_layer_active(TEST_AUTO_LAYER));
+
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            assert!(
+                !processor.auto_layer_self_activated,
+                "motion onto an already-active layer must not claim ownership"
+            );
+
+            processor.on_action_event(press_ordinary_key()).await;
+
+            assert!(
+                keymap.is_layer_active(TEST_AUTO_LAYER),
+                "typing must not tear down a manually held layer"
+            );
+        });
+    }
+
+    #[cfg(feature = "split")]
+    #[test]
+    fn qube_keypress_deactivates_an_auto_owned_layer() {
+        block_on(async {
+            let mut data = KeymapData::<1, 1, 4>::new([[[k!(A)]], [[k!(B)]], [[k!(C)]], [[k!(D)]]]);
+            let mut behavior = BehaviorConfig::default();
+            let positional = PositionalConfig::<1, 1>::default();
+            let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+            let mut processor = QubePointingModeProcessor::new(&keymap);
+            processor.settings.auto_layer = TEST_AUTO_LAYER;
+            processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL | (1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT);
+
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            assert!(processor.auto_layer_self_activated);
+            assert!(keymap.is_layer_active(TEST_AUTO_LAYER));
+
+            processor.on_action_event(press_ordinary_key()).await;
+
+            assert!(!keymap.is_layer_active(TEST_AUTO_LAYER));
+            assert_eq!(processor.active_auto_layer, QUBE_AUTO_LAYER_NONE);
+            assert!(!processor.auto_layer_self_activated);
+        });
+    }
+
+    #[cfg(feature = "split")]
+    #[test]
+    fn qube_keypress_leaves_the_auto_layer_alone_when_the_flag_is_off() {
+        block_on(async {
+            let mut data = KeymapData::<1, 1, 4>::new([[[k!(A)]], [[k!(B)]], [[k!(C)]], [[k!(D)]]]);
+            let mut behavior = BehaviorConfig::default();
+            let positional = PositionalConfig::<1, 1>::default();
+            let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+            let mut processor = QubePointingModeProcessor::new(&keymap);
+            processor.settings.auto_layer = TEST_AUTO_LAYER;
+            processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL;
+
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            assert!(processor.auto_layer_self_activated);
+
+            processor.on_action_event(press_ordinary_key()).await;
+
+            assert!(
+                keymap.is_layer_active(TEST_AUTO_LAYER),
+                "v0.1.9 behaviour: timeout only"
+            );
+            assert_eq!(processor.active_auto_layer, TEST_AUTO_LAYER);
+        });
     }
 
     #[test]
