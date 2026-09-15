@@ -836,7 +836,7 @@ async fn run_central_manager_task<
 
     info!("Updating connection parameters for peripheral");
     let active_profile = target_split_link_profile(id, profile, Instant::now().as_millis() as u32);
-    let applied_profile = update_conn_params(stack, conn, &active_central_conn_param(active_profile))
+    let applied_profile = apply_split_link_params(stack, conn, &active_central_conn_param(active_profile))
         .await
         .then_some(active_profile);
     if let Some(applied) = applied_profile {
@@ -1070,6 +1070,50 @@ pub(crate) async fn wait_for_stack_started() {
     }
 }
 
+/// Request new parameters for one split link and wait until the controller
+/// reports them live. The update lands on an instant a few connection events
+/// ahead; treating the request as applied before that has left links on the
+/// wrong cadence with nothing to correct them.
+async fn apply_split_link_params<
+    'b,
+    's: 'b,
+    C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    P: PacketPool,
+>(
+    stack: &'b Stack<'s, C, P>,
+    conn: &Connection<'b, P>,
+    params: &RequestedConnParams,
+) -> bool {
+    let started = Instant::now();
+    if !update_conn_params(stack, conn, params).await {
+        return false;
+    }
+    let deadline = started + Duration::from_secs(2);
+    loop {
+        let live = conn.params();
+        if live.conn_interval == params.max_connection_interval && live.peripheral_latency == params.max_latency {
+            info!(
+                "Split link params live: {} us latency {} after {} ms",
+                live.conn_interval.as_micros(),
+                live.peripheral_latency,
+                started.elapsed().as_millis()
+            );
+            return true;
+        }
+        if Instant::now() >= deadline {
+            warn!(
+                "Split link params not confirmed: requested {} us latency {}, live {} us latency {}",
+                params.max_connection_interval.as_micros(),
+                params.max_latency,
+                live.conn_interval.as_micros(),
+                live.peripheral_latency
+            );
+            return false;
+        }
+        Timer::after_millis(20).await;
+    }
+}
+
 /// Keep one split link synchronized with the keyboard-wide sleep manager and
 /// with its pointing hold. The manager outlives every connection; this
 /// follower is recreated with the link and owns only that link's connection
@@ -1097,7 +1141,7 @@ async fn follow_sleep_state<
     // creation as user input can wake the host and every other split link.
     let mut applied_sleeping = if is_sleeping() {
         info!("New split link inherits sleep mode");
-        update_conn_params(stack, conn, &sleeping_central_conn_param()).await
+        apply_split_link_params(stack, conn, &sleeping_central_conn_param()).await
     } else {
         false
     };
@@ -1139,9 +1183,8 @@ async fn follow_sleep_state<
                 continue;
             }
             info!("Split link entering sleep mode");
-            if update_conn_params(stack, conn, &sleeping_central_conn_param()).await {
+            if apply_split_link_params(stack, conn, &sleeping_central_conn_param()).await {
                 applied_sleeping = true;
-                Timer::after_millis(500).await;
             }
             continue;
         }
@@ -1155,22 +1198,10 @@ async fn follow_sleep_state<
             (false, SplitLinkProfile::Pointing) => info!("Split link restoring pointing cadence"),
             (false, SplitLinkProfile::Keyboard) => info!("Split link relaxing to keyboard cadence"),
         }
-        let started = Instant::now();
-        let applied = update_conn_params(stack, conn, &active_central_conn_param(profile)).await;
-        info!(
-            "Split link {} cadence update ok={} in {} ms",
-            peripheral_id,
-            applied,
-            started.elapsed().as_millis()
-        );
-        if applied {
+        if apply_split_link_params(stack, conn, &active_central_conn_param(profile)).await {
             applied_sleeping = false;
             applied_profile = Some(profile);
             set_applied_split_link_profile(peripheral_id, generated_profile, profile);
-            // The new parameters take effect on an instant a few connection
-            // events ahead. Starting another update before that collides
-            // with the pending procedure on the controller.
-            Timer::after_millis(500).await;
         } else {
             // An expired hold re-arms immediately; do not spin on a link that
             // is going down until the connection task notices.
