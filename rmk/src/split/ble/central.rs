@@ -70,7 +70,7 @@ static LINK_POINTING_WAKE: [Signal<crate::RawMutex, ()>; u32::BITS as usize] =
 // A blocking mutex rather than an atomic bitset: ARMv6-M targets (rp2040
 // split examples) have no atomic read-modify-write.
 static RELAXED_POINTING_LINKS: BlockingMutex<crate::RawMutex, Cell<u32>> = BlockingMutex::new(Cell::new(0));
-const POINTING_LINK_HOLD: Duration = Duration::from_secs(20);
+const POINTING_LINK_HOLD: Duration = Duration::from_secs(30);
 
 const SPLIT_SERVICE_UUID: [u8; 16] = [70, 153, 101, 152, 54, 53, 10, 191, 7, 75, 229, 24, 170, 251, 213, 77];
 const SPLIT_COMPANY_ID: u16 = 0xe118;
@@ -1141,6 +1141,7 @@ async fn follow_sleep_state<
             info!("Split link entering sleep mode");
             if update_conn_params(stack, conn, &sleeping_central_conn_param()).await {
                 applied_sleeping = true;
+                Timer::after_millis(500).await;
             }
             continue;
         }
@@ -1154,10 +1155,22 @@ async fn follow_sleep_state<
             (false, SplitLinkProfile::Pointing) => info!("Split link restoring pointing cadence"),
             (false, SplitLinkProfile::Keyboard) => info!("Split link relaxing to keyboard cadence"),
         }
-        if update_conn_params(stack, conn, &active_central_conn_param(profile)).await {
+        let started = Instant::now();
+        let applied = update_conn_params(stack, conn, &active_central_conn_param(profile)).await;
+        info!(
+            "Split link {} cadence update ok={} in {} ms",
+            peripheral_id,
+            applied,
+            started.elapsed().as_millis()
+        );
+        if applied {
             applied_sleeping = false;
             applied_profile = Some(profile);
             set_applied_split_link_profile(peripheral_id, generated_profile, profile);
+            // The new parameters take effect on an instant a few connection
+            // events ahead. Starting another update before that collides
+            // with the pending procedure on the controller.
+            Timer::after_millis(500).await;
         } else {
             // An expired hold re-arms immediately; do not spin on a link that
             // is going down until the connection task notices.
