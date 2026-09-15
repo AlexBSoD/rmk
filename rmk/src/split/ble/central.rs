@@ -746,14 +746,28 @@ fn active_central_conn_param(profile: SplitLinkProfile) -> RequestedConnParams {
 }
 
 fn sleeping_central_conn_param() -> RequestedConnParams {
+    let usb_powered = matches!(
+        crate::state::active_transport(),
+        Some(crate::types::connection::ConnectionType::Usb)
+    );
+    sleeping_central_conn_param_for(usb_powered)
+}
+
+fn sleeping_central_conn_param_for(usb_powered: bool) -> RequestedConnParams {
+    // Slave latency keeps the peripheral's effective idle cadence at about
+    // 210 ms either way, so its sleeping cost does not depend on the base
+    // interval. A short base interval lets a peripheral with queued input
+    // attend the next connection event promptly, and it also shortens the
+    // wake-up: the update back to the active cadence lands on an instant the
+    // controller schedules a fixed number of connection events ahead, and
+    // motion reports arrive once per event until then. Only a USB-powered
+    // central can afford to listen every 15 ms while the halves sleep; a
+    // battery central keeps 30 ms.
+    let (interval, max_latency) = if usb_powered { (15, 13) } else { (30, 6) };
     RequestedConnParams {
-        // Keep a short base interval so a peripheral with queued key events
-        // can attend the next connection event and drain the burst promptly.
-        // Slave latency retains an effective idle cadence of about 210 ms
-        // (30 ms * 7) while avoiding the old 200 ms-per-event wake backlog.
-        min_connection_interval: Duration::from_millis(30),
-        max_connection_interval: Duration::from_millis(30),
-        max_latency: 6,
+        min_connection_interval: Duration::from_millis(interval),
+        max_connection_interval: Duration::from_millis(interval),
+        max_latency,
         supervision_timeout: Duration::from_secs(11),
         ..Default::default()
     }
@@ -1451,14 +1465,16 @@ mod advertisement_tests {
 
     #[test]
     fn sleeping_split_link_keeps_short_burst_interval() {
-        let params = sleeping_central_conn_param();
+        for (usb_powered, interval, latency) in [(false, 30, 6), (true, 15, 13)] {
+            let params = sleeping_central_conn_param_for(usb_powered);
 
-        assert_eq!(params.min_connection_interval, Duration::from_millis(30));
-        assert_eq!(params.max_connection_interval, Duration::from_millis(30));
-        assert_eq!(params.max_latency, 6);
-        assert_eq!(
-            params.max_connection_interval.as_millis() * (u64::from(params.max_latency) + 1),
-            210
-        );
+            assert_eq!(params.min_connection_interval, Duration::from_millis(interval));
+            assert_eq!(params.max_connection_interval, Duration::from_millis(interval));
+            assert_eq!(params.max_latency, latency);
+            assert_eq!(
+                params.max_connection_interval.as_millis() * (u64::from(params.max_latency) + 1),
+                210
+            );
+        }
     }
 }
