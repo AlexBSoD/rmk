@@ -312,14 +312,23 @@ fn transport_setup(communication: &CommunicationConfig) -> (TokenStream2, Vec<To
         }
         // A USB dongle needs the BLE stack for its split links, but has no use for
         // the host-facing BLE transport: advertising as a pairable keyboard only
-        // invites a host to bond with the dongle itself.
+        // invites a host to bond with the dongle itself. The controller runner
+        // and the sleep manager live inside that transport, so drive them
+        // separately: without the runner the split central never scans.
         CommunicationConfig::Both(_, _) if ble_host_disabled() => {
             let prelude = quote! {
                 #wpm_prelude
                 let _: ::core::option::Option<::rmk::config::BleHostPowerConfig> = ble_host_power_config;
                 let mut usb_transport = ::rmk::usb::UsbTransport::new(driver, rmk_config.device_config);
             };
-            (prelude, vec![quote! { usb_transport.run() }, wpm_task])
+            (
+                prelude,
+                vec![
+                    quote! { usb_transport.run() },
+                    quote! { ::rmk::ble::run_split_only_ble(&stack) },
+                    wpm_task,
+                ],
+            )
         }
         CommunicationConfig::Both(_, _) => {
             let prelude = quote! {

@@ -1,6 +1,6 @@
 use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeReadPhy, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
-use embassy_futures::join::join3;
+use embassy_futures::join::{join, join3};
 use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -451,6 +451,23 @@ where
         join3(ble_task(runner), connection_loop, sleep::run_sleep_manager()).await;
         unreachable!("BleTransport sub-tasks must run forever")
     }
+}
+
+/// Drive the BLE stack for a split central whose only host transport is USB.
+///
+/// `BleTransport::run` normally owns the controller runner and the sleep
+/// manager next to the host advertising loop. A dongle built without the
+/// host-facing transport still needs both for its split links: without the
+/// runner the stack never processes an HCI event, `STACK_STARTED` is never
+/// signalled and the central never scans for its peripherals.
+pub async fn run_split_only_ble<C, P>(stack: &Stack<'_, C, P>) -> !
+where
+    C: Controller + ControllerCmdAsync<LeSetPhy>,
+    P: PacketPool,
+{
+    crate::state::set_preferred_connection(ConnectionType::Usb);
+    join(ble_task(stack.runner()), sleep::run_sleep_manager()).await;
+    unreachable!("BLE runner and sleep manager must run forever")
 }
 
 /// This is a background task that is required to run forever alongside any other BLE tasks.
