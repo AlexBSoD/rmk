@@ -15,7 +15,7 @@ Adds an auto-layer option across the whole K:04 line. Both version lines move to
 
 - Disabled by default; with the option off, the auto layer behaves exactly as in `v0.1.9`, including held keys suppressing the timeout
 - Stored in the last free bit of the existing auto-flags byte, so the module settings storage layout and version are unchanged and no migration is needed
-- Only a layer this feature turned on is dropped on a keypress: a target layer that was already active when the pointer moved (held by `MO`/`TG`) is left alone
+- Only a layer this feature turned on is dropped on a keypress. Typing leaves it alone when it was already active when the pointer moved (held by `MO`/`TG`), once a layer key such as `MO`/`TG`/`TO` names it, and once something else switched it off and it was turned back on. The inactivity timeout still applies as in `v0.1.9`
 
 ## v0.1.9
 
