@@ -394,10 +394,12 @@ where
                         // still available. This is especially important for a
                         // USB Qube: its BLE stack is also needed for split
                         // links, but the Qube itself is already connected to
-                        // the PC over USB.
+                        // the PC over USB. It is not user activity either: a
+                        // USB Qube hits this timeout every pairing window, and
+                        // reporting it kept resetting the split idle timeout
+                        // so the halves never entered their low-power cadence.
                         if crate::state::active_transport().is_some() {
                             warn!("Advertising timeout while another transport is active, staying awake");
-                            report_activity();
                             resuming_from_sleep = false;
                             set_ble_state(BleState::Inactive);
                             continue;
