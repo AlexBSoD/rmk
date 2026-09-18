@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.1.10
+
+Adds an auto-layer option across the whole K:04 line. Both version lines move to `0.1.10`: the standalone K:04 Series from `v0.1.9`, and the K:04 Qube profiles from `v0.1.8`. VIA and USB advertise `0x0110`.
+
+### Features
+
+- Added the `Auto layer deactivate on key` setting (QSID 335): when enabled, pressing any non-mouse key immediately drops the pointing auto layer instead of waiting for the inactivity timeout. Mouse keys, repeated keycodes, layer switches, macros, and the pointer-mode keys leave the layer intact
+- Advertised the new setting in all six K:04 Vial definitions, so configurators can expose it without a client-side change
+
+### Notes
+
+- Disabled by default; with the option off, the auto layer behaves exactly as in `v0.1.9`, including held keys suppressing the timeout
+- Stored in the last free bit of the existing auto-flags byte, so the module settings storage layout and version are unchanged and no migration is needed
+- Only a layer this feature turned on is dropped on a keypress. Typing leaves it alone when it was already active when the pointer moved (held by `MO`/`TG`), once a layer key such as `MO`/`TG`/`TO` names it, and once something else switched it off and it was turned back on. The inactivity timeout still applies as in `v0.1.9`
+
 ## v0.1.9
 
 Stable release for the standalone K:04 Series: K:04, K:04 Mini, and K:04 Micro. K:04 Qube profiles and all other keyboards remain on v0.1.8.
