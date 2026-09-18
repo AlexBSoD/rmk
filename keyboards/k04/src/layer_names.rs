@@ -271,6 +271,7 @@ fn deserialize(bytes: &[u8]) {
             if migrate_placeholders {
                 migrate_legacy_placeholders();
             }
+            repair_unreadable_layer_names();
             LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
             publish_module_settings();
             return;
@@ -280,6 +281,7 @@ fn deserialize(bytes: &[u8]) {
     deserialize_module_settings(&[]);
     deserialize_fixed_layer_names(bytes);
     migrate_legacy_placeholders();
+    repair_unreadable_layer_names();
     LAYER_NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
     publish_module_settings();
 }
@@ -319,6 +321,9 @@ fn store_layer_name(index: usize, text: &str) {
         if ch == '%' && chars.peek() == Some(&'%') {
             let _ = chars.next();
         }
+        if ch.is_control() {
+            continue;
+        }
         if sanitized.push(ch).is_err() {
             break;
         }
@@ -344,6 +349,28 @@ fn store_raw_layer_name(index: usize, bytes: &[u8]) {
 fn clear_layer_names() {
     for index in 0..LAYER_NAME_COUNT {
         store_raw_layer_name(index, &[]);
+    }
+}
+
+/// A stored name is only usable as printable text. A blob parsed at the
+/// wrong offset yields length bytes and fragments of neighbouring names
+/// ("on\x07\x0cymbols"), and once in RAM they survive every later save;
+/// such a name goes back to the firmware default.
+fn layer_name_is_readable(bytes: &[u8]) -> bool {
+    str::from_utf8(bytes).is_ok_and(|name| !name.chars().any(char::is_control))
+}
+
+fn repair_unreadable_layer_names() {
+    let mut bytes = [0u8; LAYER_NAME_MAX];
+    for (index, default_name) in crate::DEFAULT_LAYER_NAMES.iter().enumerate() {
+        let len = LAYER_NAME_LEN[index].load(Ordering::Acquire).min(LAYER_NAME_MAX as u8) as usize;
+        let base = index * LAYER_NAME_MAX;
+        for (offset, byte) in bytes.iter_mut().enumerate() {
+            *byte = LAYER_NAME_BYTES[base + offset].load(Ordering::Relaxed);
+        }
+        if !layer_name_is_readable(&bytes[..len]) {
+            store_raw_layer_name(index, default_name.as_bytes());
+        }
     }
 }
 
