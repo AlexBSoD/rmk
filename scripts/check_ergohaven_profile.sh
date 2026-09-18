@@ -596,7 +596,7 @@ rg -Fq 'crate::default_layer_names::STANDARD_WITH_MOUSE' keyboards/classic_qube/
 rg -Fq 'const STORAGE_VERSION: u8 = 2;' keyboards/common/layer_names.rs \
     || fail "keyboards/common/layer_names.rs: default-name migration version drifted"
 for file in keyboards/k04/src/layer_names.rs; do
-    rg -Fq 'const STORAGE_VERSION: u8 = 4;' "$file" \
+    rg -Fq 'const STORAGE_VERSION: u8 = 5;' "$file" \
         || fail "$file: K:04 settings migration version drifted"
     rg -Fq 'migrate_legacy_placeholders();' "$file" \
         || fail "$file: generated layer-name migration is missing"
