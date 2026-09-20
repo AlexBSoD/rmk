@@ -20,11 +20,11 @@ const LEGACY_LAYER_NAMES_STORAGE_OFFSET: usize = MODULE_STORAGE_OFFSET + LEGACY_
 
 pub type LayerNameString = heapless::String<LAYER_NAME_MAX>;
 
-const SETTING_KEYS: [u16; 82] = [
+const SETTING_KEYS: [u16; 83] = [
     120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142,
     143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
     213, 214, 215, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319,
-    320, 321, 322, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333,
+    320, 321, 322, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 335,
 ];
 
 const MODULE_SETTINGS_VERSION: u8 = 9;
@@ -85,6 +85,7 @@ const AXIS_FLAG_RIGHT_INVERT_TEXT_X: u8 = 1 << 3;
 const AUTO_FLAG_TOUCH_GESTURES_LEFT: u8 = 1 << 4;
 const AUTO_FLAG_TOUCH_GESTURES_RIGHT: u8 = 1 << 5;
 const AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT: u8 = 6;
+const AUTO_FLAG_DEACTIVATE_ON_KEY_BIT: u8 = 7;
 const DEFAULT_AUTO_FLAGS: u8 = 1 | AUTO_FLAG_TOUCH_GESTURES_LEFT | AUTO_FLAG_TOUCH_GESTURES_RIGHT;
 
 const MODULE_SELECT_TOUCH: u8 = 3;
@@ -140,6 +141,24 @@ const MODULE_DEFAULTS: [u8; MODULE_SETTINGS_LEN] = {
 };
 const _: () = assert!(MODULE_DEFAULTS[IDX_FLAGS] == DEFAULT_ACCELERATION_FLAGS);
 const _: () = assert!(MODULE_DEFAULTS[IDX_AUTO_FLAGS] == DEFAULT_AUTO_FLAGS);
+
+// `VialCommand::BehaviorSettingQuery` only advertises a key when `get_setting`
+// returns `Some`, and `module_get_setting` needs a width to do that. A key added
+// to `SETTING_KEYS` without a matching `module_qsid_width` arm is silently hidden
+// from configurators, so catch the mismatch at compile time instead.
+const _: () = {
+    let mut i = 0;
+    while i < SETTING_KEYS.len() {
+        let qsid = SETTING_KEYS[i];
+        let is_layer_name =
+            qsid >= LAYER_NAME_QSID_BASE && qsid < LAYER_NAME_QSID_BASE + LAYER_NAME_COUNT as u16;
+        assert!(
+            is_layer_name || module_qsid_width(qsid).is_some(),
+            "every SETTING_KEYS entry needs a module_qsid_width arm"
+        );
+        i += 1;
+    }
+};
 
 static LAYER_NAME_LEN: [AtomicU8; LAYER_NAME_COUNT] = [const { AtomicU8::new(0) }; LAYER_NAME_COUNT];
 static LAYER_NAME_BYTES: [AtomicU8; LAYER_NAME_COUNT * LAYER_NAME_MAX] =
@@ -377,9 +396,9 @@ fn module_get_setting(qsid: u16, out: &mut [u8]) -> Option<usize> {
     Some(width)
 }
 
-fn module_qsid_width(qsid: u16) -> Option<usize> {
+const fn module_qsid_width(qsid: u16) -> Option<usize> {
     match qsid {
-        120..=152 | 300..=315 | 317..=333 => Some(1),
+        120..=152 | 300..=315 | 317..=333 | 335 => Some(1),
         316 => Some(2),
         _ => None,
     }
@@ -438,6 +457,7 @@ fn module_set_setting(qsid: u16, data: &[u8]) -> bool {
         331 => module_set_auto_flag(AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT, value == 0),
         332 => module_set_byte(IDX_LEFT_ENCODER_STEPS, value.min(7)),
         333 => module_set_byte(IDX_RIGHT_ENCODER_STEPS, value.min(7)),
+        335 => module_set_auto_flag(AUTO_FLAG_DEACTIVATE_ON_KEY_BIT, value != 0),
         _ => return false,
     }
     publish_module_settings();
@@ -573,6 +593,7 @@ fn module_qsid_value(qsid: u16) -> Option<u8> {
         331 => (!module_auto_flag(AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT)) as u8,
         332 => module_byte(IDX_LEFT_ENCODER_STEPS).min(7),
         333 => module_byte(IDX_RIGHT_ENCODER_STEPS).min(7),
+        335 => module_auto_flag(AUTO_FLAG_DEACTIVATE_ON_KEY_BIT) as u8,
         _ => return None,
     })
 }
