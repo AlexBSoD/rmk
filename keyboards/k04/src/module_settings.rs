@@ -308,12 +308,12 @@ fn apply_module_selection_runtime() {
     rmk::input_device::rotary_encoder::set_encoder_enabled(0, selections[0] == ModuleSelection::Encoder);
     rmk::input_device::rotary_encoder::set_encoder_enabled(1, selections[1] == ModuleSelection::Encoder);
 
-    #[cfg(feature = "qube")]
+    #[cfg(any(feature = "qube", feature = "qube-xiao"))]
     {
         let _ = set_split_link_profile(0, link_profile(selections[0]));
         let _ = set_split_link_profile(1, link_profile(selections[1]));
     }
-    #[cfg(not(feature = "qube"))]
+    #[cfg(not(any(feature = "qube", feature = "qube-xiao")))]
     {
         // Standalone K:04 has one split peripheral: the right half.
         let _ = set_split_link_profile(0, link_profile(selections[1]));
