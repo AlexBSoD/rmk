@@ -506,7 +506,7 @@ fn module_set_setting(qsid: u16, data: &[u8]) -> bool {
 
 pub fn publish_module_settings() {
     publish_event(PeripheralSettingsEvent(module_settings_sync_packet()));
-    #[cfg(not(feature = "qube"))]
+    #[cfg(not(any(feature = "qube", feature = "qube-xiao")))]
     publish_event(PeripheralSettingsEvent(module_profile_settings_sync_packet()));
     publish_event(PeripheralSettingsEvent(module_encoder_settings_sync_packet()));
 }
@@ -530,7 +530,7 @@ impl ModuleSettingsBroadcast {
     }
 }
 
-#[cfg(not(feature = "qube"))]
+#[cfg(not(any(feature = "qube", feature = "qube-xiao")))]
 fn module_profile_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
     let mut data = [0u8; MODULE_SETTINGS_SYNC_LEN];
     data[0] = MODULE_SETTINGS_VERSION | 0x80;
