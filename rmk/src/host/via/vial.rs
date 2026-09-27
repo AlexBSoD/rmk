@@ -91,10 +91,17 @@ pub(crate) async fn process_vial<'a>(
         VialCommand::UnlockPoll => {
             #[cfg(feature = "vial_lock")]
             {
-                locker.unlocking();
+                // Match Vial QMK: once unlocked, a poll must report
+                // `unlocked=1, in_progress=0`. Re-arming unconditionally would
+                // keep `in_progress` set forever, and hosts that wait for it to
+                // clear (Entropy ≥ 0.4.0) never finish the unlock.
+                if !locker.is_unlocked() {
+                    locker.unlocking();
+                }
+                let counter = locker.check_unlock();
                 report.input_data[0] = locker.is_unlocked() as u8;
                 report.input_data[1] = locker.is_unlocking() as u8;
-                report.input_data[2] = locker.check_unlock();
+                report.input_data[2] = counter;
             }
             #[cfg(not(feature = "vial_lock"))]
             error!("Vial lock feature is not enabled");
@@ -656,5 +663,58 @@ mod tests {
             }
             _ => panic!("Expected Fork"),
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "vial_lock")]
+mod lock_tests {
+    use embassy_futures::block_on;
+
+    use super::*;
+    use crate::config::{BehaviorConfig, PositionalConfig};
+    use crate::event::KeyboardEvent;
+    use crate::host::via::vial_lock::VialLock;
+    use crate::keymap::{KeyMap, KeymapData};
+
+    fn vial_report(command: VialCommand) -> ViaReport {
+        let mut output_data = [0u8; 32];
+        output_data[0] = 0xFE;
+        output_data[1] = command as u8;
+        ViaReport {
+            input_data: output_data,
+            output_data,
+        }
+    }
+
+    #[test]
+    fn unlock_poll_reports_finished_unlock_like_vial_qmk() {
+        let mut data = KeymapData::new([[[KeyAction::No; 2]]]);
+        let mut behavior = BehaviorConfig::default();
+        let positional = PositionalConfig::<1, 2>::default();
+        let keymap = block_on(KeyMap::new(&mut data, &mut behavior, &positional));
+        let ctx = KeyboardContext::new(&keymap);
+        let unlock_keys = [(0, 0), (0, 1)];
+        let vial_config = VialConfig {
+            unlock_keys: &unlock_keys,
+            ..Default::default()
+        };
+        let mut locker = VialLock::new(&unlock_keys, &keymap, false);
+        let mut start = vial_report(VialCommand::UnlockStart);
+        block_on(process_vial(&mut start, &vial_config, &mut locker, &ctx));
+        let mut poll = || {
+            let mut report = vial_report(VialCommand::UnlockPoll);
+            block_on(process_vial(&mut report, &vial_config, &mut locker, &ctx));
+            (report.input_data[0], report.input_data[1], report.input_data[2])
+        };
+
+        assert_eq!(poll(), (0, 1, 2));
+
+        keymap.update_matrix_state(&KeyboardEvent::key(0, 0, true));
+        keymap.update_matrix_state(&KeyboardEvent::key(0, 1, true));
+        // The poll that sees every key held already reports the unlock
+        assert_eq!(poll(), (1, 0, 0));
+        // and later polls must not re-enter the in-progress state
+        assert_eq!(poll(), (1, 0, 0));
     }
 }
