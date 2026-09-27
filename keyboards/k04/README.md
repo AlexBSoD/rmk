@@ -78,11 +78,21 @@ identity (`0x0071`, `vial_qube.json`, `keyboard_qube.toml`), so the halves pair
 with it and Vial sees the dongle it already knows — but the two dongles must not
 be plugged in at the same time.
 
-The board ships with the Adafruit UF2 bootloader **and** S140 7.3.0 resident at
-`0x1000..0x27000`, so the application cannot start at `0x1000` the way the stock
-Qube dongle does. `memory_xiao.x` links it at `0x27000` with 660 KiB, which ends
-exactly where the RMK storage area at `0xCC000` begins; storage, bonds and the
-keymap therefore live at the same addresses as on the stock dongle.
+The board ships with the Adafruit UF2 bootloader and S140 7.3.0 at
+`0x1000..0x27000`, but RMK brings its own BLE controller and never calls the
+SoftDevice. `memory_xiao.x` therefore links the application at `0x1000` with
+812 KiB, exactly like the stock Qube dongle. On the board this was found on,
+an earlier `0x1000` image had already overwritten S140: the bootloader reports
+`SoftDevice: not found` in `INFO_UF2.TXT` and starts the application at
+`0x1000`. Storage, bonds and the keymap live at
+`0xCC000`, the same addresses as on the stock dongle.
+
+An earlier revision linked the application at `0x27000`, above S140. That only
+works while S140 is intact: once any `0x1000` image has been flashed, the
+bootloader no longer finds the SoftDevice, jumps to `0x1000` and never reaches
+an image at `0x27000` — the dongle stays dark on USB, and the halves look as if
+they cannot connect. Check `INFO_UF2.TXT` and the first block address of a UF2
+before blaming the firmware.
 
 ```sh
 KEYBOARD_TOML_PATH="$PWD/keyboard_qube.toml" \
@@ -106,10 +116,10 @@ it and never reaches the dongle.
 ~97 KiB and there is no screen to explain what it would be logging. Build with
 `--features qube-xiao-log` when a board needs debugging.
 
-| Build | Binary size | Fits in 660 KiB |
+| Build | Binary size | Fits in 812 KiB |
 |-------|-------------|-----------------|
-| `qube-xiao` | 360 KiB | yes, 300 KiB spare |
-| `qube-xiao-log` | 430 KiB | yes, 230 KiB spare |
+| `qube-xiao` | ~440 KiB | yes, ~370 KiB spare |
+| `qube-xiao-log` | ~530 KiB | yes, ~280 KiB spare |
 
 There is no screen, no NeoPixel and no battery reader on this board: the three
 discrete LEDs are not WS2812, so `layer_led.rs` is not reused and the dongle
