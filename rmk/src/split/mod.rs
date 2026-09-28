@@ -20,6 +20,8 @@ pub mod peripheral;
 pub mod rp;
 #[cfg(not(feature = "_ble"))]
 pub mod serial;
+#[cfg(feature = "_ble")]
+pub(crate) mod sleep_stats;
 
 /// Maximum size of a split message
 pub const SPLIT_MESSAGE_MAX_SIZE: usize = SplitMessage::POSTCARD_MAX_SIZE + 4;
@@ -32,6 +34,16 @@ pub struct PeripheralMatrixConfig {
     pub cols: u8,
     pub row_offset: u8,
     pub col_offset: u8,
+}
+
+/// Wake-ups and awake time of a split peripheral since it booted.
+#[cfg(feature = "_ble")]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, MaxSize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub(crate) struct SleepStats {
+    pub(crate) wakes: u16,
+    pub(crate) awake_min: u16,
+    pub(crate) uptime_min: u16,
 }
 
 /// Message used from central & peripheral communication
@@ -75,6 +87,9 @@ pub(crate) enum SplitMessage {
     /// Runtime host-advertising mode, synced from central to peripheral LEDs.
     #[cfg(feature = "_ble")]
     BleAdvertisingMode(BleAdvertisingMode),
+    /// Sleep statistics, from peripheral to central, answering `BatteryRefresh`.
+    #[cfg(feature = "_ble")]
+    SleepStats(SleepStats),
 
     // -----------------------------------------------------------------------
     // dfu_split — firmware update over split link
