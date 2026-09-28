@@ -252,6 +252,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
         loop {
             update_status(|c| *c = ConnectionStatus::new());
             publish_event(CentralConnectedEvent { connected: false });
+            crate::split::sleep_stats::record_sleep_state(false);
             publish_event(SleepStateEvent::new(false));
             publish_peripheral_split_state(id, SplitConnectionState::Searching);
             match split_peripheral_advertise(id, central_addr, &mut peripheral, &server).await {
@@ -317,6 +318,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
                 Err(BleHostError::BleHost(Error::Timeout)) => {
                     error!("Connect to split central timeout");
                     publish_peripheral_split_state(id, SplitConnectionState::Idle);
+                    crate::split::sleep_stats::record_sleep_state(true);
                     publish_event(SleepStateEvent::new(true));
                     // Wait for new input before advertising again.
                     wait_for_input_activity().await;
