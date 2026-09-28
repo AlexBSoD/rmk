@@ -152,6 +152,12 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                         #[cfg(feature = "_ble")]
                         SplitMessage::BatteryRefresh => {
                             publish_event(crate::event::PeripheralBatteryRefreshEvent);
+                            self.split_driver
+                                .write(&SplitMessage::SleepStats(
+                                    crate::split::sleep_stats::current_sleep_stats(),
+                                ))
+                                .await
+                                .ok();
                         }
                         SplitMessage::KeyboardIndicator(indicator) => {
                             // Publish KeyboardIndicator event
@@ -182,6 +188,8 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                         }
                         #[cfg(feature = "display")]
                         SplitMessage::SleepState(sleeping) => {
+                            #[cfg(feature = "_ble")]
+                            crate::split::sleep_stats::record_sleep_state(sleeping);
                             publish_event(SleepStateEvent::new(sleeping));
                         }
                         // --- dfu_split: firmware update handlers ---

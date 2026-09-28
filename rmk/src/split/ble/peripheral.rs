@@ -242,10 +242,12 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
                 Err(BleHostError::BleHost(Error::Timeout)) => {
                     error!("Connect to split central timeout");
                     publish_peripheral_split_state(id, SplitConnectionState::Idle);
+                    crate::split::sleep_stats::record_sleep_state(true);
                     publish_event(SleepStateEvent::new(true));
 
                     wait_for_input_activity().await;
 
+                    crate::split::sleep_stats::record_sleep_state(false);
                     publish_event(SleepStateEvent::new(false));
                     continue;
                 }

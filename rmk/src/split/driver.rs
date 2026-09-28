@@ -239,6 +239,8 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
                 crate::split::battery::update_peripheral_battery_status(self.id, state.0);
                 publish_event(PeripheralBatteryEvent { id: self.id, state })
             }
+            #[cfg(feature = "_ble")]
+            SplitMessage::SleepStats(stats) => crate::split::sleep_stats::update_peripheral_sleep_stats(self.id, stats),
             #[cfg(feature = "dfu_split")]
             SplitMessage::FirmwareHashResponse(hash) => {
                 info!("dfu_split: stale hash response ({:#x}) in event loop", hash);
