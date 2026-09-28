@@ -2,7 +2,6 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use embassy_time::Instant;
 use postcard::experimental::max_size::MaxSize;
 use rmk_types::action::{Action, KeyAction};
-use rmk_types::battery::BatteryStatus;
 use rmk_types::combo::Combo as ComboConfig;
 use rmk_types::constants::{COMBO_MAX_NUM, MORSE_MAX_NUM};
 use rmk_types::morse::{DOUBLE_TAP, HOLD, HOLD_AFTER_TAP, MorsePattern, TAP};
@@ -429,13 +428,13 @@ async fn process_combo_layer_set(report: &mut ViaReport, ctx: &KeyboardContext<'
     }
 }
 
-fn battery_halves_for_split(
-    central: BatteryStatus,
-    peripheral_0: BatteryStatus,
-    peripheral_1: BatteryStatus,
+fn battery_halves_for_split<T>(
+    central: T,
+    peripheral_0: T,
+    peripheral_1: T,
     peripheral_count: usize,
     central_is_left: bool,
-) -> (BatteryStatus, BatteryStatus) {
+) -> (T, T) {
     if peripheral_count == 1 {
         if central_is_left {
             (central, peripheral_0)
@@ -592,6 +591,27 @@ impl<'a> VialService<'a> {
                         if let Some(level) = battery_level_byte(right) {
                             report.input_data[4] |= 0x02;
                             report.input_data[6] = level;
+                        }
+
+                        // Sleep statistics of the peripheral halves: wake-ups,
+                        // awake minutes and uptime minutes, u16 LE each, left
+                        // at 7..13 and right at 13..19. A central half has none.
+                        let (left, right) = battery_halves_for_split(
+                            None,
+                            crate::split::sleep_stats::peripheral_sleep_stats(0),
+                            crate::split::sleep_stats::peripheral_sleep_stats(1),
+                            crate::SPLIT_PERIPHERALS_NUM,
+                            crate::SPLIT_CENTRAL_IS_LEFT,
+                        );
+                        for (flag, offset, stats) in [(0x04, 7, left), (0x08, 13, right)] {
+                            if let Some(stats) = stats {
+                                report.input_data[4] |= flag;
+                                let fields = [stats.wakes, stats.awake_min, stats.uptime_min];
+                                for (i, value) in fields.into_iter().enumerate() {
+                                    let at = offset + i * 2;
+                                    LittleEndian::write_u16(&mut report.input_data[at..at + 2], value);
+                                }
+                            }
                         }
                     }
                 } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
@@ -765,7 +785,7 @@ mod tests {
 
     use embassy_futures::block_on;
     use rmk_types::action::{Action, KeyAction};
-    use rmk_types::battery::ChargeState;
+    use rmk_types::battery::{BatteryStatus, ChargeState};
     use rmk_types::keycode::{HidKeyCode, KeyCode};
     use rmk_types::modifier::ModifierCombination;
 
