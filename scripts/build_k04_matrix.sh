@@ -89,7 +89,7 @@ build_k04_series_profile() {
         "CARGO_TARGET_DIR=target/$profile/standalone" \
         "KEYBOARD_TOML_PATH=$repo_root/keyboards/k04/$keyboard_toml" \
         "VIAL_JSON_PATH=$repo_root/keyboards/k04/$vial_json" \
-        cargo build --release "${bins[@]}"
+        cargo build --release "${bins[@]}" --features production_v30g
 }
 
 build_classic_qube_profile() {

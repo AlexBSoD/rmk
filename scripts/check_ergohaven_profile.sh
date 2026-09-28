@@ -418,10 +418,84 @@ for output_name in ("k04_series_k04", "k04_series_mini", "k04_series_micro"):
     start = workflow.index(marker)
     end = workflow.find("          - keyboard:", start + len(marker))
     stanza = workflow[start:] if end == -1 else workflow[start:end]
-    assert 'build_features: "--features production_v22"' in stanza, output_name
+    assert 'build_features: "--features production_v30g"' in stanza, output_name
 
 assert "cargo build --release --bin central ${{ matrix.build_features }}" in workflow
 assert "cargo build --release --bin peripheral ${{ matrix.build_features }}" in workflow
+assert workflow.count('build_features: "--features production_v30g"') == 3
+PY
+
+python3 - <<'PY' || fail "K:04 local build instructions drifted from the production profile"
+from pathlib import Path
+
+script = Path("scripts/build_k04_matrix.sh").read_text(encoding="utf-8")
+readme = Path("keyboards/k04/README.md").read_text(encoding="utf-8")
+
+standalone_body = script.split("build_k04_series_profile() {", 1)[1].split(
+    "build_classic_qube_profile() {", 1
+)[0]
+assert 'cargo build --release "${bins[@]}" --features production_v30g' in standalone_body
+assert standalone_body.count("--features production_v30g") == 1
+for call in (
+    "build_k04_series_profile k04 keyboard.toml vial.json",
+    "build_k04_series_profile mini keyboard_mini.toml vial_mini.json",
+    "build_k04_series_profile micro keyboard_micro.toml vial_micro.json",
+):
+    assert script.count(call) == 1, call
+
+standalone_readme, qube_readme = readme.split("Qube K:04:", 1)
+standalone_command = (
+    "cargo build --release --bin central --bin peripheral --bin hardreset "
+    "--features production_v30g"
+)
+assert standalone_readme.count(standalone_command) == 3
+
+k04_qube_body = script.split("build_k04_qube_profile() {", 1)[1].split(
+    'echo "Using BINDGEN_EXTRA_CLANG_ARGS=', 1
+)[0]
+assert k04_qube_body.count(
+    "cargo build --release --bin qube --no-default-features --features qube"
+) == 1
+assert k04_qube_body.count(
+    "cargo build --release --bin left --bin right --no-default-features --features qube-half"
+) == 1
+assert "production_v30g" not in k04_qube_body
+assert qube_readme.count(
+    "cargo build --release --bin qube --no-default-features --features qube"
+) == 1
+assert qube_readme.count(
+    "cargo build --release --bin left --bin right --no-default-features --features qube-half"
+) == 1
+assert "production_v30g" not in qube_readme
+PY
+
+python3 - <<'PY' || fail "K:04 production_v30g feature scope is invalid"
+from pathlib import Path
+
+k04 = Path("keyboards/k04/Cargo.toml").read_text(encoding="utf-8")
+rmk = Path("rmk/Cargo.toml").read_text(encoding="utf-8")
+entry = Path("rmk-macro/src/codegen/entry.rs").read_text(encoding="utf-8")
+ble = Path("rmk/src/ble/mod.rs").read_text(encoding="utf-8")
+split = Path("rmk/src/split/ble/central.rs").read_text(encoding="utf-8")
+central = Path("rmk/src/split/central.rs").read_text(encoding="utf-8")
+assert 'production_v30g = ["production_v22", "fixed_mouse_pacing_15ms", "rmk/host_first_split_wake"]' in k04
+assert 'fixed_mouse_pacing_15ms = ["mouse_vector_preserve", "rmk/fixed_mouse_pacing_15ms"]' in k04
+assert 'host_first_split_wake = []' in rmk
+assert 'production_v30g' not in rmk
+assert "adaptive_mouse_pacing" not in k04 + rmk
+assert entry.count("#use_2m_phy,") == 3
+assert "run_peripheral_manager_with_profile_and_phy::<" in entry
+legacy = central.split("pub async fn run_peripheral_manager_with_profile<", 1)[1].split(
+    "pub async fn run_peripheral_manager_with_profile_and_phy<", 1
+)[0]
+assert "use_2m_phy: bool" not in legacy
+assert "id, addr, stack, profile, true" in " ".join(legacy.split())
+phy_aware = central.split("pub async fn run_peripheral_manager_with_profile_and_phy<", 1)[1]
+assert "use_2m_phy: bool" in phy_aware
+assert "new_with_host_power_and_phy_config" in entry
+assert 'if split_phy_update_requested(use_2m_phy)' in split
+assert '#[cfg(feature = "host_first_split_wake")]' in ble
+assert '#[cfg(feature = "host_first_split_wake")]' in split
 PY
 
 rg -Fq 'usb_config.device_release = keyboard_config.device_release;' rmk/src/usb/mod.rs \
