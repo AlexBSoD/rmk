@@ -9,28 +9,31 @@ pub const LAYER_NAME_COUNT: usize = 16;
 pub const LAYER_NAME_MAX: usize = 12;
 const LAYER_NAME_QSID_BASE: u16 = 200;
 const STORAGE_MARKER: u8 = 0xE4;
-const STORAGE_VERSION: u8 = 4;
+const STORAGE_VERSION: u8 = 5;
+const ENCODER_STEPS_STORAGE_VERSION: u8 = 4;
 const REMOVED_HOST_TIMEOUT_STORAGE_VERSION: u8 = 3;
 const PREVIOUS_STORAGE_VERSION: u8 = 2;
 const LEGACY_STORAGE_VERSION: u8 = 1;
 const STORAGE_HEADER_LEN: usize = 2;
 const MODULE_STORAGE_OFFSET: usize = STORAGE_HEADER_LEN;
 const LAYER_NAMES_STORAGE_OFFSET: usize = MODULE_STORAGE_OFFSET + MODULE_SETTINGS_STORAGE_LEN;
+const V4_LAYER_NAMES_STORAGE_OFFSET: usize = MODULE_STORAGE_OFFSET + V4_MODULE_SETTINGS_STORAGE_LEN;
 const LEGACY_LAYER_NAMES_STORAGE_OFFSET: usize = MODULE_STORAGE_OFFSET + LEGACY_MODULE_SETTINGS_STORAGE_LEN;
 
 pub type LayerNameString = heapless::String<LAYER_NAME_MAX>;
 
-const SETTING_KEYS: [u16; 83] = [
+const SETTING_KEYS: [u16; 84] = [
     120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142,
     143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
     213, 214, 215, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319,
-    320, 321, 322, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 335,
+    320, 321, 322, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335,
 ];
 
 const MODULE_SETTINGS_VERSION: u8 = 9;
-const MODULE_SETTINGS_LEN: usize = 45;
+const MODULE_SETTINGS_LEN: usize = 46;
 const LEGACY_MODULE_SETTINGS_STORAGE_LEN: usize = 32;
-const MODULE_SETTINGS_STORAGE_LEN: usize = 33;
+const V4_MODULE_SETTINGS_STORAGE_LEN: usize = 33;
+const MODULE_SETTINGS_STORAGE_LEN: usize = 34;
 const MODULE_SETTINGS_SYNC_LEN: usize = 27;
 const IDX_VERSION: usize = 0;
 const IDX_LEFT_MODE: usize = 1;
@@ -66,6 +69,9 @@ const IDX_RIGHT_ENCODER_INTERVAL: usize = 41;
 const IDX_AXIS_FLAGS: usize = 42;
 const IDX_LEFT_ENCODER_STEPS: usize = 43;
 const IDX_RIGHT_ENCODER_STEPS: usize = 44;
+// Ball travel before the auto layer switches, 0..=100 over 0..=255 sensor
+// counts (the Qube converts); 0 = first count.
+const IDX_AUTO_LAYER_THRESHOLD: usize = 45;
 
 const FLAG_LEFT_INVERT_SCROLL_Y: u8 = 1 << 0;
 const FLAG_RIGHT_INVERT_SCROLL_Y: u8 = 1 << 1;
@@ -116,6 +122,7 @@ const MODULE_DEFAULTS: [u8; MODULE_SETTINGS_LEN] = {
     data[IDX_RIGHT_ENCODER_INTERVAL] = 4;
     data[IDX_LEFT_ENCODER_STEPS] = 0;
     data[IDX_RIGHT_ENCODER_STEPS] = 0;
+    data[IDX_AUTO_LAYER_THRESHOLD] = 0;
     data = set_default_layer_color(data, 0, 0);
     data = set_default_layer_color(data, 1, 2);
     data = set_default_layer_color(data, 2, 16);
@@ -270,11 +277,16 @@ fn deserialize(bytes: &[u8]) {
             Some(STORAGE_VERSION) if bytes.len() >= LAYER_NAMES_STORAGE_OFFSET => {
                 Some((LAYER_NAMES_STORAGE_OFFSET, false, false))
             }
-            Some(REMOVED_HOST_TIMEOUT_STORAGE_VERSION) if bytes.len() >= LAYER_NAMES_STORAGE_OFFSET => {
-                Some((LAYER_NAMES_STORAGE_OFFSET, false, true))
+            // Versions 2..=4 stored the 33-byte module block, before the auto-layer
+            // threshold byte; their layer names start one byte earlier.
+            Some(ENCODER_STEPS_STORAGE_VERSION) if bytes.len() >= V4_LAYER_NAMES_STORAGE_OFFSET => {
+                Some((V4_LAYER_NAMES_STORAGE_OFFSET, false, false))
             }
-            Some(PREVIOUS_STORAGE_VERSION) if bytes.len() >= LAYER_NAMES_STORAGE_OFFSET => {
-                Some((LAYER_NAMES_STORAGE_OFFSET, true, false))
+            Some(REMOVED_HOST_TIMEOUT_STORAGE_VERSION) if bytes.len() >= V4_LAYER_NAMES_STORAGE_OFFSET => {
+                Some((V4_LAYER_NAMES_STORAGE_OFFSET, false, true))
+            }
+            Some(PREVIOUS_STORAGE_VERSION) if bytes.len() >= V4_LAYER_NAMES_STORAGE_OFFSET => {
+                Some((V4_LAYER_NAMES_STORAGE_OFFSET, true, false))
             }
             Some(LEGACY_STORAGE_VERSION) if bytes.len() >= LEGACY_LAYER_NAMES_STORAGE_OFFSET => {
                 Some((LEGACY_LAYER_NAMES_STORAGE_OFFSET, true, false))
@@ -398,7 +410,7 @@ fn module_get_setting(qsid: u16, out: &mut [u8]) -> Option<usize> {
 
 const fn module_qsid_width(qsid: u16) -> Option<usize> {
     match qsid {
-        120..=152 | 300..=315 | 317..=333 | 335 => Some(1),
+        120..=152 | 300..=315 | 317..=335 => Some(1),
         316 => Some(2),
         _ => None,
     }
@@ -457,6 +469,7 @@ fn module_set_setting(qsid: u16, data: &[u8]) -> bool {
         331 => module_set_auto_flag(AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT, value == 0),
         332 => module_set_byte(IDX_LEFT_ENCODER_STEPS, value.min(7)),
         333 => module_set_byte(IDX_RIGHT_ENCODER_STEPS, value.min(7)),
+        334 => module_set_byte(IDX_AUTO_LAYER_THRESHOLD, value.min(100)),
         335 => module_set_auto_flag(AUTO_FLAG_DEACTIVATE_ON_KEY_BIT, value != 0),
         _ => return false,
     }
@@ -507,6 +520,8 @@ fn module_encoder_settings_sync_packet() -> [u8; MODULE_SETTINGS_SYNC_LEN] {
     data[0] = MODULE_SETTINGS_VERSION | 0x40;
     data[1] = module_byte(IDX_LEFT_ENCODER_STEPS).min(7);
     data[2] = module_byte(IDX_RIGHT_ENCODER_STEPS).min(7);
+    // Read by the Qube pointing processor (QUBE_ENCODER_PACKET_AUTO_LAYER_THRESHOLD).
+    data[3] = module_byte(IDX_AUTO_LAYER_THRESHOLD);
     data
 }
 
@@ -593,6 +608,7 @@ fn module_qsid_value(qsid: u16) -> Option<u8> {
         331 => (!module_auto_flag(AUTO_FLAG_CHARGE_INDICATOR_DISABLED_BIT)) as u8,
         332 => module_byte(IDX_LEFT_ENCODER_STEPS).min(7),
         333 => module_byte(IDX_RIGHT_ENCODER_STEPS).min(7),
+        334 => module_byte(IDX_AUTO_LAYER_THRESHOLD),
         335 => module_auto_flag(AUTO_FLAG_DEACTIVATE_ON_KEY_BIT) as u8,
         _ => return None,
     })
@@ -638,13 +654,14 @@ fn serialize_module_settings() -> [u8; MODULE_SETTINGS_STORAGE_LEN] {
     data[31] = (module_byte(IDX_MODULE_SELECT) & 0x0f) | ((module_byte(IDX_AXIS_FLAGS) & 0x0f) << 4);
     data[32] = (module_byte(IDX_LEFT_ENCODER_STEPS).min(7) & 0x0f)
         | ((module_byte(IDX_RIGHT_ENCODER_STEPS).min(7) & 0x0f) << 4);
+    data[33] = module_byte(IDX_AUTO_LAYER_THRESHOLD);
     data
 }
 
 fn deserialize_module_settings(data: &[u8]) {
     if !matches!(
         data.len(),
-        LEGACY_MODULE_SETTINGS_STORAGE_LEN | MODULE_SETTINGS_STORAGE_LEN
+        LEGACY_MODULE_SETTINGS_STORAGE_LEN | V4_MODULE_SETTINGS_STORAGE_LEN | MODULE_SETTINGS_STORAGE_LEN
     ) || data[0] != MODULE_SETTINGS_VERSION
     {
         reset_module_settings();
@@ -692,6 +709,9 @@ fn deserialize_module_settings(data: &[u8]) {
     if let Some(encoder_steps) = data.get(32).copied() {
         MODULE_SETTINGS[IDX_LEFT_ENCODER_STEPS].store((encoder_steps & 0x0f).min(7), Ordering::Relaxed);
         MODULE_SETTINGS[IDX_RIGHT_ENCODER_STEPS].store(((encoder_steps >> 4) & 0x0f).min(7), Ordering::Relaxed);
+    }
+    if let Some(threshold) = data.get(33).copied() {
+        MODULE_SETTINGS[IDX_AUTO_LAYER_THRESHOLD].store(threshold, Ordering::Relaxed);
     }
 }
 

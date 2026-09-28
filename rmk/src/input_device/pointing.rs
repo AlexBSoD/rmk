@@ -662,6 +662,14 @@ const QUBE_USER_RIGHT_SNIPER: u8 = 34;
 const QUBE_USER_RIGHT_SCROLL: u8 = 35;
 const QUBE_USER_RIGHT_TEXT: u8 = 36;
 const QUBE_SETTINGS_VERSION: u8 = 9;
+/// Marks the module-settings packet that carries the encoder step counts;
+/// mirrored by `module_encoder_settings_sync_packet` in the K:04 firmware.
+const QUBE_ENCODER_SETTINGS_PACKET: u8 = 0x40;
+const QUBE_ENCODER_PACKET_AUTO_LAYER_THRESHOLD: usize = 3;
+/// The auto-layer threshold is a 0..=100 scale over 0..=255 sensor counts:
+/// counts = value * 255 / 100, so the user never sees raw counts.
+const QUBE_AUTO_LAYER_THRESHOLD_MAX: u8 = 100;
+const QUBE_AUTO_LAYER_THRESHOLD_COUNTS_AT_MAX: u32 = 255;
 const QUBE_AUTO_LAYER_NONE: u8 = 0xff;
 const QUBE_TEXT_AXIS_IDLE_MS: u32 = 220;
 const QUBE_TEXT_THRESHOLD: i32 = 1;
@@ -728,6 +736,9 @@ struct QubePointingSettings {
     auto_flags: u8,
     axis_flags: u8,
     auto_layer_timeout_index: u8,
+    /// Ball travel that arms the auto layer, 0..=100 over 0..=255 sensor
+    /// counts; 0 switches on the first count as before.
+    auto_layer_threshold: u8,
 }
 
 impl QubePointingSettings {
@@ -744,10 +755,18 @@ impl QubePointingSettings {
             auto_flags: 1,
             axis_flags: 0,
             auto_layer_timeout_index: QUBE_DEFAULT_AUTO_LAYER_TIMEOUT_INDEX,
+            auto_layer_threshold: 0,
         }
     }
 
     fn apply_packet(&mut self, data: &[u8; 27]) {
+        // The main packet is full; the encoder packet carries the newer
+        // per-keyboard settings after its two step counts.
+        if data[0] == QUBE_SETTINGS_VERSION | QUBE_ENCODER_SETTINGS_PACKET {
+            self.auto_layer_threshold =
+                data[QUBE_ENCODER_PACKET_AUTO_LAYER_THRESHOLD].min(QUBE_AUTO_LAYER_THRESHOLD_MAX);
+            return;
+        }
         if data[0] != QUBE_SETTINGS_VERSION {
             return;
         }
@@ -805,6 +824,17 @@ impl QubePointingSettings {
 
     fn deactivate_auto_layer_on_key(&self) -> bool {
         (self.auto_flags & (1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT)) != 0
+    }
+
+    /// The auto-layer threshold in sensor counts; 0 keeps the first-count
+    /// behaviour, any other setting is at least one count.
+    fn auto_layer_threshold_counts(&self) -> u32 {
+        if self.auto_layer_threshold == 0 {
+            return 0;
+        }
+        let max = u32::from(QUBE_AUTO_LAYER_THRESHOLD_MAX);
+        let counts = (u32::from(self.auto_layer_threshold) * QUBE_AUTO_LAYER_THRESHOLD_COUNTS_AT_MAX + max / 2) / max;
+        counts.max(1)
     }
 
     fn acceleration(&self, side: usize) -> bool {
@@ -888,6 +918,48 @@ impl QubePointingSideState {
     }
 }
 
+/// Ball travel gathered towards the auto-layer threshold while the layer is
+/// off. A pause as long as the auto-layer timeout forgets it, so separate
+/// nudges do not add up into a switch.
+#[derive(Clone, Copy)]
+struct AutoLayerArming {
+    travel: u32,
+    last_motion_ms: u32,
+}
+
+impl AutoLayerArming {
+    const fn new() -> Self {
+        Self {
+            travel: 0,
+            last_motion_ms: 0,
+        }
+    }
+
+    /// Adds one motion report; `true` once the travel reaches `threshold`.
+    fn feed(&mut self, now_ms: u32, x: i16, y: i16, threshold: u32, idle_ms: u32) -> bool {
+        if threshold == 0 {
+            return true;
+        }
+        if now_ms.wrapping_sub(self.last_motion_ms) > idle_ms {
+            self.travel = 0;
+        }
+        self.last_motion_ms = now_ms;
+        self.travel = self
+            .travel
+            .saturating_add(u32::from(x.unsigned_abs()))
+            .saturating_add(u32::from(y.unsigned_abs()));
+        if self.travel < threshold {
+            return false;
+        }
+        self.reset();
+        true
+    }
+
+    fn reset(&mut self) {
+        self.travel = 0;
+    }
+}
+
 /// K:04 Qube central pointing processor.
 ///
 /// Qube receives standard `PointingEvent`s from the halves over the existing
@@ -909,6 +981,7 @@ pub struct QubePointingModeProcessor<'a> {
     auto_layer_self_activated: bool,
     auto_layer_held_keys: u8,
     last_auto_motion_ms: u32,
+    auto_layer_arming: AutoLayerArming,
 }
 
 #[cfg(feature = "split")]
@@ -922,11 +995,15 @@ impl<'a> QubePointingModeProcessor<'a> {
             auto_layer_self_activated: false,
             auto_layer_held_keys: 0,
             last_auto_motion_ms: 0,
+            auto_layer_arming: AutoLayerArming::new(),
         }
     }
 
     async fn on_peripheral_settings_event(&mut self, event: PeripheralSettingsEvent) {
         self.settings.apply_packet(&event.0);
+        // Travel gathered under the previous threshold must not count towards
+        // the new one.
+        self.auto_layer_arming.reset();
         for side in 0..self.sides.len() {
             self.sides[side]
                 .mode_key
@@ -1065,7 +1142,7 @@ impl<'a> QubePointingModeProcessor<'a> {
         let is_touch_drag = source.kind == QubePointingKind::Touch && buttons != 0;
 
         if !is_touch_drag {
-            self.sync_auto_layer_for_motion(mode);
+            self.sync_auto_layer_for_motion(mode, source, x, y);
         }
         if self.settings.acceleration(source.side) && !is_touch_drag {
             x = accelerate_axis(x);
@@ -1157,7 +1234,7 @@ impl<'a> QubePointingModeProcessor<'a> {
         }
     }
 
-    fn sync_auto_layer_for_motion(&mut self, mode: QubePointingMode) {
+    fn sync_auto_layer_for_motion(&mut self, mode: QubePointingMode, source: QubePointingSource, x: i16, y: i16) {
         if !self.settings.auto_layer_enabled(mode) {
             self.deactivate_auto_layer();
             return;
@@ -1168,10 +1245,26 @@ impl<'a> QubePointingModeProcessor<'a> {
             self.deactivate_auto_layer();
             return;
         }
-        self.last_auto_motion_ms = now_ms_u32();
+        let now_ms = now_ms_u32();
         if self.active_auto_layer == layer {
+            self.last_auto_motion_ms = now_ms;
             return;
         }
+        // A resting hand nudges the ball by a count or two; only a deliberate
+        // move should switch the layer. The touchpad reports nothing for a
+        // resting finger, so the threshold applies to the ball alone.
+        if source.kind == QubePointingKind::Ball
+            && !self.auto_layer_arming.feed(
+                now_ms,
+                x,
+                y,
+                self.settings.auto_layer_threshold_counts(),
+                self.settings.auto_layer_timeout_ms(),
+            )
+        {
+            return;
+        }
+        self.last_auto_motion_ms = now_ms;
 
         self.deactivate_auto_layer();
         self.active_auto_layer = layer;
@@ -1184,6 +1277,7 @@ impl<'a> QubePointingModeProcessor<'a> {
         self.active_auto_layer = QUBE_AUTO_LAYER_NONE;
         self.auto_layer_self_activated = false;
         self.auto_layer_held_keys = 0;
+        self.auto_layer_arming.reset();
         if previous != QUBE_AUTO_LAYER_NONE && previous != 0 {
             self.keymap.deactivate_layer_if_active(previous);
         }
@@ -1679,6 +1773,77 @@ mod tests {
     }
 
     #[test]
+    fn auto_layer_arming_needs_the_threshold_within_one_stretch_of_motion() {
+        let mut arming = AutoLayerArming::new();
+
+        // No threshold: the first count switches, nothing is remembered.
+        assert!(arming.feed(1_000, 1, 0, 0, 500));
+        assert_eq!(arming.travel, 0);
+
+        // Three counts twice, within the idle window, reach a threshold of 6.
+        assert!(!arming.feed(1_000, 2, -1, 6, 500));
+        assert!(!arming.feed(1_010, 0, 2, 6, 500));
+        assert!(arming.feed(1_020, -1, 0, 6, 500));
+        assert_eq!(arming.travel, 0, "a switch consumes the travel");
+
+        // The same counts separated by more than the idle window never add up.
+        assert!(!arming.feed(2_000, 3, 0, 6, 500));
+        assert!(!arming.feed(2_600, 3, 0, 6, 500));
+        assert_eq!(arming.travel, 3);
+        assert!(arming.feed(2_700, 3, 0, 6, 500));
+
+        // Wrapping millisecond clocks compare like the rest of the module.
+        assert!(!arming.feed(u32::MAX - 10, 3, 0, 6, 500));
+        assert!(arming.feed(5, 3, 0, 6, 500));
+    }
+
+    #[test]
+    fn qube_auto_layer_threshold_scale_maps_100_to_255_counts() {
+        let mut settings = QubePointingSettings::new();
+        assert_eq!(
+            settings.auto_layer_threshold_counts(),
+            0,
+            "0 keeps first-count switching"
+        );
+
+        for (value, counts) in [(1, 3), (10, 26), (20, 51), (50, 128), (100, 255)] {
+            settings.auto_layer_threshold = value;
+            assert_eq!(settings.auto_layer_threshold_counts(), counts, "value {value}");
+        }
+    }
+
+    #[test]
+    fn qube_encoder_settings_packet_sets_only_the_auto_layer_threshold() {
+        let mut settings = QubePointingSettings::new();
+        settings.auto_layer = 7;
+        settings.auto_flags = 0b0110;
+
+        let mut packet = [0u8; 27];
+        packet[0] = QUBE_SETTINGS_VERSION | QUBE_ENCODER_SETTINGS_PACKET;
+        packet[1] = 3;
+        packet[2] = 5;
+        packet[QUBE_ENCODER_PACKET_AUTO_LAYER_THRESHOLD] = 24;
+        settings.apply_packet(&packet);
+
+        assert_eq!(settings.auto_layer_threshold, 24);
+
+        // Anything past the 0..=100 scale is clamped, not wrapped.
+        packet[QUBE_ENCODER_PACKET_AUTO_LAYER_THRESHOLD] = 250;
+        settings.apply_packet(&packet);
+        assert_eq!(settings.auto_layer_threshold, 100);
+        packet[QUBE_ENCODER_PACKET_AUTO_LAYER_THRESHOLD] = 24;
+        settings.apply_packet(&packet);
+        assert_eq!(settings.auto_layer, 7);
+        assert_eq!(settings.auto_flags, 0b0110);
+
+        // A stale main packet leaves the threshold alone.
+        let mut main = [0u8; 27];
+        main[0] = QUBE_SETTINGS_VERSION;
+        settings.apply_packet(&main);
+        assert_eq!(settings.auto_layer_threshold, 24);
+    }
+
+    #[test]
     fn qube_auto_layer_flags_cover_every_pointing_mode_independently() {
         let mut settings = QubePointingSettings::new();
         settings.auto_flags = 0b1111;
@@ -1754,6 +1919,13 @@ mod tests {
     #[cfg(feature = "split")]
     const TEST_AUTO_FLAGS_NORMAL: u8 = 0b0001;
 
+    /// A left-ball report; the default threshold of 0 lets any motion switch.
+    #[cfg(feature = "split")]
+    const TEST_BALL_SOURCE: QubePointingSource = QubePointingSource {
+        side: 0,
+        kind: QubePointingKind::Ball,
+    };
+
     #[cfg(feature = "split")]
     fn press_ordinary_key() -> ActionEvent {
         ActionEvent {
@@ -1778,7 +1950,7 @@ mod tests {
             keymap.activate_layer(TEST_AUTO_LAYER);
             assert!(keymap.is_layer_active(TEST_AUTO_LAYER));
 
-            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
             assert!(
                 !processor.auto_layer_self_activated,
                 "motion onto an already-active layer must not claim ownership"
@@ -1805,7 +1977,7 @@ mod tests {
             processor.settings.auto_layer = TEST_AUTO_LAYER;
             processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL | (1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT);
 
-            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
             assert!(processor.auto_layer_self_activated);
             assert!(keymap.is_layer_active(TEST_AUTO_LAYER));
 
@@ -1829,7 +2001,7 @@ mod tests {
             processor.settings.auto_layer = TEST_AUTO_LAYER;
             processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL | (1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT);
 
-            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
             assert!(processor.auto_layer_self_activated);
 
             // The layer is switched off without a key naming it (e.g. `TO(0)` or
@@ -1880,7 +2052,7 @@ mod tests {
                 processor.settings.auto_layer = TEST_AUTO_LAYER;
                 processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL | (1 << QUBE_AUTO_FLAG_DEACTIVATE_ON_KEY_BIT);
 
-                processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+                processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
                 assert!(processor.auto_layer_self_activated);
 
                 // The keyboard publishes the `ActionEvent` before applying the layer change.
@@ -1926,7 +2098,7 @@ mod tests {
 
             // The processor receives its own activation back, then `MO` of a higher,
             // unrelated layer; neither hands the auto layer to the user.
-            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
             processor
                 .on_layer_change_event(LayerChangeEvent::new(keymap.active_layer()))
                 .await;
@@ -1960,7 +2132,7 @@ mod tests {
             processor.settings.auto_layer = TEST_AUTO_LAYER;
             processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL;
 
-            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
             keymap.deactivate_layer(TEST_AUTO_LAYER);
             processor
                 .on_layer_change_event(LayerChangeEvent::new(keymap.active_layer()))
@@ -1969,7 +2141,7 @@ mod tests {
             // `MO` holds the layer again, the pointer moves, then rests past the timeout.
             keymap.activate_layer(TEST_AUTO_LAYER);
             processor.on_keyboard_event(KeyboardEvent::key(0, 0, true)).await;
-            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
             processor.last_auto_motion_ms = now_ms_u32().wrapping_sub(10_000);
             processor.poll().await;
 
@@ -1992,7 +2164,7 @@ mod tests {
             processor.settings.auto_layer = TEST_AUTO_LAYER;
             processor.settings.auto_flags = TEST_AUTO_FLAGS_NORMAL;
 
-            processor.sync_auto_layer_for_motion(QubePointingMode::Normal);
+            processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
             assert!(processor.auto_layer_self_activated);
 
             processor.on_action_event(press_ordinary_key()).await;
