@@ -33,9 +33,9 @@ factory `No` actions take effect without a settings reset. New edits on layers
 5–15 use a separate V3 tail namespace and continue to persist normally.
 
 Split pairing uses a 30-second window. Standalone split centrals sleep after
-120 seconds; powered Qube centrals use 900 seconds. Entropy capability metadata
-advertises separate half batteries on all split devices and time/media live
-features only where Qube supplies them.
+120 seconds; powered Qube centrals use 900 seconds, K:04 Qube centrals 300.
+Entropy capability metadata advertises separate half batteries on all split
+devices and time/media live features only where Qube supplies them.
 
 Hardware-specific differences remain in matrices, pins, encoder count,
 pointing devices, displays, lighting, batteries, and split topology.
