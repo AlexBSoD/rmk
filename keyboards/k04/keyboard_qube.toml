@@ -15,7 +15,9 @@ split_peripherals_num = 2
 split_pairing_timeout_seconds = 30
 ble_reconnect_timeout_seconds = 60
 ble_pairing_timeout_seconds = 60
-split_central_sleep_timeout_seconds = 900
+# Idle time before the split links drop to the sleeping cadence. The halves
+# wake on the first key or deliberate pointing motion, so keep this short.
+split_central_sleep_timeout_seconds = 300
 combo_max_num = 32
 fork_max_num = 32
 morse_max_num = 32

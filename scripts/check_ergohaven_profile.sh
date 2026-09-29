@@ -376,7 +376,13 @@ for file in "${standalone_split_profiles[@]}"; do
 done
 
 for file in "${qube_profiles[@]}"; do
-    expect_toml "$file" split_central_sleep_timeout_seconds 900
+    # K:04 halves wake on the first key or deliberate pointing motion, so its
+    # Qube lets them drop to the sleeping cadence after five idle minutes.
+    case "$file" in
+        keyboards/k04/*) expected=300 ;;
+        *) expected=900 ;;
+    esac
+    expect_toml "$file" split_central_sleep_timeout_seconds "$expected"
 done
 
 for file in "${profiles[@]}"; do
