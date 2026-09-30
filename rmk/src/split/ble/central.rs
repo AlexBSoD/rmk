@@ -60,6 +60,20 @@ static LAST_POINTING_ACTIVITY_MS: AtomicU32 = AtomicU32::new(0);
 // after meaningful cursor movement has stopped.
 const POINTING_ACTIVITY_THRESHOLD: u16 = 2;
 
+// Per-link copy of the last relative motion, 0 until the first report. A
+// pointing link keeps its 7.5 ms cadence only this long after the last motion,
+// then relaxes to the keyboard cadence: the peripheral attends every
+// connection event, so an idle pointing link costs twice the radio time of a
+// key-only link. Restoring costs one connection parameter update, so a short
+// reading pause must not flap the link.
+static LINK_POINTING_ACTIVITY_MS: [AtomicU32; u32::BITS as usize] = [const { AtomicU32::new(0) }; u32::BITS as usize];
+static LINK_POINTING_WAKE: [Signal<crate::RawMutex, ()>; u32::BITS as usize] =
+    [const { Signal::new() }; u32::BITS as usize];
+// A blocking mutex rather than an atomic bitset: ARMv6-M targets (rp2040
+// split examples) have no atomic read-modify-write.
+static RELAXED_POINTING_LINKS: BlockingMutex<crate::RawMutex, Cell<u32>> = BlockingMutex::new(Cell::new(0));
+const POINTING_LINK_HOLD: Duration = Duration::from_secs(30);
+
 const SPLIT_SERVICE_UUID: [u8; 16] = [70, 153, 101, 152, 54, 53, 10, 191, 7, 75, 229, 24, 170, 251, 213, 77];
 const SPLIT_COMPANY_ID: u16 = 0xe118;
 const VALIDATED_PEER_FAILURE_LIMIT: u8 = 3;
@@ -171,6 +185,42 @@ fn effective_split_link_profile(peripheral_id: usize, generated: SplitLinkProfil
             SplitLinkProfile::Keyboard
         }
     })
+}
+
+fn pointing_link_hold_remaining(peripheral_id: usize, now_ms: u32) -> Duration {
+    let last_ms = LINK_POINTING_ACTIVITY_MS[peripheral_id.min(31)].load(Ordering::Acquire);
+    quiet_period_remaining(now_ms, last_ms, POINTING_LINK_HOLD)
+}
+
+/// The cadence a link should run right now: its configured profile, with a
+/// pointing link relaxed to the keyboard cadence once its motion hold expires.
+fn target_split_link_profile(peripheral_id: usize, generated: SplitLinkProfile, now_ms: u32) -> SplitLinkProfile {
+    match effective_split_link_profile(peripheral_id, generated) {
+        SplitLinkProfile::Pointing if pointing_link_hold_remaining(peripheral_id, now_ms) > Duration::MIN => {
+            SplitLinkProfile::Pointing
+        }
+        _ => SplitLinkProfile::Keyboard,
+    }
+}
+
+/// Record that `applied` is now the live cadence of a link. A relaxed pointing
+/// link is restored by the next motion report instead of a timer.
+fn set_applied_split_link_profile(peripheral_id: usize, generated: SplitLinkProfile, applied: SplitLinkProfile) {
+    let bit = bit_for_peri(peripheral_id);
+    let relaxed = applied == SplitLinkProfile::Keyboard
+        && effective_split_link_profile(peripheral_id, generated) == SplitLinkProfile::Pointing;
+    RELAXED_POINTING_LINKS.lock(|links| {
+        let current = links.get();
+        links.set(if relaxed { current | bit } else { current & !bit });
+    });
+}
+
+fn note_link_pointing_activity(peripheral_id: usize, now_ms: u32) {
+    let index = peripheral_id.min(31);
+    LINK_POINTING_ACTIVITY_MS[index].store(now_ms.max(1), Ordering::Release);
+    if RELAXED_POINTING_LINKS.lock(Cell::get) & bit_for_peri(peripheral_id) != 0 {
+        LINK_POINTING_WAKE[index].signal(());
+    }
 }
 
 fn required_peripheral_mask() -> u32 {
@@ -700,22 +750,38 @@ fn active_central_conn_param(profile: SplitLinkProfile) -> RequestedConnParams {
 }
 
 fn sleeping_central_conn_param(profile: SplitLinkProfile) -> RequestedConnParams {
+    let usb_powered = matches!(
+        crate::state::active_transport(),
+        Some(crate::types::connection::ConnectionType::Usb)
+    );
+    sleeping_central_conn_param_for(profile, usb_powered)
+}
+
+fn sleeping_central_conn_param_for(profile: SplitLinkProfile, usb_powered: bool) -> RequestedConnParams {
+    // Slave latency keeps the peripheral's effective idle cadence at about
+    // 210 ms either way, so its sleeping cost does not depend on the base
+    // interval. A short base interval lets a peripheral with queued input
+    // attend the next connection event promptly, and it also shortens the
+    // wake-up: the update back to the active cadence lands on an instant the
+    // controller schedules a fixed number of connection events ahead, and
+    // motion reports arrive once per event until then. Only a USB-powered
+    // central can afford to listen every 15 ms while the halves sleep; a
+    // battery central keeps 30 ms unless the host-first wake profile asks for
+    // the short anchor on pointing links.
     #[cfg(feature = "host_first_split_wake")]
-    let (interval, max_latency) = match profile {
-        SplitLinkProfile::Keyboard => (Duration::from_millis(30), 6),
-        SplitLinkProfile::Pointing => (Duration::from_millis(15), 13),
+    let battery = match profile {
+        SplitLinkProfile::Keyboard => (30, 6),
+        SplitLinkProfile::Pointing => (15, 13),
     };
     #[cfg(not(feature = "host_first_split_wake"))]
-    let (interval, max_latency) = {
+    let battery = {
         let _ = profile;
-        (Duration::from_millis(30), 6)
+        (30, 6)
     };
-
+    let (interval, max_latency) = if usb_powered { (15, 13) } else { battery };
     RequestedConnParams {
-        // Keep a short base interval so queued input can attend promptly;
-        // slave latency retains an effective idle cadence of about 210 ms.
-        min_connection_interval: interval,
-        max_connection_interval: interval,
+        min_connection_interval: Duration::from_millis(interval),
+        max_connection_interval: Duration::from_millis(interval),
         max_latency,
         supervision_timeout: Duration::from_secs(11),
         ..Default::default()
@@ -838,9 +904,15 @@ async fn run_central_manager_task<
         info!("Split link preserving configured LE 1M PHY");
     }
 
-    info!("Updating connection parameters for peripheral");
-    let active_profile = effective_split_link_profile(id, profile);
-    update_conn_params(stack, conn, &active_central_conn_param(active_profile)).await;
+    // The follower sets the first parameters itself, from the latched sleep
+    // state: an active request here would race the sleep request of a link
+    // that reconnects while the keyboard sleeps.
+    #[cfg(feature = "host_first_split_wake")]
+    {
+        info!("Updating connection parameters for peripheral");
+        let active_profile = effective_split_link_profile(id, profile);
+        update_conn_params(stack, conn, &active_central_conn_param(active_profile)).await;
+    }
 
     match select4(
         ble_central_task(&client, conn),
@@ -953,7 +1025,7 @@ async fn run_peripheral_manager<
             .await?;
         info!("Subscribing notifications");
         let listener = client.subscribe(&message_to_central, false).await?;
-        let mut split_ble_driver = BleSplitCentralDriver::new(listener, message_to_peripheral, client);
+        let mut split_ble_driver = BleSplitCentralDriver::new(id, listener, message_to_peripheral, client);
         if !validate_split_product(&mut split_ble_driver).await {
             warn!("Rejecting split peripheral {} after product validation", id);
             return Ok(());
@@ -982,10 +1054,13 @@ pub(crate) struct BleSplitCentralDriver<'a, 'b, 'c, C: Controller + ControllerCm
     message_to_peripheral: Characteristic<[u8; SPLIT_MESSAGE_MAX_SIZE]>,
     // Client
     client: &'c GattClient<'a, C, P, 10>,
+    // Split peripheral id, for the per-link pointing hold
+    id: usize,
 }
 
 impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> BleSplitCentralDriver<'a, 'b, 'c, C, P> {
     pub(crate) fn new(
+        id: usize,
         listener: NotificationListener<'b, 512>,
         message_to_peripheral: Characteristic<[u8; SPLIT_MESSAGE_MAX_SIZE]>,
         client: &'c GattClient<'a, C, P, 10>,
@@ -994,6 +1069,7 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Bl
             listener,
             message_to_peripheral,
             client,
+            id,
         }
     }
 }
@@ -1011,6 +1087,9 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
                 #[cfg(feature = "rtt_diag")]
                 crate::rtt_diag::record_split_rx(event);
                 update_pointing_activity_time(event);
+                if event.has_relative_xy_motion(POINTING_ACTIVITY_THRESHOLD) {
+                    note_link_pointing_activity(self.id, Instant::now().as_millis() as u32);
+                }
             }
             SplitMessage::Key(_) => report_activity(),
             _ => {}
@@ -1059,6 +1138,72 @@ pub(crate) async fn wait_for_stack_started() {
             break;
         }
         embassy_time::Timer::after_millis(500).await;
+    }
+}
+
+/// Whether the live parameters of a link are exactly the requested tuple.
+#[cfg(not(feature = "host_first_split_wake"))]
+fn split_link_params_live(live: &ConnParams, params: &RequestedConnParams) -> bool {
+    live.conn_interval == params.max_connection_interval
+        && live.peripheral_latency == params.max_latency
+        && live.supervision_timeout == params.supervision_timeout
+}
+
+/// Request new parameters for one split link and wait until the controller
+/// reports them live. The update lands on an instant a few connection events
+/// ahead; treating the request as applied before that has left links on the
+/// wrong cadence with nothing to correct them.
+///
+/// A link already running the requested tuple gets no request at all: the
+/// confirmation below would otherwise be satisfied by the pre-request value
+/// while the redundant procedure is still in flight, and a following update
+/// could overlap it. Any other match can only come from a completed procedure.
+#[cfg(not(feature = "host_first_split_wake"))]
+async fn apply_split_link_params<
+    'b,
+    's: 'b,
+    C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    P: PacketPool,
+>(
+    stack: &'b Stack<'s, C, P>,
+    conn: &Connection<'b, P>,
+    params: &RequestedConnParams,
+) -> bool {
+    if split_link_params_live(&conn.params(), params) {
+        info!(
+            "Split link params already live: {} us latency {}",
+            params.max_connection_interval.as_micros(),
+            params.max_latency
+        );
+        return true;
+    }
+    let started = Instant::now();
+    if !update_conn_params(stack, conn, params).await {
+        return false;
+    }
+    let deadline = started + Duration::from_secs(2);
+    loop {
+        let live = conn.params();
+        if split_link_params_live(&live, params) {
+            info!(
+                "Split link params live: {} us latency {} after {} ms",
+                live.conn_interval.as_micros(),
+                live.peripheral_latency,
+                started.elapsed().as_millis()
+            );
+            return true;
+        }
+        if Instant::now() >= deadline {
+            warn!(
+                "Split link params not confirmed: requested {} us latency {}, live {} us latency {}",
+                params.max_connection_interval.as_micros(),
+                params.max_latency,
+                live.conn_interval.as_micros(),
+                live.peripheral_latency
+            );
+            return false;
+        }
+        Timer::after_millis(20).await;
     }
 }
 
@@ -1160,6 +1305,128 @@ async fn follow_sleep_state<
     }
 }
 
+/// Where one split link should be: asleep or awake, and on which cadence.
+#[cfg(not(feature = "host_first_split_wake"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SplitLinkTarget {
+    sleeping: bool,
+    profile: SplitLinkProfile,
+}
+
+#[cfg(not(feature = "host_first_split_wake"))]
+impl SplitLinkTarget {
+    fn conn_params(self) -> RequestedConnParams {
+        if self.sleeping {
+            sleeping_central_conn_param(self.profile)
+        } else {
+            active_central_conn_param(self.profile)
+        }
+    }
+}
+
+/// The target of one link right now, from the latched sleep state and the
+/// link's configured profile and pointing hold.
+#[cfg(not(feature = "host_first_split_wake"))]
+fn split_link_target(
+    peripheral_id: usize,
+    generated: SplitLinkProfile,
+    sleeping: bool,
+    now_ms: u32,
+) -> SplitLinkTarget {
+    let profile = if sleeping {
+        effective_split_link_profile(peripheral_id, generated)
+    } else {
+        target_split_link_profile(peripheral_id, generated, now_ms)
+    };
+    SplitLinkTarget { sleeping, profile }
+}
+
+/// Record that `target` is what a link now runs. A relaxed pointing link is
+/// restored by the next motion report, so this must run even when reaching the
+/// target needed no update, e.g. a runtime Keyboard to Pointing switch whose
+/// hold has already expired.
+#[cfg(not(feature = "host_first_split_wake"))]
+fn note_split_link_target(peripheral_id: usize, generated: SplitLinkProfile, target: SplitLinkTarget) {
+    if !target.sleeping {
+        set_applied_split_link_profile(peripheral_id, generated, target.profile);
+    }
+}
+
+#[cfg(not(feature = "host_first_split_wake"))]
+const SPLIT_LINK_RETRY_FIRST: Duration = Duration::from_secs(1);
+#[cfg(not(feature = "host_first_split_wake"))]
+const SPLIT_LINK_RETRY_MAX: Duration = Duration::from_secs(8);
+
+#[cfg(not(feature = "host_first_split_wake"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SplitLinkStep {
+    /// The live parameters already serve the target.
+    Settled,
+    /// Request the target's parameters.
+    Apply,
+    /// A request for this very target failed; retry once this has elapsed.
+    RetryIn(Duration),
+}
+
+/// Retry ownership for one split link, kept apart from the radio so every
+/// transition is testable. The target is recomputed from authoritative state
+/// on every step, never carried over from the event that woke the follower,
+/// and `applied` holds only parameters confirmed live. A failed request keeps
+/// the previous `applied` and arms a backoff for that target; a different
+/// target is requested at once, so a transition cancelled by the next one
+/// never delays it.
+#[cfg(not(feature = "host_first_split_wake"))]
+#[derive(Default)]
+struct SplitLinkFollower {
+    applied: Option<(SplitLinkTarget, RequestedConnParams)>,
+    failed: Option<(SplitLinkTarget, Instant, u32)>,
+}
+
+#[cfg(not(feature = "host_first_split_wake"))]
+impl SplitLinkFollower {
+    fn step(&mut self, target: SplitLinkTarget, now: Instant) -> SplitLinkStep {
+        let params = target.conn_params();
+        if let Some((applied, live)) = &mut self.applied
+            && *live == params
+        {
+            // Profiles that share parameters (both sleeping profiles without
+            // host-first wake) change the target without an update.
+            *applied = target;
+            self.failed = None;
+            return SplitLinkStep::Settled;
+        }
+        match self.failed {
+            Some((failed, retry_at, _)) if failed == target && now < retry_at => SplitLinkStep::RetryIn(retry_at - now),
+            _ => SplitLinkStep::Apply,
+        }
+    }
+
+    fn on_result(&mut self, target: SplitLinkTarget, confirmed: bool, now: Instant) {
+        if confirmed {
+            self.applied = Some((target, target.conn_params()));
+            self.failed = None;
+            return;
+        }
+        let failures = match self.failed {
+            Some((failed, _, failures)) if failed == target => failures.saturating_add(1),
+            _ => 1,
+        };
+        let backoff = SPLIT_LINK_RETRY_FIRST
+            .checked_mul(1 << (failures - 1).min(3))
+            .unwrap_or(SPLIT_LINK_RETRY_MAX)
+            .min(SPLIT_LINK_RETRY_MAX);
+        self.failed = Some((target, now + backoff, failures));
+    }
+
+    fn applied(&self) -> Option<SplitLinkTarget> {
+        self.applied.as_ref().map(|(target, _)| *target)
+    }
+}
+
+/// Keep one split link synchronized with the keyboard-wide sleep manager and
+/// with its pointing hold. The manager outlives every connection; this
+/// follower is recreated with the link, sets its first parameters from the
+/// latched sleep state and owns only that link's connection parameters.
 #[cfg(not(feature = "host_first_split_wake"))]
 async fn follow_sleep_state<
     'b,
@@ -1174,55 +1441,64 @@ async fn follow_sleep_state<
 ) -> Result<(), BleHostError<C::Error>> {
     let mut sleep_events = SleepStateEvent::subscriber();
     let profile_changed = LINK_PROFILE_CHANGED.get(peripheral_id);
+    let pointing_wake = &LINK_POINTING_WAKE[peripheral_id.min(31)];
+    // Motion latched during the previous connection is not this link's.
+    pointing_wake.reset();
 
     // A new link must follow the already-latched keyboard state. Treating link
     // creation as user input can wake the host and every other split link.
-    let mut applied_profile = effective_split_link_profile(peripheral_id, generated_profile);
-    let mut applied_sleeping = if is_sleeping() {
-        info!("New split link inherits sleep mode");
-        update_conn_params(stack, conn, &sleeping_central_conn_param(applied_profile)).await
-    } else {
-        false
-    };
+    let mut follower = SplitLinkFollower::default();
     loop {
-        let update = if let Some(profile_changed) = profile_changed {
-            select(sleep_events.next_event(), profile_changed.wait()).await
-        } else {
-            Either::First(sleep_events.next_event().await)
-        };
-        match update {
-            Either::First(event) => {
-                let sleeping = event.0;
-                if sleeping == applied_sleeping {
-                    continue;
-                }
-
-                let profile = effective_split_link_profile(peripheral_id, generated_profile);
-                let conn_params = if sleeping {
-                    info!("Split link entering sleep mode");
-                    sleeping_central_conn_param(profile)
-                } else {
-                    info!("Split link restoring active mode");
-                    active_central_conn_param(profile)
-                };
-                if update_conn_params(stack, conn, &conn_params).await {
-                    applied_sleeping = sleeping;
-                    if !sleeping {
-                        applied_profile = profile;
+        let now = Instant::now();
+        let target = split_link_target(peripheral_id, generated_profile, is_sleeping(), now.as_millis() as u32);
+        let wait = match follower.step(target, now) {
+            SplitLinkStep::Apply => {
+                match (follower.applied().map(|applied| applied.sleeping), target.sleeping) {
+                    (None, true) => info!("New split link inherits sleep mode"),
+                    (None, false) => info!("Updating connection parameters for peripheral"),
+                    (Some(false), true) => info!("Split link entering sleep mode"),
+                    (Some(true), false) => info!("Split link restoring active mode"),
+                    (Some(true), true) => info!("Split link applying runtime sleep profile"),
+                    (Some(false), false) if target.profile == SplitLinkProfile::Pointing => {
+                        info!("Split link restoring pointing cadence")
                     }
+                    (Some(false), false) => info!("Split link relaxing to keyboard cadence"),
                 }
+                let confirmed = apply_split_link_params(stack, conn, &target.conn_params()).await;
+                follower.on_result(target, confirmed, Instant::now());
+                if confirmed {
+                    note_split_link_target(peripheral_id, generated_profile, target);
+                }
+                // Re-read the state: it may have moved while the update ran.
+                continue;
             }
-            Either::Second(_) => {
-                let profile = effective_split_link_profile(peripheral_id, generated_profile);
-                if applied_sleeping || profile == applied_profile {
-                    continue;
-                }
-                info!("Split link applying runtime active profile");
-                if update_conn_params(stack, conn, &active_central_conn_param(profile)).await {
-                    applied_profile = profile;
-                }
+            SplitLinkStep::Settled => {
+                note_split_link_target(peripheral_id, generated_profile, target);
+                (!target.sleeping && target.profile == SplitLinkProfile::Pointing)
+                    .then(|| pointing_link_hold_remaining(peripheral_id, Instant::now().as_millis() as u32))
             }
-        }
+            SplitLinkStep::RetryIn(remaining) => {
+                warn!("Split link params pending, retrying in {} ms", remaining.as_millis());
+                Some(remaining)
+            }
+        };
+        select4(
+            sleep_events.next_event(),
+            async {
+                match profile_changed {
+                    Some(changed) => changed.wait().await,
+                    None => core::future::pending::<()>().await,
+                }
+            },
+            pointing_wake.wait(),
+            async {
+                match wait {
+                    Some(remaining) => Timer::after(remaining).await,
+                    None => core::future::pending::<()>().await,
+                }
+            },
+        )
+        .await;
     }
 }
 
@@ -1410,6 +1686,68 @@ mod advertisement_tests {
     }
 
     #[test]
+    fn pointing_link_relaxes_to_keyboard_cadence_after_the_motion_hold() {
+        let hold_ms = POINTING_LINK_HOLD.as_millis() as u32;
+        let generated = SplitLinkProfile::Pointing;
+
+        // No motion since boot: nothing to hold.
+        assert_eq!(
+            target_split_link_profile(29, generated, 5_000),
+            SplitLinkProfile::Keyboard
+        );
+
+        note_link_pointing_activity(29, 10_000);
+        assert_eq!(
+            target_split_link_profile(29, generated, 10_000),
+            SplitLinkProfile::Pointing
+        );
+        assert_eq!(
+            target_split_link_profile(29, generated, 10_000 + hold_ms - 1),
+            SplitLinkProfile::Pointing
+        );
+        assert_eq!(
+            target_split_link_profile(29, generated, 10_000 + hold_ms),
+            SplitLinkProfile::Keyboard
+        );
+
+        // A key-only link never runs the pointing cadence, however recent the motion.
+        assert!(set_split_link_profile(29, SplitLinkProfile::Keyboard));
+        assert_eq!(
+            target_split_link_profile(29, generated, 10_000),
+            SplitLinkProfile::Keyboard
+        );
+        assert!(set_split_link_profile(29, SplitLinkProfile::Pointing));
+        assert_eq!(
+            target_split_link_profile(29, generated, 10_000),
+            SplitLinkProfile::Pointing
+        );
+    }
+
+    #[test]
+    fn relaxed_pointing_link_is_woken_by_the_next_motion_only() {
+        let generated = SplitLinkProfile::Pointing;
+        let wake = &LINK_POINTING_WAKE[28];
+        wake.reset();
+
+        // Live at the pointing cadence: motion just refreshes the hold.
+        set_applied_split_link_profile(28, generated, SplitLinkProfile::Pointing);
+        note_link_pointing_activity(28, 1_000);
+        assert!(!wake.signaled());
+
+        // Relaxed: the first motion must wake the follower.
+        set_applied_split_link_profile(28, generated, SplitLinkProfile::Keyboard);
+        note_link_pointing_activity(28, 2_000);
+        assert!(wake.signaled());
+        wake.reset();
+
+        // A link configured key-only is not "relaxed", so motion stays silent.
+        assert!(set_split_link_profile(28, SplitLinkProfile::Keyboard));
+        set_applied_split_link_profile(28, generated, SplitLinkProfile::Keyboard);
+        note_link_pointing_activity(28, 3_000);
+        assert!(!wake.signaled());
+    }
+
+    #[test]
     fn pointing_quiet_period_waits_only_for_recent_motion() {
         let quiet_period = Duration::from_millis(100);
 
@@ -1463,15 +1801,27 @@ mod advertisement_tests {
 
     #[test]
     fn sleeping_split_link_keeps_short_burst_interval() {
-        let params = sleeping_central_conn_param(SplitLinkProfile::Keyboard);
+        for (usb_powered, interval, latency) in [(false, 30, 6), (true, 15, 13)] {
+            let params = sleeping_central_conn_param_for(SplitLinkProfile::Keyboard, usb_powered);
 
-        assert_eq!(params.min_connection_interval, Duration::from_millis(30));
-        assert_eq!(params.max_connection_interval, Duration::from_millis(30));
-        assert_eq!(params.max_latency, 6);
-        assert_eq!(
-            params.max_connection_interval.as_millis() * (u64::from(params.max_latency) + 1),
-            210
-        );
+            assert_eq!(params.min_connection_interval, Duration::from_millis(interval));
+            assert_eq!(params.max_connection_interval, Duration::from_millis(interval));
+            assert_eq!(params.max_latency, latency);
+            assert_eq!(
+                params.max_connection_interval.as_millis() * (u64::from(params.max_latency) + 1),
+                210
+            );
+        }
+    }
+
+    #[test]
+    fn usb_powered_central_sleeps_every_link_on_the_short_anchor() {
+        for profile in [SplitLinkProfile::Keyboard, SplitLinkProfile::Pointing] {
+            let params = sleeping_central_conn_param_for(profile, true);
+
+            assert_eq!(params.max_connection_interval, Duration::from_millis(15));
+            assert_eq!(params.max_latency, 13);
+        }
     }
 
     #[cfg(not(feature = "host_first_split_wake"))]
@@ -1542,5 +1892,161 @@ mod advertisement_tests {
             split_link_update_plan(SplitLinkProfile::Pointing, true, SplitLinkProfile::Keyboard, false),
             SplitLinkUpdatePlan::Active(SplitLinkProfile::Keyboard)
         );
+    }
+
+    #[cfg(not(feature = "host_first_split_wake"))]
+    mod follower {
+        use super::*;
+
+        fn at(ms: u64) -> Instant {
+            Instant::from_millis(ms)
+        }
+
+        const AWAKE_KEYBOARD: SplitLinkTarget = SplitLinkTarget {
+            sleeping: false,
+            profile: SplitLinkProfile::Keyboard,
+        };
+        const AWAKE_POINTING: SplitLinkTarget = SplitLinkTarget {
+            sleeping: false,
+            profile: SplitLinkProfile::Pointing,
+        };
+        const ASLEEP_KEYBOARD: SplitLinkTarget = SplitLinkTarget {
+            sleeping: true,
+            profile: SplitLinkProfile::Keyboard,
+        };
+        const ASLEEP_POINTING: SplitLinkTarget = SplitLinkTarget {
+            sleeping: true,
+            profile: SplitLinkProfile::Pointing,
+        };
+
+        #[test]
+        fn live_params_must_match_the_whole_requested_tuple() {
+            let params = active_central_conn_param(SplitLinkProfile::Keyboard);
+            let live = ConnParams {
+                conn_interval: params.max_connection_interval,
+                peripheral_latency: params.max_latency,
+                supervision_timeout: params.supervision_timeout,
+            };
+            assert!(split_link_params_live(&live, &params));
+
+            // Sleeping and active tuples on a USB central share the 15 ms interval.
+            let sleeping = sleeping_central_conn_param_for(SplitLinkProfile::Keyboard, true);
+            assert!(!split_link_params_live(&live, &sleeping));
+            assert!(!split_link_params_live(
+                &ConnParams {
+                    supervision_timeout: Duration::from_secs(11),
+                    ..live
+                },
+                &params
+            ));
+        }
+
+        #[test]
+        fn link_reconnecting_while_asleep_requests_only_the_sleep_cadence() {
+            let mut follower = SplitLinkFollower::default();
+
+            // The first request of a new link is the latched sleep target, never
+            // an active update that the sleep update would have to overtake.
+            assert_eq!(follower.step(ASLEEP_KEYBOARD, at(0)), SplitLinkStep::Apply);
+            follower.on_result(ASLEEP_KEYBOARD, true, at(100));
+            assert_eq!(follower.step(ASLEEP_KEYBOARD, at(200)), SplitLinkStep::Settled);
+            assert_eq!(follower.applied(), Some(ASLEEP_KEYBOARD));
+        }
+
+        #[test]
+        fn rejected_sleep_update_is_retried_with_backoff_until_confirmed() {
+            let mut follower = SplitLinkFollower::default();
+            follower.on_result(AWAKE_KEYBOARD, true, at(0));
+
+            assert_eq!(follower.step(ASLEEP_KEYBOARD, at(1_000)), SplitLinkStep::Apply);
+            follower.on_result(ASLEEP_KEYBOARD, false, at(3_000));
+            assert_eq!(follower.applied(), Some(AWAKE_KEYBOARD));
+            assert_eq!(
+                follower.step(ASLEEP_KEYBOARD, at(3_400)),
+                SplitLinkStep::RetryIn(Duration::from_millis(600))
+            );
+            assert_eq!(follower.step(ASLEEP_KEYBOARD, at(4_000)), SplitLinkStep::Apply);
+
+            // Consecutive failures double the backoff up to its ceiling.
+            let mut now = 4_000;
+            for backoff in [2_000, 4_000, 8_000, 8_000] {
+                follower.on_result(ASLEEP_KEYBOARD, false, at(now));
+                assert_eq!(
+                    follower.step(ASLEEP_KEYBOARD, at(now)),
+                    SplitLinkStep::RetryIn(Duration::from_millis(backoff))
+                );
+                now += backoff;
+                assert_eq!(follower.step(ASLEEP_KEYBOARD, at(now)), SplitLinkStep::Apply);
+            }
+
+            follower.on_result(ASLEEP_KEYBOARD, true, at(now));
+            assert_eq!(follower.step(ASLEEP_KEYBOARD, at(now)), SplitLinkStep::Settled);
+        }
+
+        #[test]
+        fn rejected_wake_update_is_retried_and_never_delays_the_next_transition() {
+            let mut follower = SplitLinkFollower::default();
+            follower.on_result(ASLEEP_KEYBOARD, true, at(0));
+
+            assert_eq!(follower.step(AWAKE_POINTING, at(1_000)), SplitLinkStep::Apply);
+            follower.on_result(AWAKE_POINTING, false, at(1_000));
+            assert_eq!(
+                follower.step(AWAKE_POINTING, at(1_500)),
+                SplitLinkStep::RetryIn(Duration::from_millis(500))
+            );
+            assert_eq!(follower.step(AWAKE_POINTING, at(2_000)), SplitLinkStep::Apply);
+
+            // The hold ran out meanwhile: the new target goes out at once.
+            follower.on_result(AWAKE_POINTING, false, at(2_000));
+            assert_eq!(follower.step(AWAKE_KEYBOARD, at(2_100)), SplitLinkStep::Apply);
+
+            // Back to sleep before any wake update landed: nothing to do.
+            assert_eq!(follower.step(ASLEEP_KEYBOARD, at(2_200)), SplitLinkStep::Settled);
+        }
+
+        #[test]
+        fn profile_change_while_asleep_is_reconciled() {
+            let mut follower = SplitLinkFollower::default();
+            follower.on_result(ASLEEP_KEYBOARD, true, at(0));
+
+            let expected = if ASLEEP_POINTING.conn_params() == ASLEEP_KEYBOARD.conn_params() {
+                SplitLinkStep::Settled
+            } else {
+                SplitLinkStep::Apply
+            };
+            assert_eq!(follower.step(ASLEEP_POINTING, at(1_000)), expected);
+            if expected == SplitLinkStep::Apply {
+                follower.on_result(ASLEEP_POINTING, true, at(1_100));
+            }
+            assert_eq!(follower.applied(), Some(ASLEEP_POINTING));
+
+            // Waking restores the new profile's active cadence.
+            assert_eq!(follower.step(AWAKE_POINTING, at(2_000)), SplitLinkStep::Apply);
+        }
+
+        #[test]
+        fn keyboard_to_pointing_switch_arms_the_first_motion() {
+            let generated = SplitLinkProfile::Keyboard;
+            let wake = &LINK_POINTING_WAKE[26];
+            wake.reset();
+            let mut follower = SplitLinkFollower::default();
+            follower.on_result(AWAKE_KEYBOARD, true, at(0));
+            note_split_link_target(26, generated, AWAKE_KEYBOARD);
+
+            // Switched to Pointing with no recent motion: the link stays at the
+            // keyboard cadence, but must be registered as a relaxed pointing link.
+            assert!(set_split_link_profile(26, SplitLinkProfile::Pointing));
+            let target = split_link_target(26, generated, false, 60_000);
+            assert_eq!(target, AWAKE_KEYBOARD);
+            assert_eq!(follower.step(target, at(60_000)), SplitLinkStep::Settled);
+            note_split_link_target(26, generated, target);
+
+            note_link_pointing_activity(26, 61_000);
+            assert!(wake.signaled());
+            let target = split_link_target(26, generated, false, 61_000);
+            assert_eq!(target, AWAKE_POINTING);
+            assert_eq!(follower.step(target, at(61_000)), SplitLinkStep::Apply);
+            wake.reset();
+        }
     }
 }
