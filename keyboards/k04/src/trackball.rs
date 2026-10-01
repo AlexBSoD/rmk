@@ -394,6 +394,7 @@ impl Trackball {
             let fallback_poll =
                 !motion_woke && fallback_deadline.is_some_and(|fallback_deadline| Instant::now() >= fallback_deadline);
 
+            let mut reads = 0usize;
             if motion_woke || fallback_poll {
                 #[cfg(feature = "rtt_diag")]
                 if motion_woke {
@@ -402,7 +403,6 @@ impl Trackball {
                         motion_pending_at_arm,
                     );
                 }
-                let mut reads = 0usize;
                 while reads < MAX_MOTION_READS_PER_WAKE
                     && (self.trackball.motion_pending() || (fallback_poll && reads == 0))
                 {
@@ -469,6 +469,7 @@ impl Trackball {
                     Timer::after(Duration::from_micros(50)).await;
                 }
             }
+            rmk::split::sleep_stats::record_pointing_wake(reads as u32);
 
             if !self.ready {
                 continue;
