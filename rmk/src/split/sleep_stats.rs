@@ -1,10 +1,12 @@
 //! Sleep statistics of a split peripheral, for tracking down battery drain.
 //!
 //! A peripheral counts how often it wakes up and how long it stays awake, and
-//! reports the totals to the central on every battery refresh. The central
-//! keeps the last report per peripheral for the host to read.
+//! how busy its pointing sensor loop is, and reports the totals to the central
+//! on every battery refresh. The central keeps the last report per peripheral
+//! for the host to read.
 
 use core::cell::Cell;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::Instant;
@@ -31,6 +33,9 @@ static TRACKER: Mutex<RawMutex, Cell<Tracker>> = Mutex::new(Cell::new(Tracker {
 static PERIPHERAL_SLEEP_STATS: Mutex<RawMutex, Cell<[Option<SleepStats>; crate::SPLIT_PERIPHERALS_NUM]>> =
     Mutex::new(Cell::new([None; crate::SPLIT_PERIPHERALS_NUM]));
 
+static POINTING_WAKES: AtomicU32 = AtomicU32::new(0);
+static POINTING_READS: AtomicU32 = AtomicU32::new(0);
+
 /// Record a sleep state change on this peripheral.
 pub(crate) fn record_sleep_state(sleeping: bool) {
     let now = Instant::now();
@@ -50,6 +55,16 @@ pub(crate) fn record_sleep_state(sleeping: bool) {
     });
 }
 
+/// Record one pass of a pointing sensor loop and the motion reads it made.
+///
+/// An idle sensor should leave both nearly still. Reads that climb while the
+/// ball rests mean the sensor keeps reporting jitter; many reads per pass mean
+/// its MOTION line is stuck asserted.
+pub fn record_pointing_wake(reads: u32) {
+    POINTING_WAKES.fetch_add(1, Ordering::Relaxed);
+    POINTING_READS.fetch_add(reads, Ordering::Relaxed);
+}
+
 /// Totals of this peripheral since boot, including the current awake stretch.
 pub(crate) fn current_sleep_stats() -> SleepStats {
     let now = Instant::now();
@@ -62,6 +77,8 @@ pub(crate) fn current_sleep_stats() -> SleepStats {
         wakes: tracker.wakes,
         awake_min: (awake_ms / 60_000).min(u64::from(u16::MAX)) as u16,
         uptime_min: (now.as_millis() / 60_000).min(u64::from(u16::MAX)) as u16,
+        pointing_wakes: POINTING_WAKES.load(Ordering::Relaxed),
+        pointing_reads: POINTING_READS.load(Ordering::Relaxed),
     }
 }
 
@@ -95,11 +112,23 @@ mod tests {
     }
 
     #[test]
+    fn pointing_counters_add_up_passes_and_reads() {
+        record_pointing_wake(1);
+        record_pointing_wake(0);
+        record_pointing_wake(16);
+        let stats = current_sleep_stats();
+        assert_eq!(stats.pointing_wakes, 3);
+        assert_eq!(stats.pointing_reads, 17);
+    }
+
+    #[test]
     fn central_keeps_the_last_report_per_peripheral() {
         let stats = SleepStats {
             wakes: 7,
             awake_min: 30,
             uptime_min: 600,
+            pointing_wakes: 12,
+            pointing_reads: 40,
         };
         let last = crate::SPLIT_PERIPHERALS_NUM - 1;
         assert_eq!(peripheral_sleep_stats(last), None);
