@@ -613,6 +613,19 @@ impl<'a> VialService<'a> {
                                 }
                             }
                         }
+
+                        // Pointing sensor loop passes and motion reads, the low
+                        // 24 bits of each wrapping counter (LE), left at 19..25
+                        // and right at 25..31, flagged by bits 4 and 5 of byte 4.
+                        for (flag, offset, stats) in [(0x10, 19, left), (0x20, 25, right)] {
+                            if let Some(stats) = stats {
+                                report.input_data[4] |= flag;
+                                for (i, value) in [stats.pointing_wakes, stats.pointing_reads].into_iter().enumerate() {
+                                    let at = offset + i * 3;
+                                    LittleEndian::write_u24(&mut report.input_data[at..at + 3], value & 0x00ff_ffff);
+                                }
+                            }
+                        }
                     }
                 } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS

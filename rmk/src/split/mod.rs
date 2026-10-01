@@ -21,7 +21,7 @@ pub mod rp;
 #[cfg(not(feature = "_ble"))]
 pub mod serial;
 #[cfg(feature = "_ble")]
-pub(crate) mod sleep_stats;
+pub mod sleep_stats;
 
 /// Maximum size of a split message
 pub const SPLIT_MESSAGE_MAX_SIZE: usize = SplitMessage::POSTCARD_MAX_SIZE + 4;
@@ -37,7 +37,8 @@ pub(crate) fn encode_split_message<'a>(
     postcard::to_slice(message, buffer).map(|encoded| &*encoded)
 }
 
-/// Wake-ups and awake time of a split peripheral since it booted.
+/// Wake-ups and awake time of a split peripheral since it booted, plus how
+/// busy its pointing sensor task has been.
 #[cfg(feature = "_ble")]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, MaxSize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -45,6 +46,10 @@ pub(crate) struct SleepStats {
     pub(crate) wakes: u16,
     pub(crate) awake_min: u16,
     pub(crate) uptime_min: u16,
+    /// Passes of the pointing sensor loop, wrapping.
+    pub(crate) pointing_wakes: u32,
+    /// Motion reads made by the pointing sensor loop, wrapping.
+    pub(crate) pointing_reads: u32,
 }
 
 /// Message used from central & peripheral communication
