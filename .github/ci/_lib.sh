@@ -42,6 +42,7 @@ RMK_FEATURESETS=(
     "storage"
     "async_matrix,storage"
     "split,vial,storage"
+    "split,vial_lock,storage"
     "passkey_entry"
     "split,vial,storage,passkey_entry"
     "split,vial,storage,_ble"
