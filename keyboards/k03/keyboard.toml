@@ -85,6 +85,8 @@ encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"],["AudioV
 
 [ble]
 enabled = true
+default_tx_power = 8
+use_2m_phy = false
 
 [split]
 connection = "ble"

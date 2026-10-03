@@ -70,6 +70,8 @@ _           F9             F10             F11             F12  OutputUsb       
 
 [ble]
 enabled = true
+default_tx_power = 8
+use_2m_phy = false
 
 [split]
 connection = "ble"
