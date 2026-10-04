@@ -305,9 +305,17 @@ impl Trackball {
             }
 
             let sleeping = module_settings::module_sleeping();
-            if !sleeping {
-                self.apply_configured_cpi().await;
+            if sleeping {
+                // Even in Rest3 the module drains the half about 1%/h. Shut the
+                // sensor down and re-probe it on wake; the trade-off is that
+                // the ball no longer wakes the board.
+                let _ = self.trackball.shutdown().await;
+                self.park_for_sleep();
+                self.ready = false;
+                self.next_probe = Instant::MIN;
+                continue;
             }
+            self.apply_configured_cpi().await;
             let report_interval = self.report_interval();
             let report_deadline = self
                 .has_reportable_motion(sleeping)
