@@ -46,6 +46,7 @@ RMK_FEATURESETS=(
     "passkey_entry"
     "split,vial,storage,passkey_entry"
     "split,vial,storage,_ble"
+    "split,vial,storage,_ble,display"
 )
 
 # Examples auto-discovery skiplist. Reasons:

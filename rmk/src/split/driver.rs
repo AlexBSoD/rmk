@@ -145,6 +145,18 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
             return;
         }
 
+        // Sleep is only sent on transitions. A peripheral that reboots or
+        // reconnects while the keyboard already sleeps would otherwise stay
+        // awake until the next wake/sleep cycle.
+        #[cfg(all(feature = "display", feature = "_ble"))]
+        if self
+            .send(&SplitMessage::SleepState(crate::ble::sleep::is_sleeping()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+
         #[cfg(feature = "dfu_split")]
         self.check_firmware_update().await;
 
@@ -640,5 +652,59 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
         }
 
         error!("dfu_split: all {} update attempts failed", MAX_ATTEMPTS);
+    }
+}
+
+#[cfg(all(test, feature = "display", feature = "_ble"))]
+mod tests {
+    use core::cell::RefCell;
+
+    use embassy_futures::select::select;
+    use embassy_time::Timer;
+
+    use super::*;
+    use crate::test_support::test_block_on as block_on;
+
+    struct RecordingTransceiver<'a> {
+        sent: &'a RefCell<heapless::Vec<SplitMessage, 8>>,
+    }
+
+    impl SplitReader for RecordingTransceiver<'_> {
+        async fn read(&mut self) -> Result<SplitMessage, SplitDriverError> {
+            core::future::pending().await
+        }
+    }
+
+    impl SplitWriter for RecordingTransceiver<'_> {
+        async fn write(&mut self, message: &SplitMessage) -> Result<usize, SplitDriverError> {
+            let _ = self.sent.borrow_mut().push(*message);
+            Ok(0)
+        }
+    }
+
+    fn startup_sleep_states(sleeping: bool) -> heapless::Vec<bool, 8> {
+        crate::ble::sleep::set_sleeping(sleeping);
+        let sent = RefCell::new(heapless::Vec::new());
+        let manager = PeripheralManager::<1, 1, 0, 0, _>::new(RecordingTransceiver { sent: &sent }, 0);
+        block_on(async {
+            select(manager.run(), Timer::after_millis(10)).await;
+        });
+        sent.borrow()
+            .iter()
+            .filter_map(|message| match message {
+                SplitMessage::SleepState(sleeping) => Some(*sleeping),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn connecting_peripheral_learns_the_keyboard_sleeps() {
+        assert_eq!(startup_sleep_states(true), [true]);
+    }
+
+    #[test]
+    fn connecting_peripheral_learns_the_keyboard_is_awake() {
+        assert_eq!(startup_sleep_states(false), [false]);
     }
 }
