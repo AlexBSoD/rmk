@@ -61,6 +61,7 @@ Available registration modes:
 
 - `#[register_processor(event)]`: Event-driven mode, reacts to subscribed events
 - `#[register_processor(poll)]`: Polling mode, requires `poll_interval` parameter in `#[processor]` macro
+- `#[register_processor(deadline)]`: Deadline mode, requires a `DeadlineProcessor` implementation; the timer is armed only while `deadline()` returns `Some`, so an idle processor does not wake the MCU
 
 ## Multi-event Subscription
 

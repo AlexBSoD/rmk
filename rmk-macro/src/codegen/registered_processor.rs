@@ -41,34 +41,38 @@ pub(crate) fn expand_registered_processor_init(
 
             let (custom_init, custom_exec) = expand_custom_processor(item_fn);
             let cfg_predicates = processor_cfg_predicates(item_fn);
-            let mut mode: Option<bool> = None; // Some(true) = event, Some(false) = poll
+            let mut executor_body: Option<TokenStream> = None;
 
             attr.parse_nested_meta(|meta| {
-                let is_event = meta.path.is_ident("event");
-                let is_poll = meta.path.is_ident("poll");
-
-                if !is_event && !is_poll {
-                    return Err(meta.error("expected `event` or `poll`"));
-                }
-                if mode.is_some() {
+                let body = if meta.path.is_ident("event") {
+                    quote! {
+                        use ::rmk::processor::Processor;
+                        #custom_exec.process_loop().await
+                    }
+                } else if meta.path.is_ident("poll") {
+                    quote! {
+                        use ::rmk::processor::PollingProcessor;
+                        #custom_exec.polling_loop().await
+                    }
+                } else if meta.path.is_ident("deadline") {
+                    quote! {
+                        use ::rmk::processor::DeadlineProcessor;
+                        #custom_exec.deadline_loop().await
+                    }
+                } else {
+                    return Err(meta.error("expected `event`, `poll` or `deadline`"));
+                };
+                if executor_body.is_some() {
                     return Err(meta.error("cannot specify multiple modes"));
                 }
-                mode = Some(is_event);
+                executor_body = Some(body);
                 Ok(())
             })
             .unwrap_or_else(|e| panic!("#[register_processor] {e}"));
 
-            let executor_body = match mode {
-                Some(true) => quote! {
-                    use ::rmk::processor::Processor;
-                    #custom_exec.process_loop().await
-                },
-                Some(false) => quote! {
-                    use ::rmk::processor::PollingProcessor;
-                    #custom_exec.polling_loop().await
-                },
-                None => panic!("#[register_processor] requires `event` or `poll` argument"),
-            };
+            let executor_body = executor_body.unwrap_or_else(|| {
+                panic!("#[register_processor] requires `event`, `poll` or `deadline` argument")
+            });
             let executor = if cfg_predicates.is_empty() {
                 quote! {
                     async { #executor_body }
