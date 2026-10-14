@@ -1551,8 +1551,7 @@ impl<'a> Keyboard<'a> {
         }
     }
 
-    #[cfg(feature = "vial")]
-    async fn process_vial_macro_action(&mut self, action: Action, event: KeyboardEvent) {
+    async fn process_macro_action(&mut self, action: Action, event: KeyboardEvent) {
         publish_event_async(ActionEvent {
             action,
             keyboard_event: event,
@@ -1890,6 +1889,20 @@ impl<'a> Keyboard<'a> {
         }
     }
 
+    /// Wait within macro playback without starving the shared mouse repeat state.
+    /// The macro delay has a fixed end; mouse ticks must not restart that delay.
+    async fn wait_macro_delay(&mut self, millis: u64) {
+        let end = Instant::now() + Duration::from_millis(millis);
+        loop {
+            let deadline = self.mouse.next_deadline().map_or(end, |repeat| repeat.min(end));
+            Timer::at(deadline).await;
+            if Instant::now() >= end {
+                break;
+            }
+            self.fire_mouse_repeat().await;
+        }
+    }
+
     async fn execute_macro(&mut self, macro_idx: u8, event: KeyboardEvent) {
         // Execute the macro only when releasing the key
         if event.pressed {
@@ -1907,66 +1920,73 @@ impl<'a> Keyboard<'a> {
                 match operation {
                     MacroOperation::Press(k) => {
                         self.macro_texting = false;
-                        self.register_key(k, event);
-                        self.send_keyboard_report_with_resolved_modifiers(true).await;
+                        let mut action_event = event;
+                        action_event.pressed = true;
+                        self.process_macro_action(Action::Key(KeyCode::Hid(k)), action_event)
+                            .await;
                     }
                     MacroOperation::Release(k) => {
                         self.macro_texting = false;
-                        self.unregister_key(k, event);
-                        self.send_keyboard_report_with_resolved_modifiers(false).await;
+                        let mut action_event = event;
+                        action_event.pressed = false;
+                        self.process_macro_action(Action::Key(KeyCode::Hid(k)), action_event)
+                            .await;
                     }
                     MacroOperation::Tap(k) => {
                         self.macro_texting = false;
-                        self.register_key(k, event);
-                        self.send_keyboard_report_with_resolved_modifiers(true).await;
-                        embassy_time::Timer::after_millis(2).await;
-                        self.unregister_key(k, event);
-                        self.send_keyboard_report_with_resolved_modifiers(false).await;
+                        let mut action_event = event;
+                        action_event.pressed = true;
+                        self.process_macro_action(Action::Key(KeyCode::Hid(k)), action_event)
+                            .await;
+                        self.wait_macro_delay(2).await;
+                        action_event.pressed = false;
+                        self.process_macro_action(Action::Key(KeyCode::Hid(k)), action_event)
+                            .await;
                     }
                     MacroOperation::Text(k, is_cap) => {
                         self.macro_texting = true;
                         self.macro_caps = is_cap;
                         if is_cap {
                             self.send_keyboard_report_with_resolved_modifiers(true).await;
-                            embassy_time::Timer::after_millis(12).await;
+                            self.wait_macro_delay(12).await;
                         }
                         self.register_keycode(k, event);
                         self.send_keyboard_report_with_resolved_modifiers(true).await;
-                        embassy_time::Timer::after_millis(12).await;
+                        self.wait_macro_delay(12).await;
                         self.unregister_keycode(k, event);
                         self.send_keyboard_report_with_resolved_modifiers(false).await;
                         if is_cap {
                             self.macro_caps = false;
-                            embassy_time::Timer::after_millis(12).await;
+                            self.wait_macro_delay(12).await;
                             self.send_keyboard_report_with_resolved_modifiers(false).await;
                         }
                     }
                     MacroOperation::Delay(t) => {
-                        embassy_time::Timer::after_millis(t as u64).await;
+                        self.wait_macro_delay(t as u64).await;
                     }
                     #[cfg(feature = "vial")]
                     MacroOperation::ExtendedPress(action) => {
                         self.macro_texting = false;
                         let mut action_event = event;
                         action_event.pressed = true;
-                        self.process_vial_macro_action(action, action_event).await;
+                        self.process_macro_action(action, action_event).await;
                     }
                     #[cfg(feature = "vial")]
                     MacroOperation::ExtendedRelease(action) => {
                         self.macro_texting = false;
                         let mut action_event = event;
                         action_event.pressed = false;
-                        self.process_vial_macro_action(action, action_event).await;
+                        self.process_macro_action(action, action_event).await;
                     }
                     #[cfg(feature = "vial")]
                     MacroOperation::ExtendedTap(action) => {
                         self.macro_texting = false;
                         let mut action_event = event;
                         action_event.pressed = true;
-                        self.process_vial_macro_action(action, action_event).await;
-                        embassy_time::Timer::after_millis(2).await;
+                        self.process_macro_action(action, action_event).await;
+                        self.wait_macro_delay(2).await;
                         action_event.pressed = false;
-                        self.process_vial_macro_action(action, action_event).await;
+                        self.process_macro_action(action, action_event).await;
                     }
                     MacroOperation::End => {
                         if self.macro_texting {
