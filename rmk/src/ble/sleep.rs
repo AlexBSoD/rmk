@@ -32,7 +32,7 @@ pub(crate) fn is_sleeping() -> bool {
     SLEEPING_STATE.lock(Cell::get)
 }
 
-fn set_sleeping(next: bool) {
+pub(crate) fn set_sleeping(next: bool) {
     SLEEPING_STATE.lock(|state| state.set(next));
 }
 

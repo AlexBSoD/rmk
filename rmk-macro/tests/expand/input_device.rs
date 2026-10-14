@@ -33,6 +33,22 @@ mod basic {
 /// Multi-event device using wrapper enum
 mod multi_event {
     use super::{NrfAdcEvent, input_device};
+    use rmk::embassy_time::{Duration, Instant};
+
+    // Hardware storage stand-in; expansion only needs the lifetime and const generic.
+    struct Saadc<'a, const PIN_NUM: usize>(core::marker::PhantomData<&'a [u16; PIN_NUM]>);
+
+    // Mirror rmk::input_device::adc without pulling in the nRF HAL.
+    enum AnalogEventType {
+        Joystick(u8),
+        Battery,
+    }
+
+    #[derive(PartialEq)]
+    enum AdcState {
+        Active,
+        LightSleep,
+    }
 
     #[input_device(publish = NrfAdcEvent)]
     pub struct NrfAdc<'a, const PIN_NUM: usize, const EVENT_NUM: usize> {

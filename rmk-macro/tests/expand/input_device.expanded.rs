@@ -164,6 +164,29 @@ mod basic {
 /// Multi-event device using wrapper enum
 mod multi_event {
     use super::{NrfAdcEvent, input_device};
+    use rmk::embassy_time::{Duration, Instant};
+    struct Saadc<'a, const PIN_NUM: usize>(
+        core::marker::PhantomData<&'a [u16; PIN_NUM]>,
+    );
+    enum AnalogEventType {
+        Joystick(u8),
+        Battery,
+    }
+    enum AdcState {
+        Active,
+        LightSleep,
+    }
+    #[automatically_derived]
+    impl ::core::marker::StructuralPartialEq for AdcState {}
+    #[automatically_derived]
+    impl ::core::cmp::PartialEq for AdcState {
+        #[inline]
+        fn eq(&self, other: &AdcState) -> bool {
+            let __self_discr = ::core::intrinsics::discriminant_value(self);
+            let __arg1_discr = ::core::intrinsics::discriminant_value(other);
+            __self_discr == __arg1_discr
+        }
+    }
     pub struct NrfAdc<'a, const PIN_NUM: usize, const EVENT_NUM: usize> {
         saadc: Saadc<'a, PIN_NUM>,
         polling_interval: Duration,

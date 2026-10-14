@@ -688,6 +688,128 @@ mod lock_tests {
     }
 
     #[test]
+    fn factory_df_unlock_is_physical_and_advertised_for_all_profiles() {
+        use rmk_types::action::Action;
+        use rmk_types::keycode::{HidKeyCode, KeyCode};
+
+        use crate::event::KeyboardEventPos;
+
+        let profiles = [
+            ("k03", [(2, 2), (2, 1)], [(0, 5), (0, 4)]),
+            ("k04", [(2, 2), (2, 1)], [(1, 4), (1, 3)]),
+            ("k04_mini", [(1, 2), (1, 1)], [(0, 5), (0, 4)]),
+            ("k04_micro", [(1, 2), (1, 1)], [(0, 4), (0, 3)]),
+            ("imperial44", [(1, 2), (1, 1)], [(0, 5), (0, 4)]),
+            ("op36", [(1, 2), (1, 1)], [(0, 4), (0, 3)]),
+            ("velvet", [(1, 3), (1, 4)], [(0, 0), (0, 1)]),
+            ("op36_qube", [(1, 2), (1, 1)], [(0, 4), (0, 3)]),
+            ("k03_qube", [(2, 2), (2, 1)], [(0, 5), (0, 4)]),
+            ("velvet_qube", [(1, 3), (1, 4)], [(0, 0), (0, 1)]),
+            ("imperial44_qube", [(1, 2), (1, 1)], [(0, 5), (0, 4)]),
+            ("k04_qube", [(2, 2), (2, 1)], [(0, 5), (0, 4)]),
+            ("k04_qube_mini", [(1, 2), (1, 1)], [(0, 5), (0, 4)]),
+            ("k04_qube_micro", [(1, 2), (1, 1)], [(0, 4), (0, 3)]),
+        ];
+        for (name, unlock_keys, old_keys) in profiles {
+            let mut data = KeymapData::new([[[KeyAction::No; 6]; 3]; 2]);
+            let mut behavior = BehaviorConfig::default();
+            let positional = PositionalConfig::<3, 6>::default();
+            let keymap = block_on(KeyMap::new(&mut data, &mut behavior, &positional));
+            let ctx = KeyboardContext::new(&keymap);
+            let config = VialConfig {
+                unlock_keys: &unlock_keys,
+                ..Default::default()
+            };
+            let mut locker = VialLock::new(&unlock_keys, &keymap, false);
+            let mut command = |command| {
+                let mut report = vial_report(command);
+                block_on(process_vial(&mut report, &config, &mut locker, &ctx));
+                report.input_data
+            };
+            let status = command(VialCommand::GetUnlockStatus);
+            assert_eq!(
+                &status[..6],
+                &[
+                    0,
+                    0,
+                    unlock_keys[0].0,
+                    unlock_keys[0].1,
+                    unlock_keys[1].0,
+                    unlock_keys[1].1
+                ],
+                "{name}"
+            );
+            assert!(status[6..].iter().all(|byte| *byte == 0xFF), "{name}");
+            command(VialCommand::UnlockStart);
+            assert_eq!(&command(VialCommand::UnlockPoll)[..3], &[0, 1, 2], "{name}: no keys");
+            for (row, col) in old_keys {
+                keymap.update_matrix_state(&KeyboardEvent::key(row, col, true));
+            }
+            assert_eq!(&command(VialCommand::UnlockPoll)[..3], &[0, 1, 2], "{name}: old chord");
+            for (row, col) in old_keys {
+                keymap.update_matrix_state(&KeyboardEvent::key(row, col, false));
+            }
+            let [(d_row, d_col), (f_row, f_col)] = unlock_keys;
+            keymap.update_matrix_state(&KeyboardEvent::key(d_row, d_col, true));
+            assert_eq!(&command(VialCommand::UnlockPoll)[..3], &[0, 1, 1], "{name}: D only");
+            keymap.update_matrix_state(&KeyboardEvent::key(d_row, d_col, false));
+            keymap.update_matrix_state(&KeyboardEvent::key(f_row, f_col, true));
+            assert_eq!(&command(VialCommand::UnlockPoll)[..3], &[0, 1, 1], "{name}: F only");
+            keymap.update_matrix_state(&KeyboardEvent::key(f_row, f_col, false));
+
+            // Remap the physical unlock positions to No; move D/F elsewhere,
+            // on both layers. Unlock must not follow those current keycodes.
+            for layer in 0..2 {
+                for (row, col) in unlock_keys {
+                    keymap.set_action_at(KeyboardEventPos::key_pos(col, row), layer, KeyAction::No);
+                }
+                for ((row, col), code) in old_keys.into_iter().zip([HidKeyCode::D, HidKeyCode::F]) {
+                    keymap.set_action_at(
+                        KeyboardEventPos::key_pos(col, row),
+                        layer,
+                        KeyAction::Single(Action::Key(KeyCode::Hid(code))),
+                    );
+                }
+            }
+            keymap.activate_layer(1);
+            for (row, col) in old_keys {
+                keymap.update_matrix_state(&KeyboardEvent::key(row, col, true));
+            }
+            assert_eq!(
+                &command(VialCommand::UnlockPoll)[..3],
+                &[0, 1, 2],
+                "{name}: remapped D/F elsewhere"
+            );
+            for (row, col) in old_keys {
+                keymap.update_matrix_state(&KeyboardEvent::key(row, col, false));
+            }
+            for (row, col) in unlock_keys {
+                keymap.update_matrix_state(&KeyboardEvent::key(row, col, true));
+            }
+            assert_eq!(
+                &command(VialCommand::UnlockPoll)[..3],
+                &[1, 0, 0],
+                "{name}: physical D/F"
+            );
+            assert_eq!(
+                &command(VialCommand::UnlockPoll)[..3],
+                &[1, 0, 0],
+                "{name}: finished remains finished"
+            );
+            for (row, col) in unlock_keys {
+                keymap.update_matrix_state(&KeyboardEvent::key(row, col, false));
+            }
+            command(VialCommand::Lock);
+            assert_eq!(command(VialCommand::GetUnlockStatus)[0], 0, "{name}: relock");
+            assert_eq!(
+                &command(VialCommand::UnlockPoll)[..3],
+                &[0, 1, 2],
+                "{name}: relocked, released"
+            );
+        }
+    }
+
+    #[test]
     fn unlock_poll_reports_finished_unlock_like_vial_qmk() {
         let mut data = KeymapData::new([[[KeyAction::No; 2]]]);
         let mut behavior = BehaviorConfig::default();
