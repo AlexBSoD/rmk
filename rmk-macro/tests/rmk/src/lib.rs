@@ -1,7 +1,7 @@
 //! Mock rmk crate for macro expansion tests.
 //!
 //! Provides minimal types and traits that mirror the real rmk crate
-//! for testing macro expansions without needing embassy or hardware dependencies.
+//! for testing macro expansions without firmware or hardware dependencies.
 
 #![no_std]
 #![allow(dead_code)]
@@ -18,50 +18,11 @@ macro_rules! select_biased {
     };
 }
 
-/// Mock RawMutex type
-pub struct RawMutex;
+/// Match the real host-side RMK mutex type.
+pub use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as RawMutex;
 
-/// Mock embassy_time module
-pub mod embassy_time {
-    /// Mock Duration type
-    #[derive(Clone, Copy, Debug)]
-    pub struct Duration(pub u64);
-
-    impl Duration {
-        pub const fn from_millis(ms: u64) -> Self {
-            Duration(ms)
-        }
-
-        pub const MIN: Duration = Duration(0);
-
-        pub fn checked_sub(self, other: Duration) -> Option<Duration> {
-            self.0.checked_sub(other.0).map(Duration)
-        }
-    }
-
-    /// Mock Instant type
-    #[derive(Clone, Copy, Debug)]
-    pub struct Instant(pub u64);
-
-    impl Instant {
-        pub fn now() -> Self {
-            Instant(0)
-        }
-
-        pub fn elapsed(&self) -> Duration {
-            Duration(0)
-        }
-    }
-
-    /// Mock Timer type
-    pub struct Timer;
-
-    impl Timer {
-        pub fn after(_duration: Duration) -> impl core::future::Future<Output = ()> {
-            async {}
-        }
-    }
-}
+// Use the same time types as generated polling implementations.
+pub use embassy_time;
 
 /// Event system module - mirrors rmk::event
 pub mod event {
@@ -84,8 +45,9 @@ pub mod event {
     }
 
     /// Trait for events that can be published
-    pub trait PublishableEvent: Clone {
+    pub trait PublishableEvent: Clone + Send {
         type Publisher: EventPublisher<Event = Self>;
+        const PUBLISH_IS_NOOP: bool;
         fn publisher() -> Self::Publisher;
     }
 
@@ -96,7 +58,7 @@ pub mod event {
     }
 
     /// Trait for events that can be subscribed to
-    pub trait SubscribableEvent: Clone {
+    pub trait SubscribableEvent: Clone + Send {
         type Subscriber: EventSubscriber<Event = Self>;
         fn subscriber() -> Self::Subscriber;
     }
@@ -114,12 +76,16 @@ pub mod event {
 
     /// Publish an event (non-blocking, may drop if buffer full)
     pub fn publish_event<E: PublishableEvent>(e: E) {
-        E::publisher().publish(e);
+        if !E::PUBLISH_IS_NOOP {
+            E::publisher().publish(e);
+        }
     }
 
     /// Publish an event with backpressure (waits if buffer full)
     pub async fn publish_event_async<E: AsyncPublishableEvent>(e: E) {
-        E::publisher_async().publish_async(e).await;
+        if !E::PUBLISH_IS_NOOP {
+            E::publisher_async().publish_async(e).await;
+        }
     }
 }
 
@@ -189,7 +155,9 @@ pub mod processor {
 }
 
 /// Mock macros module for marker attributes
-pub mod macros {}
+pub mod macros {
+    pub use rmk_macro::runnable_generated;
+}
 
 /// Mock KeyMap struct for keyboard configuration
 pub struct KeyMap<
