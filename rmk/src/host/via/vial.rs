@@ -689,9 +689,10 @@ mod lock_tests {
 
     #[test]
     fn factory_df_unlock_is_physical_and_advertised_for_all_profiles() {
-        use crate::event::KeyboardEventPos;
         use rmk_types::action::Action;
         use rmk_types::keycode::{HidKeyCode, KeyCode};
+
+        use crate::event::KeyboardEventPos;
 
         let profiles = [
             ("k03", [(2, 2), (2, 1)], [(0, 5), (0, 4)]),
