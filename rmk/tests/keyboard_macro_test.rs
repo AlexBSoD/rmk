@@ -24,6 +24,12 @@ mod macro_test {
     // Exercise the real decoder, keyboard runner, and report queue. Observe every
     // report variant (the ordinary key-sequence helper ignores non-keyboard HID).
     fn capture_macro_reports(bytes: &[u8]) -> std::vec::Vec<(u64, rmk::hid::Report)> {
+        let mut config = BehaviorConfig::default();
+        config.keyboard_macros.macro_sequences[..bytes.len()].copy_from_slice(bytes);
+        capture_configured_macro_reports(config, 0)
+    }
+
+    fn capture_configured_macro_reports(config: BehaviorConfig, col: u8) -> std::vec::Vec<(u64, rmk::hid::Report)> {
         use embassy_futures::select::{Either, select};
         use embassy_time::{Duration, Instant, Timer, with_deadline};
         use rmk::channel::USB_REPORT_CHANNEL;
@@ -32,8 +38,6 @@ mod macro_test {
         use rmk::state::set_usb_state;
         use rmk::types::connection::UsbState;
 
-        let mut config = BehaviorConfig::default();
-        config.keyboard_macros.macro_sequences[..bytes.len()].copy_from_slice(bytes);
         let mut keyboard = create_simple_macro_keyboard(config);
         let sender = KeyboardEvent::publisher_async();
         sender.clear();
@@ -42,9 +46,9 @@ mod macro_test {
         crate::common::test_block_on::test_block_on(async {
             let observe = async {
                 let send = async {
-                    sender.publish_async(KeyboardEvent::key(0, 0, true)).await;
+                    sender.publish_async(KeyboardEvent::key(0, col, true)).await;
                     Timer::after_millis(10).await;
-                    sender.publish_async(KeyboardEvent::key(0, 0, false)).await;
+                    sender.publish_async(KeyboardEvent::key(0, col, false)).await;
                 };
                 let collect = async {
                     let start = Instant::now();
@@ -63,6 +67,56 @@ mod macro_test {
                 Either::First(_) => unreachable!(),
             }
         })
+    }
+
+    #[test]
+    fn test_entlayout_single_key_combo_swallows_m0_but_not_m1() {
+        use rmk::hid::Report;
+        use rmk::keyboard::combo::{Combo, ComboConfig};
+        // Exact macro bytes and combo from Evgeny's k_04.entlayout.
+        let bytes = b"hello world\0\x01\x01\xD1\0";
+        let config = |blocking_combo: bool| {
+            let mut config = BehaviorConfig::default();
+            config.keyboard_macros.macro_sequences[..bytes.len()].copy_from_slice(bytes);
+            if blocking_combo {
+                config.combo.combos[0] = Some(Combo::new(ComboConfig::new(
+                    [KeyAction::Single(Action::TriggerMacro(0))],
+                    KeyAction::No,
+                    None,
+                )));
+            }
+            config
+        };
+        let blocked = capture_configured_macro_reports(config(true), 0);
+        assert!(
+            blocked.is_empty(),
+            "M0 must be swallowed by the configured No-output combo: {blocked:?}"
+        );
+        let m1 = capture_configured_macro_reports(config(true), 1);
+        assert_eq!(m1.len(), 2, "M1 must remain unaffected: {m1:?}");
+        for ((_, report), buttons) in m1.iter().zip([1, 0]) {
+            let Report::MouseReport(r) = report else {
+                panic!("expected M1 mouse reports: {m1:?}");
+            };
+            assert_eq!(r.buttons, buttons);
+        }
+        let restored = capture_configured_macro_reports(config(false), 0);
+        let actual: std::vec::Vec<_> = restored
+            .iter()
+            .map(|(_, report)| {
+                let Report::KeyboardReport(r) = report else {
+                    panic!("expected M0 text reports: {restored:?}");
+                };
+                assert_eq!(r.modifier, 0);
+                r.keycodes[0]
+            })
+            .collect();
+        let expected: std::vec::Vec<_> = [0x0B, 0x08, 0x0F, 0x0F, 0x12, 0x2C, 0x1A, 0x12, 0x15, 0x0F, 0x07]
+            .into_iter()
+            .flat_map(|key| [key, 0])
+            .chain([0]) // Text playback restores the keyboard state at End.
+            .collect();
+        assert_eq!(actual, expected, "removing only Combo 0 restores hello world");
     }
 
     #[test]
