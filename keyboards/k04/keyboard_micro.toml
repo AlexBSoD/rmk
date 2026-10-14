@@ -11,7 +11,7 @@ chip = "nrf52840"
 # Enable Vial support
 vial_enabled = true
 # Unlock keys: hold simultaneously to unlock Vial config
-unlock_keys = [[0, 4], [0, 3]]
+unlock_keys = [[1, 2], [1, 1]]
 
 [event]
 action.channel_size = 16
