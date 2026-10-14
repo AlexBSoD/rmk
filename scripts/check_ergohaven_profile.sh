@@ -228,6 +228,7 @@ rg -Fq 'no_action_layer_start: #no_action_layer_start' rmk-macro/src/codegen/chi
     || fail "rmk-macro: no-action boundary is not propagated to runtime storage"
 
 python3 - <<'PY' || fail "projected factory layers must mirror their K:04 Series references"
+import re
 import tomllib
 
 def layers(path):
@@ -270,6 +271,7 @@ def check_projection(
     expected_source_actions,
     encoders_per_half,
     expected_target_layers,
+    base_overrides=None,
 ):
     reference_layers = layers(reference_path)[:4]
     for layer in reference_layers:
@@ -295,6 +297,26 @@ def check_projection(
     ]
 
     for path in target_paths:
+        expected_for_target = list(expected)
+        if base_overrides:
+            with open(path, "rb") as source:
+                layout = tomllib.load(source)["layout"]
+            positions = [
+                (int(row), int(col))
+                for row, col in re.findall(r"\((\d+),(\d+),[^)]+\)", layout["matrix_map"])
+            ]
+            base_name, base_keys, base_encoders = expected[0]
+            base_keys = list(base_keys)
+            if base_name != "Base" or len(positions) != len(base_keys) or len(set(positions)) != len(positions):
+                raise SystemExit(f"{path}: invalid physical factory Base projection")
+            for position, (reference_action, approved_action) in base_overrides.items():
+                if position not in positions:
+                    raise SystemExit(f"{path}: approved position {position} is missing")
+                index = positions.index(position)
+                if base_keys[index] != reference_action:
+                    raise SystemExit(f"{path}: reference action changed at {position}")
+                base_keys[index] = approved_action
+            expected_for_target[0] = (base_name, base_keys, base_encoders)
         actual_layers = layers(path)
         if len(actual_layers) != expected_target_layers:
             raise SystemExit(
@@ -309,7 +331,7 @@ def check_projection(
             )
             for layer in actual_layers[:4]
         ]
-        if actual != expected:
+        if actual != expected_for_target:
             raise SystemExit(
                 f"{path}: common factory layers drifted from {reference_path}"
             )
@@ -335,6 +357,8 @@ check_projection(
     48,
     1,
     4,
+    # Hardware-approved Imperial44 Base exceptions; other layers still mirror Mini.
+    {(3, 0): ("_", "LeftBracket"), (7, 0): ("_", "RightBracket"), (5, 5): ("Backslash", "RGui")},
 )
 check_projection(
     "keyboards/k04/keyboard_mini.toml",
@@ -357,8 +381,17 @@ check_projection(
     60,
     3,
     4,
+    # Hardware-approved K:03 Base exceptions; preserve all other projected actions.
+    {
+        (4, 0): ("_", "LeftBracket"), (9, 0): ("_", "RightBracket"),
+        (4, 5): ("Delete", "LGui"), (4, 4): ("LGui", "LAlt"),
+        (9, 3): ("RAlt", "RCtrl"), (9, 4): ("LeftBracket", "RAlt"),
+        (9, 5): ("RightBracket", "RGui"),
+    },
 )
 PY
+
+python3 scripts/test_approved_factory_layouts.py || fail "approved factory layout regression tests failed"
 
 for file in "${non_k04_profiles[@]}"; do
     expect_toml "$file" combo_max_length 4

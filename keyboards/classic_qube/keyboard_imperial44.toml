@@ -113,8 +113,8 @@ name = "Base"
 # thumb positions; hardware-specific pointing actions are not copied.
 keys = """
 Escape  Q     W     E     R     T     Y     U     I     O     P     Backspace
-Tab     A     S     D     F     G     H     J     K     L     Semicolon  Backslash
-LShift  Z     X     C     V     B     _     _     N     M     Comma  Dot  Quote  RShift
+Tab     A     S     D     F     G     H     J     K     L     Semicolon  RGui
+LShift  Z     X     C     V     B     LeftBracket RightBracket N M Comma Dot Quote RShift
                           LCtrl MO(1) Space Enter MO(2) LAlt
 """
 encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
