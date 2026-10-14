@@ -9,7 +9,7 @@ chip = "nrf52840"
 [host]
 vial_enabled = true
 # Physical keys: top row inner positions on left half — (0,4)=Q, (0,3)=W in OP36 matrix
-unlock_keys = [[0, 4], [0, 3]]
+unlock_keys = [[1, 2], [1, 1]]
 
 [rmk]
 split_peripherals_num = 2
