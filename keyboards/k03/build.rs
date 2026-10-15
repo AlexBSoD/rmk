@@ -7,8 +7,8 @@ use xz2::read::XzEncoder;
 
 fn main() {
     // Test-only cache-busting version for the runtime encoder settings build.
-    const FIRMWARE_VERSION: &str = "0.1.9";
-    const FIRMWARE_VERSION_BCD: &str = "0x0109";
+    const FIRMWARE_VERSION: &str = "0.2.0";
+    const FIRMWARE_VERSION_BCD: &str = "0x0200";
 
     println!("cargo:rerun-if-changed=vial.json");
     println!("cargo:rerun-if-changed=keyboard.toml");
