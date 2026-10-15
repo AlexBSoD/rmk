@@ -908,9 +908,18 @@ impl QubePointingSettings {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QubeModeKeyScope {
+    Side,
+    Both,
+}
+
 #[derive(Clone, Copy)]
 struct QubePointingSideState {
     mode_key: PointingModeKeyState<QubePointingMode>,
+    // Origin of the current override, not a second mode state. Equal values
+    // selected by independent side keys must remain independent on reset.
+    mode_key_scope: QubeModeKeyScope,
     remainder_x: i32,
     remainder_y: i32,
     text_last_motion_ms: u32,
@@ -920,6 +929,7 @@ impl QubePointingSideState {
     const fn new() -> Self {
         Self {
             mode_key: PointingModeKeyState::new(),
+            mode_key_scope: QubeModeKeyScope::Side,
             remainder_x: 0,
             remainder_y: 0,
             text_last_motion_ms: 0,
@@ -1014,21 +1024,30 @@ impl<'a> QubePointingModeProcessor<'a> {
     }
 
     async fn on_peripheral_settings_event(&mut self, event: PeripheralSettingsEvent) {
+        let old_settings = self.settings;
+        let old_overrides = self.sides.map(|side| side.mode_key.mode_override());
+        let old_modes = [self.mode_for_side(0), self.mode_for_side(1)];
         self.settings.apply_packet(&event.0);
         // Travel gathered under the previous threshold must not count towards
         // the new one.
         self.auto_layer_arming.reset();
+        let reset_both =
+            (0..self.sides.len()).any(|side| old_settings.sticky_mode(side) && !self.settings.sticky_mode(side));
         for side in 0..self.sides.len() {
+            if reset_both && self.sides[side].mode_key_scope == QubeModeKeyScope::Both {
+                self.sides[side].mode_key = PointingModeKeyState::new();
+            }
             self.sides[side]
                 .mode_key
                 .set_sticky_enabled(self.settings.sticky_mode(side));
+            if old_overrides[side] != self.sides[side].mode_key.mode_override()
+                || old_modes[side] != self.mode_for_side(side)
+            {
+                self.sides[side].reset_accum();
+                self.sides[side].text_last_motion_ms = 0;
+            }
         }
-        if self.active_auto_layer != QUBE_AUTO_LAYER_NONE
-            && !self.settings.auto_layer_enabled(self.mode_for_side(0))
-            && !self.settings.auto_layer_enabled(self.mode_for_side(1))
-        {
-            self.deactivate_auto_layer();
-        }
+        self.reevaluate_auto_layer();
     }
 
     async fn on_keyboard_event(&mut self, event: KeyboardEvent) {
@@ -1237,19 +1256,76 @@ impl<'a> QubePointingModeProcessor<'a> {
     }
 
     fn handle_mode_key(&mut self, sides: [bool; 2], mode: QubePointingMode, pressed: bool) {
+        let scope = if sides == [true, true] {
+            QubeModeKeyScope::Both
+        } else {
+            QubeModeKeyScope::Side
+        };
+        // A shared press is one toggle, not two blind per-side toggles. Only
+        // an existing shared selection can toggle the shared sticky mode off.
+        let toggle_both_off = scope == QubeModeKeyScope::Both
+            && (0..self.sides.len())
+                .filter(|&side| self.settings.sticky_mode(side))
+                .all(|side| {
+                    self.sides[side].mode_key_scope == QubeModeKeyScope::Both
+                        && self.sides[side].mode_key.latched == Some(mode)
+                });
         for (side, enabled) in sides.iter().copied().enumerate() {
-            if !enabled {
+            if !enabled || (!pressed && self.sides[side].mode_key_scope != scope) {
                 continue;
             }
-            self.sides[side]
-                .mode_key
-                .handle(mode, pressed, self.settings.sticky_mode(side));
+            if pressed && scope == QubeModeKeyScope::Both && self.settings.sticky_mode(side) {
+                self.sides[side].mode_key.held = None;
+                self.sides[side].mode_key.latched = if toggle_both_off { None } else { Some(mode) };
+            } else {
+                self.sides[side]
+                    .mode_key
+                    .handle(mode, pressed, self.settings.sticky_mode(side));
+            }
+            if pressed {
+                self.sides[side].mode_key_scope = scope;
+            }
             self.sides[side].reset_accum();
+        }
+        if sides
+            .iter()
+            .enumerate()
+            .any(|(side, &enabled)| enabled && self.settings.sticky_mode(side))
+        {
+            self.reevaluate_auto_layer();
+        }
+    }
+
+    // Keep the existing owned layer eligible during activity and settings
+    // replay, not indefinitely: poll still expires it after idle. A base key
+    // alone never activates a layer, and manual layer changes always win.
+    fn sticky_keeps_auto_layer_access(&self) -> bool {
+        self.auto_layer_self_activated
+            && self.active_auto_layer != QUBE_AUTO_LAYER_NONE
+            && self.keymap.is_layer_active(self.active_auto_layer)
+            && self.sides.iter().any(|side| side.mode_key.latched.is_some())
+    }
+
+    fn reevaluate_auto_layer(&mut self) {
+        if self.active_auto_layer != QUBE_AUTO_LAYER_NONE
+            && (self.settings.auto_layer == 0
+                || self.settings.auto_layer != self.active_auto_layer
+                || (!self.sticky_keeps_auto_layer_access()
+                    && !self.settings.auto_layer_enabled(self.mode_for_side(0))
+                    && !self.settings.auto_layer_enabled(self.mode_for_side(1))))
+        {
+            self.deactivate_auto_layer();
         }
     }
 
     fn sync_auto_layer_for_motion(&mut self, mode: QubePointingMode, source: QubePointingSource, x: i16, y: i16) {
-        if !self.settings.auto_layer_enabled(mode) {
+        if self.sticky_keeps_auto_layer_access() {
+            self.last_auto_motion_ms = now_ms_u32();
+            return;
+        }
+        // A latched mode survives idle independently of the layer. Actual
+        // movement must restore access to its keys, even with Normal-only flags.
+        if !self.settings.auto_layer_enabled(mode) && self.sides[source.side].mode_key.latched.is_none() {
             self.deactivate_auto_layer();
             return;
         }
@@ -1288,11 +1364,12 @@ impl<'a> QubePointingModeProcessor<'a> {
 
     fn deactivate_auto_layer(&mut self) {
         let previous = self.active_auto_layer;
+        let owned = self.auto_layer_self_activated;
         self.active_auto_layer = QUBE_AUTO_LAYER_NONE;
         self.auto_layer_self_activated = false;
         self.auto_layer_held_keys = 0;
         self.auto_layer_arming.reset();
-        if previous != QUBE_AUTO_LAYER_NONE && previous != 0 {
+        if owned && previous != QUBE_AUTO_LAYER_NONE && previous != 0 {
             self.keymap.deactivate_layer_if_active(previous);
         }
     }
@@ -1725,6 +1802,1174 @@ mod tests {
     use crate::k;
     use crate::keymap::KeymapData;
     use crate::test_support::test_block_on as block_on;
+
+    #[cfg(feature = "split")]
+    mod sticky_processor_regression {
+        use rmk_types::action::KeyAction;
+
+        use super::*;
+
+        // Fixed wire IDs/bit positions, independent of the production constants.
+        const KEYS: [(u8, QubePointingMode, [bool; 2]); 9] = [
+            (28, QubePointingMode::Sniper, [true, true]),
+            (29, QubePointingMode::Scroll, [true, true]),
+            (30, QubePointingMode::Text, [true, true]),
+            (31, QubePointingMode::Sniper, [true, false]),
+            (32, QubePointingMode::Scroll, [true, false]),
+            (33, QubePointingMode::Text, [true, false]),
+            (34, QubePointingMode::Sniper, [false, true]),
+            (35, QubePointingMode::Scroll, [false, true]),
+            (36, QubePointingMode::Text, [false, true]),
+        ];
+
+        fn packet(flags: u8, auto: u8, modes: u8) -> PeripheralSettingsEvent {
+            let mut bytes = [0; 27];
+            bytes[0] = QUBE_SETTINGS_VERSION;
+            bytes[1] = (2 << 4) | modes;
+            bytes[5..=10].copy_from_slice(&[8, 4, 16, 8, 4, 16]);
+            bytes[11] = flags;
+            bytes[12] = auto;
+            bytes[26] = QUBE_DEFAULT_AUTO_LAYER_TIMEOUT_INDEX << 4;
+            PeripheralSettingsEvent(bytes)
+        }
+
+        async fn key(processor: &mut QubePointingModeProcessor<'_>, id: u8, pressed: bool) {
+            processor
+                .on_action_event(ActionEvent {
+                    action: Action::User(id),
+                    keyboard_event: KeyboardEvent::key(0, id - 28, pressed),
+                })
+                .await;
+        }
+
+        fn assert_modes(processor: &QubePointingModeProcessor<'_>, expected: [QubePointingMode; 2]) {
+            assert_eq!([processor.mode_for_side(0), processor.mode_for_side(1)], expected);
+        }
+
+        #[test]
+        fn repeated_mode_press_matrix() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 4>::new([[[k!(A)]], [[k!(B)]], [[k!(C)]], [[k!(D)]]]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                // Every side/ID, sticky combination, and independent auto byte.
+                for (id, mode, affected) in KEYS {
+                    for flags in [0, 0x40, 0x80, 0xc0] {
+                        for auto in 0..=255 {
+                            for hold_ms in [0, 221, 5_000] {
+                                let mut processor = QubePointingModeProcessor::new(&keymap);
+                                let settings = packet(flags, auto, 0);
+                                processor.on_peripheral_settings_event(settings).await;
+                                for press_index in 0..2 {
+                                    key(&mut processor, id, true).await;
+                                    let during = core::array::from_fn(|side| {
+                                        if !affected[side] {
+                                            QubePointingMode::Normal
+                                        } else if flags & (0x40 << side) != 0 && press_index == 1 {
+                                            QubePointingMode::Normal
+                                        } else {
+                                            mode
+                                        }
+                                    });
+                                    assert_modes(&processor, during);
+                                    embassy_time::MockDriver::get().advance(Duration::from_millis(hold_ms));
+                                    processor.on_peripheral_settings_event(settings).await;
+                                    assert_modes(&processor, during);
+                                    key(&mut processor, id, false).await;
+                                    let released = core::array::from_fn(|side| {
+                                        if flags & (0x40 << side) != 0 {
+                                            during[side]
+                                        } else {
+                                            QubePointingMode::Normal
+                                        }
+                                    });
+                                    assert_modes(&processor, released);
+                                    processor.on_peripheral_settings_event(settings).await;
+                                    assert_modes(&processor, released);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        #[test]
+        fn switched_mode_press_and_out_of_order_release_matrix() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 4>::new([[[k!(A)]], [[k!(B)]], [[k!(C)]], [[k!(D)]]]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for (first_id, first_mode, first_sides) in KEYS {
+                    for (next_id, next_mode, next_sides) in KEYS {
+                        if first_mode == next_mode {
+                            continue;
+                        }
+                        for flags in [0, 0x40, 0x80, 0xc0] {
+                            let mut processor = QubePointingModeProcessor::new(&keymap);
+                            processor.on_peripheral_settings_event(packet(flags, 0x8f, 0)).await;
+                            key(&mut processor, first_id, true).await;
+                            embassy_time::MockDriver::get().advance(Duration::from_millis(500));
+                            key(&mut processor, next_id, true).await;
+                            let expected = core::array::from_fn(|side| {
+                                if next_sides[side] {
+                                    next_mode
+                                } else if first_sides[side] {
+                                    first_mode
+                                } else {
+                                    QubePointingMode::Normal
+                                }
+                            });
+                            assert_modes(&processor, expected);
+                            key(&mut processor, first_id, false).await;
+                            let after_first_release = core::array::from_fn(|side| {
+                                if next_sides[side] || flags & (0x40 << side) != 0 {
+                                    expected[side]
+                                } else {
+                                    QubePointingMode::Normal
+                                }
+                            });
+                            assert_modes(&processor, after_first_release);
+                            key(&mut processor, next_id, false).await;
+                            assert_modes(
+                                &processor,
+                                core::array::from_fn(|side| {
+                                    if flags & (0x40 << side) != 0 {
+                                        expected[side]
+                                    } else {
+                                        QubePointingMode::Normal
+                                    }
+                                }),
+                            );
+                        }
+                    }
+                }
+            });
+        }
+
+        #[test]
+        fn toggle_off_restores_configured_mode_matrix() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 4>::new([[[k!(A)]], [[k!(B)]], [[k!(C)]], [[k!(D)]]]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let modes = [
+                    QubePointingMode::Normal,
+                    QubePointingMode::Sniper,
+                    QubePointingMode::Scroll,
+                    QubePointingMode::Text,
+                ];
+                for left in 0..4 {
+                    for right in 0..4 {
+                        for (id, selected, sides) in KEYS {
+                            let mut processor = QubePointingModeProcessor::new(&keymap);
+                            processor
+                                .on_peripheral_settings_event(packet(0xc0, 0, left | right << 2))
+                                .await;
+                            let configured = [modes[left as usize], modes[right as usize]];
+                            key(&mut processor, id, true).await;
+                            key(&mut processor, id, false).await;
+                            assert_modes(
+                                &processor,
+                                core::array::from_fn(|side| if sides[side] { selected } else { configured[side] }),
+                            );
+                            key(&mut processor, id, true).await;
+                            key(&mut processor, id, false).await;
+                            assert_modes(&processor, configured);
+                        }
+                    }
+                }
+            });
+        }
+
+        #[test]
+        fn settings_disable_reenable_and_encoder_packet_keep_side_independence() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 4>::new([[[k!(A)]], [[k!(B)]], [[k!(C)]], [[k!(D)]]]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for retained_flags in [0, 0x40, 0x80, 0xc0] {
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    processor.on_peripheral_settings_event(packet(0xc0, 0, 0)).await;
+                    key(&mut processor, 32, true).await;
+                    key(&mut processor, 32, false).await;
+                    key(&mut processor, 36, true).await;
+                    key(&mut processor, 36, false).await;
+                    let mut encoder = [0; 27];
+                    encoder[0] = QUBE_SETTINGS_VERSION | 0x40;
+                    encoder[3] = 50;
+                    processor
+                        .on_peripheral_settings_event(PeripheralSettingsEvent(encoder))
+                        .await;
+                    assert_modes(&processor, [QubePointingMode::Scroll, QubePointingMode::Text]);
+                    processor
+                        .on_peripheral_settings_event(packet(retained_flags, 0xff, 0))
+                        .await;
+                    let expected = [
+                        if retained_flags & 0x40 != 0 {
+                            QubePointingMode::Scroll
+                        } else {
+                            QubePointingMode::Normal
+                        },
+                        if retained_flags & 0x80 != 0 {
+                            QubePointingMode::Text
+                        } else {
+                            QubePointingMode::Normal
+                        },
+                    ];
+                    assert_modes(&processor, expected);
+                    processor.on_peripheral_settings_event(packet(0xc0, 0, 0)).await;
+                    assert_modes(&processor, expected); // Re-enable must not resurrect cleared latches.
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_global_press_unifies_an_equal_side_selection() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for local in [31, 34] {
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    processor.on_peripheral_settings_event(packet(0xc0, 0x0f, 0)).await;
+                    key(&mut processor, local, true).await;
+                    key(&mut processor, local, false).await;
+                    key(&mut processor, 28, true).await;
+                    key(&mut processor, 28, false).await;
+                    assert_modes(&processor, [QubePointingMode::Sniper; 2]);
+                    key(&mut processor, 28, true).await;
+                    key(&mut processor, 28, false).await;
+                    assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_settings_reset_clears_changed_mode_accumulators() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                processor.on_peripheral_settings_event(packet(0xc0, 0x0f, 0)).await;
+                key(&mut processor, 29, true).await;
+                key(&mut processor, 29, false).await;
+                for side in &mut processor.sides {
+                    side.remainder_x = 3;
+                    side.remainder_y = -2;
+                    side.text_last_motion_ms = 7;
+                }
+                processor.on_peripheral_settings_event(packet(0x80, 0x0f, 0)).await;
+                for side in &processor.sides {
+                    assert_eq!(
+                        (side.remainder_x, side.remainder_y, side.text_last_motion_ms),
+                        (0, 0, 0)
+                    );
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_manual_layer_ownership_survives_all_auto_teardown_paths() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for takeover in [false, true] {
+                    for teardown in 0..4 {
+                        keymap.deactivate_layer(4);
+                        let mut processor = QubePointingModeProcessor::new(&keymap);
+                        let mut settings = packet(0xc0, 1, 0);
+                        settings.0[1] = 4 << 4;
+                        processor.on_peripheral_settings_event(settings).await;
+                        if !takeover {
+                            keymap.activate_layer(4);
+                        }
+                        processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
+                        key(&mut processor, 29, true).await;
+                        key(&mut processor, 29, false).await;
+                        if takeover {
+                            processor
+                                .on_action_event(ActionEvent {
+                                    action: Action::LayerOn(4),
+                                    keyboard_event: KeyboardEvent::key(0, 0, true),
+                                })
+                                .await;
+                        }
+                        assert!(!processor.auto_layer_self_activated);
+                        match teardown {
+                            0 => {
+                                embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                                processor.poll().await;
+                            }
+                            1 => processor.sync_auto_layer_for_motion(QubePointingMode::Scroll, TEST_BALL_SOURCE, 1, 0),
+                            2 => {
+                                settings.0[11] = 0;
+                                settings.0[12] = 0;
+                                processor.on_peripheral_settings_event(settings).await;
+                            }
+                            _ => {
+                                settings.0[12] = 0;
+                                processor.on_peripheral_settings_event(settings).await;
+                                key(&mut processor, 29, true).await;
+                                key(&mut processor, 29, false).await;
+                            }
+                        }
+                        assert!(
+                            keymap.is_layer_active(4),
+                            "manual owner lost: takeover={takeover} teardown={teardown}"
+                        );
+                    }
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_nonsticky_mode_press_keeps_original_motion_teardown_timing() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                let mut settings = packet(0, 1, 0);
+                settings.0[1] = 4 << 4;
+                processor.on_peripheral_settings_event(settings).await;
+                processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
+                key(&mut processor, 29, true).await;
+                assert!(
+                    keymap.is_layer_active(4),
+                    "nonsticky press must wait for motion teardown"
+                );
+                processor.sync_auto_layer_for_motion(QubePointingMode::Scroll, TEST_BALL_SOURCE, 1, 0);
+                assert!(!keymap.is_layer_active(4));
+                key(&mut processor, 29, false).await;
+                assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
+                embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                processor.poll().await;
+                assert!(
+                    !keymap.is_layer_active(4),
+                    "nonsticky ordinary timeout must still expire"
+                );
+            });
+        }
+
+        #[test]
+        fn bounded_scope_origins_and_mixed_sticky_flags_remain_distinct() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for reset in 0..2 {
+                    // Equal Side-origin values are not a Both-origin selection.
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    processor.on_peripheral_settings_event(packet(0xc0, 0x0f, 0)).await;
+                    for id in [32, 35] {
+                        key(&mut processor, id, true).await;
+                        key(&mut processor, id, false).await;
+                    }
+                    processor.sides[1 - reset].remainder_x = 3;
+                    processor
+                        .on_peripheral_settings_event(packet(0xc0 & !(0x40 << reset), 0x0f, 0))
+                        .await;
+                    let mut expected = [QubePointingMode::Scroll; 2];
+                    expected[reset] = QubePointingMode::Normal;
+                    assert_modes(&processor, expected);
+                    assert_eq!(
+                        processor.sides[1 - reset].remainder_x,
+                        3,
+                        "independent accumulator must survive"
+                    );
+
+                    // A local replacement is independent; the residual shared
+                    // selection still belongs to Both and resets on either bit.
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    processor.on_peripheral_settings_event(packet(0xc0, 0x0f, 0)).await;
+                    for id in [29, 31] {
+                        key(&mut processor, id, true).await;
+                        key(&mut processor, id, false).await;
+                    }
+                    assert_modes(&processor, [QubePointingMode::Sniper, QubePointingMode::Scroll]);
+                    processor
+                        .on_peripheral_settings_event(packet(0xc0 & !(0x40 << reset), 0x0f, 0))
+                        .await;
+                    assert_modes(
+                        &processor,
+                        [
+                            if reset == 0 {
+                                QubePointingMode::Normal
+                            } else {
+                                QubePointingMode::Sniper
+                            },
+                            QubePointingMode::Normal,
+                        ],
+                    );
+                }
+                for flags in [0x40, 0x80] {
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    processor.on_peripheral_settings_event(packet(flags, 0x0f, 0)).await;
+                    let sticky_side = usize::from(flags == 0x80);
+                    key(&mut processor, if sticky_side == 0 { 31 } else { 34 }, true).await;
+                    key(&mut processor, if sticky_side == 0 { 31 } else { 34 }, false).await;
+                    key(&mut processor, 28, true).await;
+                    assert_modes(&processor, [QubePointingMode::Sniper; 2]);
+                    key(&mut processor, 28, false).await;
+                    let mut expected = [QubePointingMode::Normal; 2];
+                    expected[sticky_side] = QubePointingMode::Sniper;
+                    assert_modes(&processor, expected);
+                    processor.on_peripheral_settings_event(packet(flags, 0x0f, 0)).await;
+                    assert_modes(&processor, expected); // Unchanged mixed bits are not a reset.
+                    key(&mut processor, 28, true).await;
+                    expected[sticky_side] = QubePointingMode::Normal;
+                    expected[1 - sticky_side] = QubePointingMode::Sniper;
+                    assert_modes(&processor, expected);
+                    key(&mut processor, 28, false).await;
+                    assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_same_mode_release_cannot_clear_a_different_scope_hold() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for (first, next, expected) in [
+                    (28, 31, [QubePointingMode::Sniper, QubePointingMode::Normal]),
+                    (31, 28, [QubePointingMode::Sniper; 2]),
+                ] {
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    processor.on_peripheral_settings_event(packet(0, 0x0f, 0)).await;
+                    key(&mut processor, first, true).await;
+                    key(&mut processor, next, true).await;
+                    key(&mut processor, first, false).await;
+                    assert_modes(&processor, expected);
+                    key(&mut processor, next, false).await;
+                    assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_latch_layer_events_follow_idle_and_shared_reset() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut layers = LayerChangeEvent::subscriber();
+                for reset in 0..2 {
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    let mut settings = packet(0xc0, 1, 0);
+                    settings.0[1] = 4 << 4;
+                    processor.on_peripheral_settings_event(settings).await;
+                    processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
+                    assert_eq!(layers.try_next_message_pure().expect("activation event").0, 4);
+                    key(&mut processor, 29, true).await;
+                    key(&mut processor, 29, false).await;
+                    processor.sync_auto_layer_for_motion(QubePointingMode::Scroll, TEST_BALL_SOURCE, 32, 0);
+                    embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                    processor.poll().await;
+                    processor.on_peripheral_settings_event(settings).await;
+                    assert_modes(&processor, [QubePointingMode::Scroll; 2]);
+                    assert_eq!(keymap.active_layer(), 0);
+                    assert_eq!(layers.try_next_message_pure().expect("idle layer-off event").0, 0);
+                    assert!(layers.try_next_message_pure().is_none());
+                    processor.sync_auto_layer_for_motion(QubePointingMode::Scroll, TEST_BALL_SOURCE, 32, 0);
+                    assert_eq!(keymap.active_layer(), 4);
+                    assert_eq!(layers.try_next_message_pure().expect("motion layer-on event").0, 4);
+                    assert!(
+                        layers.try_next_message_pure().is_none(),
+                        "no extra global layer/LED events during motion"
+                    );
+                    settings.0[11] &= !(0x40 << reset);
+                    processor.on_peripheral_settings_event(settings).await;
+                    assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                    // Normal still permits auto-layer: restore ordinary timeout,
+                    // rather than manufacture a mode/color-specific layer state.
+                    assert_eq!(keymap.active_layer(), 4);
+                    embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                    processor.poll().await;
+                    assert_eq!(keymap.active_layer(), 0);
+                    assert_eq!(layers.try_next_message_pure().expect("ordinary timeout event").0, 0);
+                    assert!(layers.try_next_message_pure().is_none());
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_mode_off_and_settings_changes_restore_ordinary_timeout() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for change in 0..4 {
+                    keymap.deactivate_layer(4);
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    let mut settings = packet(0xc0, 1, 0);
+                    settings.0[1] = 4 << 4;
+                    processor.on_peripheral_settings_event(settings).await;
+                    processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
+                    key(&mut processor, 29, true).await;
+                    key(&mut processor, 29, false).await;
+                    // Switching mode retains the existing layer, not a new owner.
+                    key(&mut processor, 30, true).await;
+                    key(&mut processor, 30, false).await;
+                    assert_modes(&processor, [QubePointingMode::Text; 2]);
+                    embassy_time::MockDriver::get().advance(Duration::from_millis(1));
+                    processor.poll().await;
+                    assert!(keymap.is_layer_active(4));
+                    match change {
+                        0 => {
+                            key(&mut processor, 30, true).await;
+                            key(&mut processor, 30, false).await;
+                            embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                            processor.poll().await;
+                        }
+                        1 => {
+                            settings.0[11] = 0x40;
+                            processor.on_peripheral_settings_event(settings).await;
+                            embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                            processor.poll().await;
+                        }
+                        2 => {
+                            settings.0[1] = 0; // explicit disable of auto-layer
+                            processor.on_peripheral_settings_event(settings).await;
+                        }
+                        _ => {
+                            settings.0[1] = 3 << 4; // explicit target change
+                            processor.on_peripheral_settings_event(settings).await;
+                            assert!(
+                                !keymap.is_layer_active(3),
+                                "key/settings must not activate replacement layer"
+                            );
+                        }
+                    }
+                    assert!(!keymap.is_layer_active(4));
+                    assert_eq!(processor.active_auto_layer, QUBE_AUTO_LAYER_NONE);
+                    assert!(!processor.auto_layer_self_activated);
+                }
+            });
+        }
+
+        #[test]
+        fn bounded_explicit_manual_layer_changes_override_sticky_pin() {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                for action in [Action::LayerOn(4), Action::LayerToggleOnly(0), Action::LayerOff(4)] {
+                    keymap.deactivate_layer(4);
+                    let mut processor = QubePointingModeProcessor::new(&keymap);
+                    let mut settings = packet(0xc0, 1, 0);
+                    settings.0[1] = 4 << 4;
+                    processor.on_peripheral_settings_event(settings).await;
+                    processor.sync_auto_layer_for_motion(QubePointingMode::Normal, TEST_BALL_SOURCE, 1, 0);
+                    key(&mut processor, 29, true).await;
+                    key(&mut processor, 29, false).await;
+                    assert!(processor.sticky_keeps_auto_layer_access());
+                    processor
+                        .on_action_event(ActionEvent {
+                            action,
+                            keyboard_event: KeyboardEvent::key(0, 0, true),
+                        })
+                        .await;
+                    if !matches!(action, Action::LayerOn(4)) {
+                        keymap.deactivate_layer(4);
+                    }
+                    processor
+                        .on_layer_change_event(LayerChangeEvent::new(keymap.active_layer()))
+                        .await;
+                    assert!(
+                        !processor.sticky_keeps_auto_layer_access(),
+                        "manual action must override pin: {action:?}"
+                    );
+                    // Manually reactivating the same target does not restore
+                    // auto ownership, even though the selection remains latched.
+                    keymap.activate_layer(4);
+                    processor.on_layer_change_event(LayerChangeEvent::new(4)).await;
+                    processor.sync_auto_layer_for_motion(QubePointingMode::Scroll, TEST_BALL_SOURCE, 1, 0);
+                    embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                    processor.poll().await;
+                    assert!(keymap.is_layer_active(4), "manual reactivation must not be stolen");
+                    assert!(!processor.auto_layer_self_activated);
+                    assert_modes(&processor, [QubePointingMode::Scroll; 2]);
+                }
+            });
+        }
+
+        // User reproduction: pointing keys exist ONLY on the mouse auto layer.
+        fn reported_layer_access(mode: QubePointingMode, id: u8, side: usize, timeout: bool) {
+            block_on(async {
+                let base = [k!(A), k!(B), k!(C)];
+                let mut layers = [[base]; 5];
+                layers[4] = [[
+                    KeyAction::Single(Action::User(28)),
+                    KeyAction::Single(Action::User(29)),
+                    KeyAction::Single(Action::User(30)),
+                ]];
+                let mut data = KeymapData::<1, 3, 5>::new(layers);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 3>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                let mut settings = packet(0xc0, if timeout { 0x0f } else { 0x01 }, 0);
+                settings.0[1] = 4 << 4;
+                processor.on_peripheral_settings_event(settings).await;
+                let source = QubePointingSource {
+                    side,
+                    kind: QubePointingKind::Ball,
+                };
+                processor.sync_auto_layer_for_motion(QubePointingMode::Normal, source, 32, 0);
+                assert_eq!(keymap.active_layer(), 4);
+                let press = KeyboardEvent::key(0, id - 28, true);
+                let release = KeyboardEvent::key(0, id - 28, false);
+                assert_eq!(
+                    keymap.get_action_with_layer_cache(press),
+                    KeyAction::Single(Action::User(id))
+                );
+                processor
+                    .on_action_event(ActionEvent {
+                        action: Action::User(id),
+                        keyboard_event: press,
+                    })
+                    .await;
+                assert_eq!(
+                    keymap.get_action_with_layer_cache(release),
+                    KeyAction::Single(Action::User(id))
+                );
+                processor
+                    .on_action_event(ActionEvent {
+                        action: Action::User(id),
+                        keyboard_event: release,
+                    })
+                    .await;
+                assert_modes(&processor, [mode; 2]);
+                if timeout {
+                    embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                    processor.poll().await;
+                    assert_eq!(keymap.active_layer(), 0);
+                    assert_modes(&processor, [mode; 2]);
+                    // The user revised the old permanent-pin expectation:
+                    // real motion restores access, not the latch itself.
+                    processor.sync_auto_layer_for_motion(mode, source, 32, 0);
+                } else {
+                    processor.sync_auto_layer_for_motion(mode, source, 32, 0);
+                }
+                let repeat = keymap.get_action_with_layer_cache(press);
+                eprintln!(
+                    "REPRO side={side} mode={mode:?} timeout={timeout} active_layer={} repeat_action={repeat:?} override_left={:?} override_right={:?}",
+                    keymap.active_layer(),
+                    processor.mode_for_side(0),
+                    processor.mode_for_side(1)
+                );
+                assert_eq!(
+                    repeat,
+                    KeyAction::Single(Action::User(id)),
+                    "latched mode lost access to its auto-layer key"
+                );
+            });
+        }
+
+        fn reported_shared_reset(mode: QubePointingMode, id: u8, changed_side: usize) {
+            block_on(async {
+                let mut data = KeymapData::<1, 1, 5>::new([[[k!(A)]]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                let mut settings = packet(0xc0, 0x0f, 0);
+                settings.0[1] = 4 << 4;
+                processor.on_peripheral_settings_event(settings).await;
+                key(&mut processor, id, true).await;
+                key(&mut processor, id, false).await;
+                assert_modes(&processor, [mode; 2]);
+                settings.0[11] &= !(0x40 << changed_side);
+                processor.on_peripheral_settings_event(settings).await;
+                eprintln!(
+                    "REPRO reset_side={changed_side} shared={mode:?} left={:?} right={:?}",
+                    processor.mode_for_side(0),
+                    processor.mode_for_side(1)
+                );
+                assert_modes(&processor, [QubePointingMode::Normal; 2]);
+            });
+        }
+
+        macro_rules! reported_cases {
+            ($($name:ident: $mode:ident, $id:literal, $side:literal);* $(;)?) => {
+                $(
+                    #[test]
+                    fn $name() {
+                        reported_layer_access(QubePointingMode::$mode, $id, $side, false);
+                    }
+                )*
+            };
+        }
+        reported_cases! {
+            reported_scroll_left_layer_access: Scroll, 29, 0;
+            reported_scroll_right_layer_access: Scroll, 29, 1;
+            reported_text_left_layer_access: Text, 30, 0;
+            reported_text_right_layer_access: Text, 30, 1;
+            reported_sniper_left_layer_access: Sniper, 28, 0;
+            reported_sniper_right_layer_access: Sniper, 28, 1;
+        }
+
+        macro_rules! reset_cases {
+            ($($name:ident: $mode:ident, $id:literal, $side:literal);* $(;)?) => {
+                $(
+                    #[test]
+                    fn $name() {
+                        reported_shared_reset(QubePointingMode::$mode, $id, $side);
+                    }
+                )*
+            };
+        }
+        reset_cases! {
+            reported_scroll_left_shared_reset: Scroll, 29, 0;
+            reported_scroll_right_shared_reset: Scroll, 29, 1;
+            reported_text_left_shared_reset: Text, 30, 0;
+            reported_text_right_shared_reset: Text, 30, 1;
+            reported_sniper_left_shared_reset: Sniper, 28, 0;
+            reported_sniper_right_shared_reset: Sniper, 28, 1;
+        }
+
+        // Updated device acceptance: latch the mode, not the layer lifetime.
+        fn idle_cycle(device_id: u8, id: u8, selected: QubePointingMode) {
+            block_on(async {
+                let base = [k!(A), k!(B), k!(C)];
+                let mut layers = [[base]; 5];
+                layers[4] = [[
+                    KeyAction::Single(Action::User(28)),
+                    KeyAction::Single(Action::User(29)),
+                    KeyAction::Single(Action::User(30)),
+                ]];
+                let mut data = KeymapData::<1, 3, 5>::new(layers);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 3>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                // Only Normal enables auto-layer motion: a latched override must
+                // still be able to reacquire its keys after the layer expires.
+                let mut settings = packet(0xc0, 1, 0);
+                settings.0[1] = 4 << 4;
+                processor.on_peripheral_settings_event(settings).await;
+                let source = qube_pointing_source(device_id).unwrap();
+                processor.sync_auto_layer_for_motion(QubePointingMode::Normal, source, 32, 0);
+                assert_eq!(keymap.active_layer(), 4);
+                resolved_mode_key(&mut processor, id).await;
+                assert_modes(&processor, [selected; 2]);
+                let timeout = u64::from(processor.settings.auto_layer_timeout_ms());
+                embassy_time::MockDriver::get().advance(Duration::from_millis(timeout - 1));
+                processor.poll().await;
+                assert_eq!(keymap.active_layer(), 4, "must not expire before the deadline");
+                embassy_time::MockDriver::get().advance(Duration::from_millis(1));
+                processor.poll().await;
+                assert_eq!(keymap.active_layer(), 0, "latched mode must not suppress idle expiry");
+                assert_modes(&processor, [selected; 2]);
+                processor.sync_auto_layer_for_motion(selected, source, 32, 0);
+                assert_eq!(
+                    keymap.active_layer(),
+                    4,
+                    "motion must restore mode-key access after idle"
+                );
+                assert_modes(&processor, [selected; 2]);
+                resolved_mode_key(&mut processor, id).await;
+                assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                let (other_id, other_mode) = if id == 28 {
+                    (29, QubePointingMode::Scroll)
+                } else {
+                    (28, QubePointingMode::Sniper)
+                };
+                resolved_mode_key(&mut processor, other_id).await;
+                assert_modes(&processor, [other_mode; 2]);
+                // Another idle/rearm cycle must not resurrect the previous mode.
+                embassy_time::MockDriver::get().advance(Duration::from_millis(timeout + 1));
+                processor.poll().await;
+                assert_eq!(keymap.active_layer(), 0);
+                assert_modes(&processor, [other_mode; 2]);
+                processor.sync_auto_layer_for_motion(other_mode, source, 32, 0);
+                assert_eq!(keymap.active_layer(), 4);
+                resolved_mode_key(&mut processor, other_id).await;
+                assert_modes(&processor, [QubePointingMode::Normal; 2]);
+            });
+        }
+
+        async fn resolved_mode_key(processor: &mut QubePointingModeProcessor<'_>, id: u8) {
+            for pressed in [true, false] {
+                let keyboard_event = KeyboardEvent::key(0, id - 28, pressed);
+                let action = processor.keymap.get_action_with_layer_cache(keyboard_event);
+                assert_eq!(action, KeyAction::Single(Action::User(id)));
+                processor
+                    .on_action_event(ActionEvent {
+                        action: Action::User(id),
+                        keyboard_event,
+                    })
+                    .await;
+            }
+        }
+
+        macro_rules! idle_cycles {
+            ($($name:ident: $device:literal, $id:literal, $mode:ident);* $(;)?) => {
+                $(#[test] fn $name() { idle_cycle($device, $id, QubePointingMode::$mode); })*
+            };
+        }
+        idle_cycles! {
+            idle_cycle_left_ball_scroll: 0, 29, Scroll;
+            idle_cycle_right_ball_scroll: 1, 29, Scroll;
+            idle_cycle_left_touch_scroll: 2, 29, Scroll;
+            idle_cycle_right_touch_scroll: 3, 29, Scroll;
+            idle_cycle_left_ball_text: 0, 30, Text;
+            idle_cycle_right_ball_text: 1, 30, Text;
+            idle_cycle_left_touch_text: 2, 30, Text;
+            idle_cycle_right_touch_text: 3, 30, Text;
+            idle_cycle_left_ball_sniper: 0, 28, Sniper;
+            idle_cycle_right_ball_sniper: 1, 28, Sniper;
+            idle_cycle_left_touch_sniper: 2, 28, Sniper;
+            idle_cycle_right_touch_sniper: 3, 28, Sniper;
+        }
+
+        #[test]
+        fn reported_idle_timeout_layer_access() {
+            reported_layer_access(QubePointingMode::Scroll, 29, 0, true);
+        }
+
+        #[test]
+        fn reported_base_assignment_control() {
+            block_on(async {
+                let keys = [
+                    KeyAction::Single(Action::User(28)),
+                    KeyAction::Single(Action::User(29)),
+                    KeyAction::Single(Action::User(30)),
+                ];
+                let mut data = KeymapData::<1, 3, 5>::new([[keys]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 3>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                let mut settings = packet(0xc0, 0x01, 0);
+                settings.0[1] = 4 << 4;
+                processor.on_peripheral_settings_event(settings).await;
+                for (id, mode) in [
+                    (28, QubePointingMode::Sniper),
+                    (29, QubePointingMode::Scroll),
+                    (30, QubePointingMode::Text),
+                ] {
+                    key(&mut processor, id, true).await;
+                    key(&mut processor, id, false).await;
+                    assert_eq!(keymap.active_layer(), 0, "base key alone must not activate a layer");
+                    processor.sync_auto_layer_for_motion(mode, TEST_BALL_SOURCE, 32, 0);
+                    assert_eq!(
+                        keymap.active_layer(),
+                        4,
+                        "latched mode is eligible only on actual motion"
+                    );
+                    let action = keymap.get_action_with_layer_cache(KeyboardEvent::key(0, id - 28, true));
+                    assert_eq!(action, KeyAction::Single(Action::User(id)));
+                    key(&mut processor, id, true).await;
+                    key(&mut processor, id, false).await;
+                    assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                    embassy_time::MockDriver::get().advance(Duration::from_millis(600));
+                    processor.poll().await;
+                    assert_eq!(keymap.active_layer(), 0);
+                }
+                key(&mut processor, 28, true).await;
+                key(&mut processor, 28, false).await;
+                key(&mut processor, 29, true).await;
+                key(&mut processor, 29, false).await;
+                assert_modes(&processor, [QubePointingMode::Scroll; 2]);
+            });
+        }
+
+        // Full generated subscriber + polling executor, not a handler dispatcher, preserved below.
+        // Both workers are cancelled by select before inspecting borrowed state.
+        #[cfg(feature = "k04_standalone_timeout_14")]
+        fn generated_executor_live_settings(auto_flags: u8) {
+            use embassy_futures::join::join;
+            use embassy_futures::select::{Either, select};
+            use embassy_time::with_timeout;
+            use rmk_types::connection::UsbState;
+
+            use crate::channel::{QueuedReportPayload, USB_REPORT_CHANNEL};
+            use crate::event::{AsyncEventPublisher, AsyncPublishableEvent};
+            use crate::hid::Report;
+            use crate::keyboard::Keyboard;
+            use crate::processor::PollingProcessor;
+
+            assert!(crate::ACTION_EVENT_SUB_SIZE >= 2, "requires actual K04 TOML");
+            block_on(async {
+                // Same three physical assignments on base and pointing layers;
+                // unrelated layers do not intercept the selected mode key.
+                let keys = [
+                    KeyAction::Single(Action::User(28)),
+                    KeyAction::Single(Action::User(29)),
+                    KeyAction::Single(Action::User(30)),
+                    k!(A),
+                ];
+                let mut data = KeymapData::<1, 4, 5>::new([[keys]; 5]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 4>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut keyboard = Keyboard::new(&keymap);
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                crate::state::set_usb_state(UsbState::Configured);
+                USB_REPORT_CHANNEL.clear();
+                let sender = KeyboardEvent::publisher_async();
+                let settings_sender = PeripheralSettingsEvent::publisher_async();
+                let motion_sender = PointingEvent::publisher_async();
+                let mut actions = ActionEvent::subscriber();
+                let mut main = packet(0xc0, auto_flags, 0);
+                main.0[1] = 4 << 4; // configured Normal, actual pointing layer 4
+                let mut profile = [0; 27];
+                profile[0] = 0x8a;
+                let mut encoder = [0; 27];
+                encoder[0] = 0x4a;
+                let scenario = async {
+                    // The joined workers have installed their subscriptions before
+                    // this timer resolves. Sticky changes while both loops are live.
+                    Timer::after_millis(1).await;
+                    assert_eq!(main.0[0], 10, "standalone v10 profile required");
+                    settings_sender.publish_async(main).await;
+                    Timer::after_millis(2).await;
+                    let mut action_count = 0;
+                    let mut report_count = 0;
+                    for (index, (id, expected)) in [
+                        (28, QubePointingMode::Sniper),
+                        (28, QubePointingMode::Normal),
+                        (29, QubePointingMode::Scroll),
+                        (29, QubePointingMode::Normal),
+                        (30, QubePointingMode::Text),
+                        (30, QubePointingMode::Normal),
+                        (28, QubePointingMode::Sniper),
+                        (29, QubePointingMode::Scroll),
+                        (30, QubePointingMode::Text),
+                        (30, QubePointingMode::Normal),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        for pressed in [true, false] {
+                            sender.publish_async(KeyboardEvent::key(0, id - 28, pressed)).await;
+                            let action = with_timeout(Duration::from_millis(100), actions.next_event())
+                                .await
+                                .expect("physical action missing");
+                            assert_eq!(action.action, Action::User(id));
+                            assert_eq!(action.keyboard_event.pressed, pressed);
+                            action_count += 1;
+                            Timer::after_millis(if index == 0 && pressed { 300 } else { 2 }).await;
+                        }
+                        // Replay the real three-packet shape twice without a gap:
+                        // six messages through the production capacity-three bus.
+                        for _ in 0..2 {
+                            settings_sender.publish_async(main).await;
+                            settings_sender.publish_async(PeripheralSettingsEvent(profile)).await;
+                            settings_sender.publish_async(PeripheralSettingsEvent(encoder)).await;
+                        }
+                        Timer::after_millis(2).await;
+                        for device_id in [0, 1] {
+                            motion_sender
+                                .publish_async(PointingEvent {
+                                    device_id,
+                                    axes: [
+                                        AxisEvent {
+                                            typ: AxisValType::Rel,
+                                            axis: Axis::X,
+                                            value: 32,
+                                        },
+                                        AxisEvent {
+                                            typ: AxisValType::Rel,
+                                            axis: Axis::Y,
+                                            value: 0,
+                                        },
+                                        AxisEvent {
+                                            typ: AxisValType::Rel,
+                                            axis: Axis::Z,
+                                            value: 0,
+                                        },
+                                    ],
+                                })
+                                .await;
+                            let queued = with_timeout(Duration::from_millis(100), USB_REPORT_CHANNEL.receive())
+                                .await
+                                .expect("generated processor did not emit motion report");
+                            report_count += 1;
+                            match (expected, queued.into_payload()) {
+                                (QubePointingMode::Text, QueuedReportPayload::Hid(Report::KeyboardReport(report))) => {
+                                    assert_eq!(report.keycodes[0], HidKeyCode::Right as u8);
+                                    let release =
+                                        with_timeout(Duration::from_millis(100), USB_REPORT_CHANNEL.receive())
+                                            .await
+                                            .expect("text release missing")
+                                            .into_report();
+                                    let Report::KeyboardReport(release) = release else {
+                                        panic!("text release type")
+                                    };
+                                    assert_eq!(release.keycodes, [0; 6]);
+                                    report_count += 1;
+                                }
+                                (mode, QueuedReportPayload::WideMouse(report)) => {
+                                    let (x, pan) = match mode {
+                                        QubePointingMode::Normal => (32, 0),
+                                        QubePointingMode::Sniper => (8, 0),
+                                        QubePointingMode::Scroll => (0, 4),
+                                        QubePointingMode::Text => panic!("text remained mouse mode"),
+                                    };
+                                    assert_eq!(
+                                        (report.x, report.y, report.wheel, report.pan),
+                                        (x, 0, 0, pan),
+                                        "wrong live mode after physical User{id}, step {index}, side {device_id}"
+                                    );
+                                }
+                                (_, report) => panic!("unexpected generated report: {report:?}"),
+                            }
+                            assert!(
+                                keymap.is_layer_active(4),
+                                "motion did not activate actual pointing layer"
+                            );
+                        }
+                    }
+                    assert_eq!(action_count, 20);
+                    assert_eq!(report_count, 24);
+                    assert!(
+                        with_timeout(Duration::from_millis(5), actions.next_event())
+                            .await
+                            .is_err()
+                    );
+                    // Exercise the actual 50ms polling branch until it expires
+                    // the motion-owned layer, then cancel both borrowed workers.
+                    Timer::after_millis(600).await;
+                    assert!(
+                        !keymap.is_layer_active(4),
+                        "generated polling did not expire auto layer"
+                    );
+                    assert!(USB_REPORT_CHANNEL.try_receive().is_err(), "unexpected duplicate report");
+                    eprintln!(
+                        "generated executor: auto={auto_flags:#04x}, 20 physical actions, 24 HID queue reports, 61 live settings packets, 20 motion events; timeout expired"
+                    );
+                };
+                assert!(matches!(
+                    select(join(keyboard.run(), processor.polling_loop()), scenario).await,
+                    Either::Second(())
+                ));
+                assert_modes(&processor, [QubePointingMode::Normal; 2]);
+                assert_eq!(processor.settings.flags, 0xc0);
+                assert_eq!(processor.settings.auto_layer, 4);
+                assert_eq!(processor.settings.auto_flags, auto_flags);
+                assert_eq!(processor.active_auto_layer, QUBE_AUTO_LAYER_NONE);
+                assert_eq!(processor.auto_layer_held_keys, 0);
+                assert!(!processor.auto_layer_self_activated);
+            });
+        }
+
+        #[cfg(feature = "k04_standalone_timeout_14")]
+        #[test]
+        fn generated_executor_sticky_motion_layer_live_settings_replay() {
+            generated_executor_live_settings(0x0f);
+        }
+
+        #[cfg(feature = "k04_standalone_timeout_14")]
+        #[test]
+        fn generated_executor_sticky_deactivate_on_key_flag_live_settings_replay() {
+            generated_executor_live_settings(0x8f);
+        }
+
+        #[test]
+        fn keyboard_physical_event_action_bus_processor_seam() {
+            use embassy_futures::select::{Either, select};
+            use embassy_time::{Instant, with_timeout};
+
+            use crate::event::{AsyncEventPublisher, AsyncPublishableEvent};
+            use crate::keyboard::Keyboard;
+
+            // The unconfigured host library has no ActionEvent bus at all.
+            // Production K04/Qube keyboard TOMLs reserve subscriber capacity.
+            if crate::ACTION_EVENT_SUB_SIZE == 0 {
+                eprintln!("physical ActionEvent seam not exercised: set KEYBOARD_TOML_PATH to a K04 profile");
+                return;
+            }
+
+            block_on(async {
+                let keys = core::array::from_fn(|col| KeyAction::Single(Action::User(28 + col as u8)));
+                let mut data = KeymapData::<1, 9, 4>::new([[keys]; 4]);
+                let mut behavior = BehaviorConfig::default();
+                let positional = PositionalConfig::<1, 9>::default();
+                let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+                let mut keyboard = Keyboard::new(&keymap);
+                let mut processor = QubePointingModeProcessor::new(&keymap);
+                let sender = KeyboardEvent::publisher_async();
+                sender.clear();
+                let mut actions = ActionEvent::subscriber();
+                let scenario = async {
+                    let mut action_count = 0;
+                    for (id, mode, affected) in KEYS {
+                        processor.on_peripheral_settings_event(packet(0xc0, 0x8f, 0)).await;
+                        processor.sides = [QubePointingSideState::new(); 2];
+                        for (col, selected, sides) in [
+                            (id - 28, mode, affected),
+                            (id - 28, QubePointingMode::Normal, affected),
+                            (id - 28, mode, affected),
+                            (
+                                (id - 28) / 3 * 3 + (id - 28 + 1) % 3,
+                                [
+                                    QubePointingMode::Sniper,
+                                    QubePointingMode::Scroll,
+                                    QubePointingMode::Text,
+                                ][((id - 28 + 1) % 3) as usize],
+                                affected,
+                            ),
+                        ] {
+                            let start = Instant::now();
+                            for pressed in [true, false] {
+                                sender.publish_async(KeyboardEvent::key(0, col, pressed)).await;
+                                let action = with_timeout(Duration::from_millis(100), actions.next_event())
+                                    .await
+                                    .expect("missing physical User ActionEvent");
+                                assert_eq!(action.action, Action::User(28 + col));
+                                assert_eq!(action.keyboard_event.pressed, pressed);
+                                processor.on_action_event(action).await;
+                                action_count += 1;
+                                assert_modes(
+                                    &processor,
+                                    core::array::from_fn(|side| {
+                                        if sides[side] {
+                                            selected
+                                        } else {
+                                            QubePointingMode::Normal
+                                        }
+                                    }),
+                                );
+                                if pressed {
+                                    Timer::after_millis(300).await;
+                                }
+                            }
+                            assert!(start.elapsed().as_millis() >= 300);
+                            assert!(
+                                with_timeout(Duration::from_millis(5), actions.next_event())
+                                    .await
+                                    .is_err(),
+                                "duplicate action event"
+                            );
+                        }
+                    }
+                    assert_eq!(action_count, 72);
+                };
+                assert!(matches!(select(keyboard.run(), scenario).await, Either::Second(())));
+            });
+        }
+    }
 
     // Init logger for tests
     #[ctor::ctor(unsafe)]

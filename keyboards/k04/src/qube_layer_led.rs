@@ -4,11 +4,13 @@ use rmk::event::{
     BatteryStatusEvent, LayerChangeEvent, SleepStateEvent, SplitConnectionState, SplitConnectionStateEvent,
 };
 use rmk::macros::processor;
+use rmk::processor::DeadlineProcessor;
 use rmk::types::battery::BatteryStatus;
 
 use crate::module_settings::{self, Rgb};
 
 const LED_COUNT: usize = 1;
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SPLIT_BLINK_PERIOD_MS: u64 = 360;
 const SPLIT_BLINK_ON_MS: u64 = 180;
 const CONNECTED_INDICATOR_MS: u64 = 1_000;
@@ -25,8 +27,7 @@ const FRAME_WORDS: usize = LED_COUNT * 24 + RESET_SLOTS;
         SplitConnectionStateEvent,
         SleepStateEvent,
         BatteryStatusEvent
-    ],
-    poll_interval = 10
+    ]
 )]
 pub struct LayerLed {
     led: SequencePwm<'static>,
@@ -35,6 +36,7 @@ pub struct LayerLed {
     current_color: Option<Rgb>,
     split_state: SplitConnectionState,
     sleeping: bool,
+    next_poll: Instant,
     phase_started: Instant,
     connected_until: Option<Instant>,
     latest_battery: Option<u8>,
@@ -51,6 +53,7 @@ impl LayerLed {
             current_color: None,
             split_state: rmk::event::current_split_connection_state(),
             sleeping: false,
+            next_poll: now,
             phase_started: now,
             connected_until: None,
             latest_battery: None,
@@ -70,6 +73,7 @@ impl LayerLed {
 
     async fn on_sleep_state_event(&mut self, event: SleepStateEvent) {
         self.sleeping = event.0;
+        self.next_poll = Instant::now();
         self.render(Instant::now()).await;
     }
 
@@ -82,10 +86,6 @@ impl LayerLed {
                 self.latest_battery = None;
             }
         }
-        self.render(Instant::now()).await;
-    }
-
-    async fn poll(&mut self) {
         self.render(Instant::now()).await;
     }
 
@@ -169,6 +169,20 @@ impl LayerLed {
         }
 
         (self.current_layer.map(color_for_layer).unwrap_or_else(color_off), 4)
+    }
+}
+
+// The LED is dark while the half sleeps, so the poll that drives blinking and
+// VBUS detection stops: a 10 ms tick would keep the MCU waking all night.
+impl DeadlineProcessor for LayerLed {
+    fn deadline(&self) -> Option<Instant> {
+        (!self.sleeping).then_some(self.next_poll)
+    }
+
+    async fn on_deadline(&mut self) {
+        let now = Instant::now();
+        self.next_poll = now + POLL_INTERVAL;
+        self.render(now).await;
     }
 }
 

@@ -37,9 +37,9 @@ fn main() {
     let encoder_profile = matches!(product_id, 0x0044 | 0x0070);
     let (version, version_bcd) = if encoder_profile {
         println!("cargo:rustc-cfg=classic_encoder_settings");
-        ("0.1.9", "0x0109")
+        ("0.2.0", "0x0200")
     } else {
-        ("0.1.8", "0x0108")
+        ("0.2.0", "0x0200")
     };
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION={version}");
     println!("cargo:rustc-env=RMK_FIRMWARE_VERSION_BCD={version_bcd}");

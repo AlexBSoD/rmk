@@ -41,34 +41,38 @@ pub(crate) fn expand_registered_processor_init(
 
             let (custom_init, custom_exec) = expand_custom_processor(item_fn);
             let cfg_predicates = processor_cfg_predicates(item_fn);
-            let mut mode: Option<bool> = None; // Some(true) = event, Some(false) = poll
+            let mut executor_body: Option<TokenStream> = None;
 
             attr.parse_nested_meta(|meta| {
-                let is_event = meta.path.is_ident("event");
-                let is_poll = meta.path.is_ident("poll");
-
-                if !is_event && !is_poll {
-                    return Err(meta.error("expected `event` or `poll`"));
-                }
-                if mode.is_some() {
+                let body = if meta.path.is_ident("event") {
+                    quote! {
+                        use ::rmk::processor::Processor;
+                        #custom_exec.process_loop().await
+                    }
+                } else if meta.path.is_ident("poll") {
+                    quote! {
+                        use ::rmk::processor::PollingProcessor;
+                        #custom_exec.polling_loop().await
+                    }
+                } else if meta.path.is_ident("deadline") {
+                    quote! {
+                        use ::rmk::processor::DeadlineProcessor;
+                        #custom_exec.deadline_loop().await
+                    }
+                } else {
+                    return Err(meta.error("expected `event`, `poll` or `deadline`"));
+                };
+                if executor_body.is_some() {
                     return Err(meta.error("cannot specify multiple modes"));
                 }
-                mode = Some(is_event);
+                executor_body = Some(body);
                 Ok(())
             })
             .unwrap_or_else(|e| panic!("#[register_processor] {e}"));
 
-            let executor_body = match mode {
-                Some(true) => quote! {
-                    use ::rmk::processor::Processor;
-                    #custom_exec.process_loop().await
-                },
-                Some(false) => quote! {
-                    use ::rmk::processor::PollingProcessor;
-                    #custom_exec.polling_loop().await
-                },
-                None => panic!("#[register_processor] requires `event` or `poll` argument"),
-            };
+            let executor_body = executor_body.unwrap_or_else(|| {
+                panic!("#[register_processor] requires `event`, `poll` or `deadline` argument")
+            });
             let executor = if cfg_predicates.is_empty() {
                 quote! {
                     async { #executor_body }
@@ -217,4 +221,111 @@ fn processor_cfg_predicates(fn_item: &syn::ItemFn) -> Vec<TokenStream> {
             Some(meta.tokens.clone())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand_registration(attributes: &str) -> (TokenStream, TokenStream) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let config = rmk_config::KeyboardTomlConfig::new_from_toml_path(
+            root.join("keyboards/k04/keyboard.toml"),
+        );
+        let hardware = config.hardware().unwrap();
+        let module: ItemMod = syn::parse_str(&format!(
+            "mod keyboard {{ {attributes} fn layer_led() -> LayerLed {{ LayerLed::new() }} }}"
+        ))
+        .unwrap();
+        let (init, executions) = expand_registered_processor_init(&hardware, &module, &None);
+        (init, executions.last().unwrap().clone())
+    }
+
+    #[test]
+    fn deadline_registration_uses_deadline_loop() {
+        let (init, execution) = expand_registration("#[register_processor(deadline)]");
+        assert_eq!(
+            init.to_string(),
+            quote!(let mut layer_led = { LayerLed::new() };).to_string()
+        );
+        assert_eq!(
+            execution.to_string(),
+            quote!(async {
+                use ::rmk::processor::DeadlineProcessor;
+                layer_led.deadline_loop().await
+            })
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn event_registration_keeps_event_loop() {
+        let (_, execution) = expand_registration("#[register_processor(event)]");
+        assert_eq!(
+            execution.to_string(),
+            quote!(async {
+                use ::rmk::processor::Processor;
+                layer_led.process_loop().await
+            })
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn poll_registration_keeps_polling_loop() {
+        let (_, execution) = expand_registration("#[register_processor(poll)]");
+        assert_eq!(
+            execution.to_string(),
+            quote!(async {
+                use ::rmk::processor::PollingProcessor;
+                layer_led.polling_loop().await
+            })
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn deadline_registration_preserves_cfg_guard() {
+        let (init, execution) =
+            expand_registration("#[cfg(feature = \"led\")] #[register_processor(deadline)]");
+        assert_eq!(
+            init.to_string(),
+            quote!(#[cfg(feature = "led")] let mut layer_led = { LayerLed::new() };).to_string()
+        );
+        assert_eq!(
+            execution.to_string(),
+            quote!(async {
+                #[cfg(all(feature = "led"))]
+                {
+                    use ::rmk::processor::DeadlineProcessor;
+                    layer_led.deadline_loop().await
+                }
+                #[cfg(not(all(feature = "led")))]
+                {
+                    ::core::future::pending::<()>().await
+                }
+            })
+            .to_string()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot specify multiple modes")]
+    fn mixed_deadline_modes_are_rejected() {
+        expand_registration("#[register_processor(deadline, poll)]");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected `event`, `poll` or `deadline`")]
+    fn unknown_registration_mode_is_rejected() {
+        expand_registration("#[register_processor(unknown)]");
+    }
+
+    #[test]
+    #[should_panic(expected = "requires `event`, `poll` or `deadline` argument")]
+    fn empty_registration_mode_is_rejected() {
+        expand_registration("#[register_processor()]");
+    }
 }
