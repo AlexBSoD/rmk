@@ -337,23 +337,95 @@ fn transport_setup(communication: &CommunicationConfig) -> (TokenStream2, Vec<To
     }
 }
 
-pub(crate) fn expand_tasks(tasks: Vec<TokenStream2>) -> TokenStream2 {
-    let mut current_joined = quote! {};
-    tasks.iter().enumerate().for_each(|(id, task)| {
-        if id == 0 {
-            current_joined = quote! {#task};
-        } else {
-            current_joined = quote! {
-                ::rmk::embassy_futures::join::join(#current_joined, #task)
-            };
+pub(crate) fn expand_tasks(mut tasks: Vec<TokenStream2>) -> TokenStream2 {
+    match tasks.len() {
+        0 => quote! {},
+        1 => {
+            // Task producers may include an argument-list trailing comma.
+            let mut tokens: Vec<_> = tasks.pop().unwrap().into_iter().collect();
+            if matches!(tokens.last(), Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ',')
+            {
+                tokens.pop();
+            }
+            tokens.into_iter().collect()
         }
-    });
-    current_joined
+        count => {
+            // A left-deep Join keeps large nested poll frames live together.
+            // Balance the tree while retaining left-to-right polling order.
+            let right = tasks.split_off(count / 2);
+            let left = expand_tasks(tasks);
+            let right = expand_tasks(right);
+            quote! { ::rmk::embassy_futures::join::join(#left, #right) }
+        }
+    }
 }
 
 pub(crate) fn join_all_tasks(tasks: Vec<TokenStream2>) -> TokenStream2 {
     let joined = expand_tasks(tasks);
     quote! {
         #joined.await;
+    }
+}
+
+#[cfg(test)]
+mod task_join_tests {
+    use super::*;
+
+    fn inspect_tree(expr: &syn::Expr, leaves: &mut Vec<String>) -> usize {
+        match expr {
+            syn::Expr::Call(call) => {
+                let syn::Expr::Path(path) = &*call.func else {
+                    panic!("expected join path")
+                };
+                assert_eq!(path.path.segments.last().unwrap().ident, "join");
+                assert_eq!(call.args.len(), 2);
+                1 + call
+                    .args
+                    .iter()
+                    .map(|arg| inspect_tree(arg, leaves))
+                    .max()
+                    .unwrap()
+            }
+            syn::Expr::Path(path) => {
+                leaves.push(path.path.get_ident().unwrap().to_string());
+                0
+            }
+            _ => panic!("unexpected generated expression"),
+        }
+    }
+
+    #[test]
+    fn task_expressions_with_trailing_commas_remain_valid_when_balanced() {
+        let tasks = vec![
+            quote! { task_0, },
+            quote! { task_1 },
+            quote! { task_2, },
+            quote! { task_3 },
+        ];
+        let tree: syn::Expr =
+            syn::parse2(expand_tasks(tasks)).expect("valid nested join expression");
+        let mut leaves = Vec::new();
+        assert_eq!(inspect_tree(&tree, &mut leaves), 2);
+        assert_eq!(leaves, ["task_0", "task_1", "task_2", "task_3"]);
+    }
+
+    #[test]
+    fn many_tasks_use_bounded_join_depth_without_reordering_or_dropping_tasks() {
+        for count in 2usize..=32 {
+            let names: Vec<_> = (0..count).map(|i| format_ident!("task_{i}")).collect();
+            let tasks = names.iter().map(|name| quote! { #name }).collect();
+            let tree: syn::Expr = syn::parse2(expand_tasks(tasks)).unwrap();
+            let mut leaves = Vec::new();
+            let depth = inspect_tree(&tree, &mut leaves);
+            assert_eq!(
+                leaves,
+                names.iter().map(ToString::to_string).collect::<Vec<_>>()
+            );
+            let limit = (usize::BITS - (count - 1).leading_zeros()) as usize;
+            assert!(
+                depth <= limit,
+                "{count} tasks: depth {depth} exceeds {limit}"
+            );
+        }
     }
 }
