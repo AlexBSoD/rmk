@@ -662,16 +662,18 @@ pub(crate) async fn run_peripheral_session<
 }
 
 fn active_central_conn_param(profile: SplitLinkProfile) -> RequestedConnParams {
-    let interval = match profile {
-        SplitLinkProfile::Keyboard => Duration::from_millis(15),
-        SplitLinkProfile::Pointing => Duration::from_micros(7_500),
+    // A peripheral with queued input attends the next event regardless of
+    // slave latency, so latency only lets an idle keyboard half skip events;
+    // central-to-peripheral updates wait at most 7 events (105 ms). A pointing
+    // link cannot sustain 125 Hz with peripheral latency.
+    let (interval, max_latency) = match profile {
+        SplitLinkProfile::Keyboard => (Duration::from_millis(15), 6),
+        SplitLinkProfile::Pointing => (Duration::from_micros(7_500), 0),
     };
     RequestedConnParams {
         min_connection_interval: interval,
         max_connection_interval: interval,
-        // Active split links must attend every event. In particular, a
-        // pointing link cannot sustain 125 Hz with peripheral latency.
-        max_latency: 0,
+        max_latency,
         supervision_timeout: Duration::from_secs(5),
         ..Default::default()
     }
@@ -1699,7 +1701,7 @@ mod tests {
 
         assert_eq!(params.min_connection_interval, Duration::from_millis(15));
         assert_eq!(params.max_connection_interval, Duration::from_millis(15));
-        assert_eq!(params.max_latency, 0);
+        assert_eq!(params.max_latency, 6);
     }
 
     #[test]
