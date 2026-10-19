@@ -304,6 +304,9 @@ where
     /// One matrix region per split peripheral.
     #[cfg(feature = "split")]
     peripheral_matrices: [PeripheralMatrixConfig; crate::SPLIT_PERIPHERALS_NUM],
+    /// Cleared by `without_host_link`: the central then only serves its peripherals.
+    #[cfg(feature = "split")]
+    host_link: bool,
     #[cfg(feature = "host")]
     host_service: Option<&'a crate::host::HostService<'a>>,
     // Keeps `'a` in the type's parameter list across all feature configurations.
@@ -332,6 +335,8 @@ where
             host_power_config: None,
             #[cfg(feature = "split")]
             peripheral_matrices,
+            #[cfg(feature = "split")]
+            host_link: true,
             #[cfg(feature = "host")]
             host_service: None,
             #[cfg(not(feature = "host"))]
@@ -366,6 +371,15 @@ where
         for (peripheral_id, profile) in profiles.into_iter().enumerate() {
             crate::split::ble::central::set_split_link_profile(peripheral_id, profile);
         }
+        self
+    }
+
+    /// Keep the split links but never advertise to a host: for a central whose
+    /// only host link is USB, such as a dongle. Advertising as a pairable
+    /// keyboard would just invite a host to bond with the dongle itself.
+    #[cfg(feature = "split")]
+    pub fn without_host_link(mut self) -> Self {
+        self.host_link = false;
         self
     }
 }
@@ -439,15 +453,29 @@ impl<
             embassy_futures::join::join_array(core::array::from_fn::<_, { crate::SPLIT_PERIPHERALS_NUM }, _>(|i| {
                 run_peripheral_session(i, &conn_channels[i], &ended, &stack, self.peripheral_matrices[i])
             }));
+        let host_link = async {
+            if self.host_link {
+                run_ble_keyboard(
+                    &stack,
+                    &self.device_config,
+                    &self.config,
+                    self.host_power_config,
+                    #[cfg(feature = "host")]
+                    self.host_service,
+                )
+                .await
+            }
+            // Without a host link the stack runner and the sleep manager still
+            // have to run: without the runner the central never scans.
+            crate::state::set_preferred_connection(ConnectionType::Usb);
+            join(
+                ble_task(stack.runner(), &crate::split::ble::central::ScanHandler),
+                sleep::run_sleep_manager(),
+            )
+            .await;
+        };
         join3(
-            run_ble_keyboard(
-                &stack,
-                &self.device_config,
-                &self.config,
-                self.host_power_config,
-                #[cfg(feature = "host")]
-                self.host_service,
-            ),
+            host_link,
             sessions,
             scan_and_connect_peripherals(&stack, &conn_channels, &ended),
         )

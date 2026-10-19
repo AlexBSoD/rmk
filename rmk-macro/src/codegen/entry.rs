@@ -333,8 +333,24 @@ fn transport_setup(
         .ok()
         .and_then(|path| syn::parse_str::<syn::Path>(&path).ok())
         .map(|path| quote! { .with_host_power_config(#path()) });
+    // A USB dongle keeps the BLE stack for its split links but never
+    // advertises to a host; boards opt in from their build script.
+    let without_host_link = if std::env::var("RMK_DISABLE_BLE_HOST").is_ok_and(|value| value == "1")
+    {
+        if matches!(communication, CommunicationConfig::Ble(_)) {
+            panic!("RMK_DISABLE_BLE_HOST removes the only host transport of a BLE-only keyboard");
+        }
+        if matches!(communication, CommunicationConfig::Both(_, _))
+            && split_peripheral_matrices.is_empty()
+        {
+            panic!("RMK_DISABLE_BLE_HOST is only supported on a BLE split central");
+        }
+        quote! { .without_host_link() }
+    } else {
+        quote! {}
+    };
     let ble_prelude = quote! {
-        let mut ble_transport = ::rmk::ble::BleTransport::new(ble_controller, ble_addr, rmk_config #split_peripheral_matrices) #with_host #host_power_config #split_link_profiles;
+        let mut ble_transport = ::rmk::ble::BleTransport::new(ble_controller, ble_addr, rmk_config #split_peripheral_matrices) #with_host #host_power_config #split_link_profiles #without_host_link;
     };
     let ble_task = quote! { ble_transport.run() };
 
