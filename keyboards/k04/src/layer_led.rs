@@ -53,7 +53,8 @@ struct TimedOverlay {
         PeripheralSettingsEvent,
         BatteryStatusEvent,
         PeripheralBatteryRefreshEvent
-    ]
+    ],
+    deadline
 )]
 pub struct LayerLed {
     led: SequencePwm<'static>,

@@ -206,10 +206,12 @@ pub const fn vial_device_settings() -> VialDeviceSettings<'static> {
     }
 }
 
+#[cfg(feature = "qube")]
 pub fn version() -> u8 {
     LAYER_NAMES_VERSION.load(Ordering::Relaxed)
 }
 
+#[cfg(feature = "qube")]
 pub fn copy_layer_name(layer: u8, out: &mut LayerNameString) -> bool {
     let index = layer as usize;
     if index >= LAYER_NAME_COUNT {

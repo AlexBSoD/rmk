@@ -21,27 +21,27 @@ mod keyboard_central {
         SPIM3 => ::embassy_nrf::spim::InterruptHandler<::embassy_nrf::peripherals::SPI3>;
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn display_processor() -> crate::qube_display::DongleScreen<Irqs> {
         crate::qube_display::create_processor(p.SPI3, p.P1_11, p.P1_10, p.P1_13, p.P0_28, p.P0_03, p.P0_02, Irqs)
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn module_settings_broadcast() -> crate::layer_names::ModuleSettingsBroadcast {
         crate::layer_names::ModuleSettingsBroadcast::new()
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn module_settings_sync() -> crate::module_settings::ModuleSettingsSync {
         crate::module_settings::ModuleSettingsSync::new()
     }
 
-    #[register_processor(poll)]
+    #[register_processor]
     fn ergohaven_user_keys() -> ::rmk::processor::builtin::ergohaven::ErgohavenUserKeys {
         ::rmk::processor::builtin::ergohaven::ErgohavenUserKeys::new()
     }
 
-    #[register_processor(poll)]
+    #[register_processor]
     fn pointing_processor() -> ::rmk::input_device::pointing::QubePointingModeProcessor<'static> {
         ::rmk::input_device::pointing::QubePointingModeProcessor::new(&keymap)
     }

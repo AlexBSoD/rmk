@@ -4,10 +4,9 @@ use embassy_nrf::Peri;
 use embassy_time::{Duration, Instant, Timer};
 use rmk::core_traits::Runnable;
 use rmk::driver::bitbang_spi::BitBangSpiBus;
-use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, EventSubscriber, PointingEvent};
+use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, PointingEvent};
 use rmk::input_device::pmw3610::{Pmw3610, Pmw3610Config, Pmw3610Health};
 use rmk::input_device::pointing::PointingDriver;
-use rmk::processor::Processor;
 
 use crate::module_settings;
 
@@ -706,34 +705,9 @@ impl Trackball {
     }
 }
 
-struct NeverSub;
-pub struct NeverEvent;
-
-impl EventSubscriber for NeverSub {
-    type Event = NeverEvent;
-
-    async fn next_event(&mut self) -> NeverEvent {
-        core::future::pending().await
-    }
-}
-
 impl Runnable for Trackball {
     async fn run(&mut self) -> ! {
         self.run_loop().await
-    }
-}
-
-impl Processor for Trackball {
-    type Event = NeverEvent;
-
-    fn subscriber() -> impl EventSubscriber<Event = NeverEvent> {
-        NeverSub
-    }
-
-    async fn process(&mut self, _: NeverEvent) {}
-
-    async fn process_loop(&mut self) -> ! {
-        self.run().await
     }
 }
 
@@ -794,21 +768,6 @@ impl RttSchedulerProbe {
 impl Runnable for RttSchedulerProbe {
     async fn run(&mut self) -> ! {
         self.run_loop().await
-    }
-}
-
-#[cfg(feature = "rtt_diag")]
-impl Processor for RttSchedulerProbe {
-    type Event = NeverEvent;
-
-    fn subscriber() -> impl EventSubscriber<Event = NeverEvent> {
-        NeverSub
-    }
-
-    async fn process(&mut self, _: NeverEvent) {}
-
-    async fn process_loop(&mut self) -> ! {
-        self.run().await
     }
 }
 
