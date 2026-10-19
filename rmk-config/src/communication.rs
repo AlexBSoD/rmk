@@ -76,27 +76,29 @@ impl CommunicationConfig {
 impl KeyboardTomlConfig {
     pub(crate) fn get_communication_config(&self) -> Result<CommunicationConfig, String> {
         let usb_enabled = self.keyboard.clone().unwrap_or_default().usb_enable.unwrap_or(false);
-        let chip = self.get_chip_model().unwrap();
-        let usb_info = if usb_enabled { get_usb_info(&chip.chip) } else { None };
-        let ble_config = self.ble.clone();
+        let chip = self.get_chip_model()?;
+        // Distinguish "USB not enabled" from "chip unknown to the USB map":
+        // silently dropping USB here would misreport the user's config as the cause.
+        let usb_info = if usb_enabled {
+            Some(get_usb_info(&chip.chip).ok_or_else(|| {
+                format!(
+                    "`usb_enable = true`, but chip \"{}\" has no USB mapping in RMK — set `usb_enable = false` in [keyboard], or report the missing chip at https://github.com/rmk-rs/rmk/issues",
+                    chip.chip
+                )
+            })?)
+        } else {
+            None
+        };
+        let ble_config = self.ble.as_ref().filter(|config| config.enabled).cloned();
 
         match (usb_info, ble_config) {
             (Some(usb_info), None) => Ok(CommunicationConfig::Usb(usb_info)),
-            (Some(usb_info), Some(ble_config)) => {
-                if !ble_config.enabled {
-                    Ok(CommunicationConfig::Usb(usb_info))
-                } else {
-                    Ok(CommunicationConfig::Both(usb_info, ble_config))
-                }
-            }
-            (None, Some(c)) => {
-                if !c.enabled {
-                    Err("You must enable at least one of usb or ble".to_string())
-                } else {
-                    Ok(CommunicationConfig::Ble(c))
-                }
-            }
-            _ => Err("You must enable at least one of usb or ble".to_string()),
+            (Some(usb_info), Some(ble_config)) => Ok(CommunicationConfig::Both(usb_info, ble_config)),
+            (None, Some(ble_config)) => Ok(CommunicationConfig::Ble(ble_config)),
+            (None, None) => Err(
+                "keyboard.toml: no transport is enabled — set `usb_enable = true` in [keyboard], or `enabled = true` in [ble]"
+                    .to_string(),
+            ),
         }
     }
 }

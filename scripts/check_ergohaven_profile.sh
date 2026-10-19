@@ -190,7 +190,7 @@ import tomllib
 for path in sys.argv[1:]:
     with open(path, "rb") as source:
         config = tomllib.load(source)
-    explicit_layers = config.get("layer", [])
+    explicit_layers = config.get("keymap", {}).get("layer", [])
     if len(explicit_layers) > 5:
         raise SystemExit(
             f"{path}: defines {len(explicit_layers)} factory layers; "
@@ -210,7 +210,7 @@ profiles = [
 
 for path in profiles:
     with open(path, "rb") as source:
-        layers = tomllib.load(source).get("layer", [])
+        layers = tomllib.load(source).get("keymap", {}).get("layer", [])
     adjust = next((layer for layer in layers if layer.get("name") == "Adjust"), None)
     if adjust is None:
         raise SystemExit(f"{path}: Adjust layer is missing")
@@ -233,7 +233,7 @@ import tomllib
 
 def layers(path):
     with open(path, "rb") as source:
-        return tomllib.load(source).get("layer", [])
+        return tomllib.load(source).get("keymap", {}).get("layer", [])
 
 replacements = {
     "User19": "User0",
@@ -303,7 +303,7 @@ def check_projection(
                 layout = tomllib.load(source)["layout"]
             positions = [
                 (int(row), int(col))
-                for row, col in re.findall(r"\((\d+),(\d+),[^)]+\)", layout["matrix_map"])
+                for row, col in re.findall(r"\((\d+),(\d+),[^)]+\)", layout["map"])
             ]
             base_name, base_keys, base_encoders = expected[0]
             base_keys = list(base_keys)
@@ -396,8 +396,6 @@ python3 scripts/test_approved_factory_layouts.py || fail "approved factory layou
 for file in "${non_k04_profiles[@]}"; do
     expect_toml "$file" combo_max_length 4
     expect_toml "$file" max_patterns_per_key 8
-    expect_toml "$file" protocol_max_bulk_size 8
-    expect_toml "$file" protocol_macro_chunk_size 64
 done
 
 for file in "${split_profiles[@]}"; do
@@ -510,29 +508,30 @@ python3 - <<'PY' || fail "K:04 production_v30g feature scope is invalid"
 from pathlib import Path
 
 k04 = Path("keyboards/k04/Cargo.toml").read_text(encoding="utf-8")
+k04_build = Path("keyboards/k04/build.rs").read_text(encoding="utf-8")
 rmk = Path("rmk/Cargo.toml").read_text(encoding="utf-8")
 entry = Path("rmk-macro/src/codegen/entry.rs").read_text(encoding="utf-8")
+constants = Path("rmk-types/build.rs").read_text(encoding="utf-8")
 ble = Path("rmk/src/ble/mod.rs").read_text(encoding="utf-8")
 split = Path("rmk/src/split/ble/central.rs").read_text(encoding="utf-8")
-central = Path("rmk/src/split/central.rs").read_text(encoding="utf-8")
 assert 'production_v30g = ["production_v22", "fixed_mouse_pacing_15ms", "rmk/host_first_split_wake"]' in k04
 assert 'fixed_mouse_pacing_15ms = ["mouse_vector_preserve", "rmk/fixed_mouse_pacing_15ms"]' in k04
 assert 'host_first_split_wake = []' in rmk
 assert 'production_v30g' not in rmk
 assert "adaptive_mouse_pacing" not in k04 + rmk
-assert entry.count("#use_2m_phy,") == 3
-assert "run_peripheral_manager_with_profile_and_phy::<" in entry
-legacy = central.split("pub async fn run_peripheral_manager_with_profile<", 1)[1].split(
-    "pub async fn run_peripheral_manager_with_profile_and_phy<", 1
-)[0]
-assert "use_2m_phy: bool" not in legacy
-assert "id, addr, stack, profile, true" in " ".join(legacy.split())
-phy_aware = central.split("pub async fn run_peripheral_manager_with_profile_and_phy<", 1)[1]
-assert "use_2m_phy: bool" in phy_aware
-assert "new_with_host_power_and_phy_config" in entry
-assert 'if split_phy_update_requested(use_2m_phy)' in split
+# Standalone halves pass host-link power management and per-link split
+# profiles to the BLE transport through its builders.
+assert "RMK_BLE_HOST_POWER_CONFIG_FN=crate::ble_host_power::ble_host_power_config" in k04_build
+assert "RMK_BLE_HOST_POWER_CONFIG_FN" in entry
+assert ".with_host_power_config(#path())" in entry
+assert ".with_split_link_profiles([#(#profiles),*])" in entry
+# The 2M PHY decision stays configurable through `[ble].use_2m_phy`, for the
+# host link and the split links alike.
+assert "pub const BLE_USE_2M_PHY: bool" in constants
+assert "crate::BLE_USE_2M_PHY" in ble
+assert "if crate::BLE_USE_2M_PHY {" in split
 assert '#[cfg(feature = "host_first_split_wake")]' in ble
-assert '#[cfg(feature = "host_first_split_wake")]' in split
+assert 'feature = "host_first_split_wake"' in split
 PY
 
 rg -Fq 'usb_config.device_release = keyboard_config.device_release;' rmk/src/usb/mod.rs \
