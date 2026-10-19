@@ -38,7 +38,6 @@ use rmk::event::{
     LayerChangeEvent, LedIndicatorEvent, ModifierEvent, PeripheralBatteryEvent, PeripheralConnectedEvent,
     SleepStateEvent, SubscribableEvent, WpmUpdateEvent,
 };
-use rmk::processor::Processor;
 use rmk_types::battery::BatteryStatus;
 use static_cell::StaticCell;
 use u8g2_fonts::{fonts, U8g2TextStyle};
@@ -476,16 +475,6 @@ where
     }
 }
 
-pub struct NeverEvent;
-struct NeverSub;
-
-impl EventSubscriber for NeverSub {
-    type Event = NeverEvent;
-    async fn next_event(&mut self) -> NeverEvent {
-        core::future::pending().await
-    }
-}
-
 impl<I> Runnable for DongleScreen<I>
 where
     I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
@@ -752,22 +741,6 @@ where
         if need_redraw {
             self.request_redraw();
         }
-    }
-}
-
-impl<I> Processor for DongleScreen<I>
-where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
-        + Copy
-        + 'static,
-{
-    type Event = NeverEvent;
-    fn subscriber() -> impl EventSubscriber<Event = NeverEvent> {
-        NeverSub
-    }
-    async fn process(&mut self, _: NeverEvent) {}
-    async fn process_loop(&mut self) -> ! {
-        self.run().await
     }
 }
 

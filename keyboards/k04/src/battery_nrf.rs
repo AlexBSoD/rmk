@@ -17,7 +17,6 @@ use rmk::event::{
     publish_event, BatteryStatusEvent, EventSubscriber, PeripheralBatteryRefreshEvent, SubscribableEvent,
 };
 use rmk::input_device::battery::publish_battery_status;
-use rmk::processor::Processor;
 use rmk::types::battery::{BatteryStatus, ChargeState};
 
 use crate::battery_level::BatteryLevelTracker;
@@ -162,16 +161,6 @@ fn current_charge_state() -> ChargeState {
     }
 }
 
-struct NeverSub;
-pub struct NeverEvent;
-
-impl EventSubscriber for NeverSub {
-    type Event = NeverEvent;
-    async fn next_event(&mut self) -> NeverEvent {
-        core::future::pending().await
-    }
-}
-
 impl<const CACHE_HOST_STATUS: bool> Runnable for BatteryReader<CACHE_HOST_STATUS> {
     async fn run(&mut self) -> ! {
         Timer::after(Duration::from_millis(1000)).await;
@@ -184,16 +173,5 @@ impl<const CACHE_HOST_STATUS: bool> Runnable for BatteryReader<CACHE_HOST_STATUS
             };
             let _ = select(Timer::after(interval), refresh_sub.next_event()).await;
         }
-    }
-}
-
-impl<const CACHE_HOST_STATUS: bool> Processor for BatteryReader<CACHE_HOST_STATUS> {
-    type Event = NeverEvent;
-    fn subscriber() -> impl EventSubscriber<Event = NeverEvent> {
-        NeverSub
-    }
-    async fn process(&mut self, _: NeverEvent) {}
-    async fn process_loop(&mut self) -> ! {
-        self.run().await
     }
 }

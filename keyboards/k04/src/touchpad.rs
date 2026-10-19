@@ -2,8 +2,7 @@ use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Instant, Timer};
 use rmk::core_traits::Runnable;
-use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, EventSubscriber, PointingEvent};
-use rmk::processor::Processor;
+use rmk::event::{publish_event, Axis, AxisEvent, AxisValType, PointingEvent};
 
 use crate::module_settings;
 
@@ -635,34 +634,9 @@ fn touch_poll_interval(idle_for: Duration) -> Duration {
     Duration::from_millis(interval_ms as u64)
 }
 
-struct NeverSub;
-pub struct NeverEvent;
-
-impl EventSubscriber for NeverSub {
-    type Event = NeverEvent;
-
-    async fn next_event(&mut self) -> NeverEvent {
-        core::future::pending().await
-    }
-}
-
 impl Runnable for Touchpad {
     async fn run(&mut self) -> ! {
         self.run_loop().await
-    }
-}
-
-impl Processor for Touchpad {
-    type Event = NeverEvent;
-
-    fn subscriber() -> impl EventSubscriber<Event = NeverEvent> {
-        NeverSub
-    }
-
-    async fn process(&mut self, _: NeverEvent) {}
-
-    async fn process_loop(&mut self) -> ! {
-        self.run().await
     }
 }
 
