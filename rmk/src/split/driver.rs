@@ -15,7 +15,7 @@ use crate::event::DfuCmdEvent;
 #[cfg(feature = "_ble")]
 use crate::event::{BatteryStatusEvent, PeripheralBatteryEvent};
 use crate::event::{
-    KeyboardEvent, KeyboardEventPos, PeripheralConnectedEvent, SubscribableEvent, publish_event, publish_event_async,
+    KeyboardEvent, KeyboardEventSource, PeripheralConnectedEvent, SubscribableEvent, publish_event, publish_event_async,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -216,10 +216,11 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
         // answer lands in our subscriber instead of being dropped.
         publish_event(crate::event::PeripheralSettingsRefreshEvent);
 
-        // Send connection and lock LED state when the session starts.
+        // Send the current state when the session starts.
         for message in [
             SplitMessage::ConnectionStatus(crate::state::current_connection_status()),
             SplitMessage::KeyboardIndicator(crate::keyboard::current_led_indicator().into_bits()),
+            SplitMessage::SleepState(crate::state::current_sleep_state()),
         ] {
             if self.send(&message).await.is_err() {
                 return;
@@ -231,17 +232,6 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
             .send(&SplitMessage::BleAdvertisingMode(
                 crate::state::current_ble_advertising_mode(),
             ))
-            .await
-            .is_err()
-        {
-            return;
-        }
-
-        // Sleep is only sent on transitions. A peripheral that reboots or
-        // reconnects while the keyboard already sleeps would otherwise stay
-        // awake until the next wake/sleep cycle.
-        if self
-            .send(&SplitMessage::SleepState(crate::state::current_sleep_state()))
             .await
             .is_err()
         {
@@ -315,8 +305,8 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
     async fn process_peripheral_message(&self, split_message: SplitMessage) {
         trace!("Got message from peripheral: {:?}", split_message);
         match split_message {
-            SplitMessage::Key(e) => match e.pos {
-                KeyboardEventPos::Key(key_pos) => {
+            SplitMessage::Key(e) => match e.source {
+                KeyboardEventSource::Key(key_pos) => {
                     // Verify the row/col
                     if key_pos.row >= self.matrix_config.rows || key_pos.col >= self.matrix_config.cols {
                         error!("Invalid peripheral row/col: {} {}", key_pos.row, key_pos.col);
