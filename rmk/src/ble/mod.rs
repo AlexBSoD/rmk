@@ -1449,8 +1449,23 @@ async fn set_conn_params<'a, 'b, C: Controller + ControllerCmdSync<LeReadLocalSu
         .await
         {
             Some(applied) => applied,
-            None if host_power_config.is_some() => return BleKeyboardExit::ConnectionParamsStalled,
-            None => target,
+            None => {
+                // Bootstrap is a preference negotiation, not evidence of a
+                // stalled HID link. The host owns the accepted interval and
+                // may reject our faster request or omit a no-op update event.
+                // Keep that anchor for idle/wake, but still request latency 0
+                // on wake; never treat retained slave latency as confirmed.
+                let current = conn.raw().params();
+                warn!(
+                    "[HOST_ACTIVE_V25] phase=0 state=host_selected interval_us={} latency={}",
+                    current.conn_interval.as_micros(),
+                    current.peripheral_latency
+                );
+                HostConnParamsSnapshot {
+                    interval: current.conn_interval,
+                    latency: HOST_INTERACTIVE_MAX_LATENCY,
+                }
+            }
         }
     };
 
@@ -1939,18 +1954,12 @@ async fn request_confirmed_active_params<
             )
             .await
             {
-                Ok(applied) if host_active_params_confirmed(target, applied) => {
-                    info!(
-                        "[HOST_ACTIVE_V25] phase={} state=confirmed interval_us={} latency={} attempt={}",
-                        phase,
-                        applied.interval.as_micros(),
-                        applied.latency,
-                        attempt
-                    );
-                    return Some(applied);
-                }
-                Ok(applied) => warn!(
-                    "[HOST_ACTIVE_V25] phase={} state=mismatch interval_us={} latency={} attempt={}",
+                // The signal is a notification, not the connection state.
+                // trouble-host updates Connection::params before enqueueing
+                // the event, and an unchanged/rejected request need not emit
+                // another event. A queued event can also be superseded.
+                Ok(applied) => info!(
+                    "[HOST_ACTIVE_V25] phase={} state=update_observed interval_us={} latency={} attempt={}",
                     phase,
                     applied.interval.as_micros(),
                     applied.latency,
@@ -1966,6 +1975,22 @@ async fn request_confirmed_active_params<
                 "[HOST_ACTIVE_V25] phase={} state=request_rejected attempt={}",
                 phase, attempt
             );
+        }
+
+        let current = conn.params();
+        let applied = HostConnParamsSnapshot {
+            interval: current.conn_interval,
+            latency: current.peripheral_latency,
+        };
+        if conn.is_connected() && host_active_params_confirmed(target, applied) {
+            info!(
+                "[HOST_ACTIVE_V25] phase={} state=confirmed interval_us={} latency={} attempt={}",
+                phase,
+                applied.interval.as_micros(),
+                applied.latency,
+                attempt
+            );
+            return Some(applied);
         }
 
         if attempt < attempts {
