@@ -29,6 +29,9 @@ jobs:
       - name: Test K:04 persisted timeout migration
         run: python3 scripts/test_k04_timeout_migration.py
 
+      - name: Test K:04 host connection parameter negotiation
+        run: python3 scripts/test_k04_host_params.py
+
   build:
     name: Build ${{ matrix.output_name }} firmware
     runs-on: ubuntu-latest
