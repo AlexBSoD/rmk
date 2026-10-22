@@ -9,13 +9,38 @@ on:
 
 concurrency:
   cancel-in-progress: true
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  plan:
+    name: Plan test coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.policy.outputs.run }}
+      reason: ${{ steps.policy.outputs.reason }}
+      source_run: ${{ steps.policy.outputs.source_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 -m unittest discover -s .github/scripts -p test_ci_policy.py
+      - run: python3 -m pip install 'PyYAML==6.0.3'
+      - run: python3 -m unittest discover -s .github/scripts -p 'test_workflow_*.py'
+      - id: policy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/ci_policy.py plan --profile tests
+
   format:
+    needs: [plan]
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -28,6 +53,8 @@ jobs:
   # case where a deps bump in rmk/rmk-types is merged without refreshing
   # example lockfiles (see scripts/fetch_all.sh).
   fetch-check:
+    needs: [plan]
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -35,6 +62,8 @@ jobs:
       - run: bash scripts/fetch_all.sh --check
 
   check:
+    needs: [plan]
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -57,6 +86,8 @@ jobs:
       - run: .github/ci/check.sh
 
   test:
+    needs: [plan]
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -80,6 +111,8 @@ jobs:
 
   # Discover buildable examples for the matrix
   discover:
+    needs: [plan]
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     outputs:
       stable: ${{ steps.discover.outputs.stable }}
@@ -92,7 +125,8 @@ jobs:
   # Build each stable-toolchain example in parallel.
   # Entries with bloat==true also compare binary sizes against the base branch.
   build:
-    needs: discover
+    needs: [plan, discover]
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -245,8 +279,8 @@ jobs:
 
   # Assemble bloat report from matrix artifacts and save for the comment workflow
   bloat-report:
-    if: github.event_name == 'pull_request'
-    needs: build
+    if: needs.plan.outputs.run == 'true' && github.event_name == 'pull_request'
+    needs: [plan, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -270,8 +304,8 @@ jobs:
 
   # Build ESP/xtensa examples (separate toolchain)
   build-esp:
-    needs: discover
-    if: fromJson(needs.discover.outputs.esp)[0] != null
+    needs: [plan, discover]
+    if: needs.plan.outputs.run == 'true' && fromJson(needs.discover.outputs.esp)[0] != null
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -296,3 +330,28 @@ jobs:
           for dir in examples/use_rust/esp32s3_ble examples/use_config/esp32s3_ble; do
             (cd "$dir" && CARGO_UNSTABLE_BUILD_STD=alloc,core cargo +esp build --release)
           done
+
+  complete:
+    name: Complete test coverage
+    if: ${{ always() }}
+    needs: [plan, format, fetch-check, check, test, discover, build, build-esp, bloat-report]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - id: verify
+        name: Verify the complete owning graph
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/workflow_complete.py tests
+      - name: Record full test proof
+        if: steps.verify.outputs.full == 'true'
+        run: python3 .github/scripts/ci_policy.py record --profile tests --output "$RUNNER_TEMP/ci-proof/tests.json"
+      - name: Upload full test proof
+        if: steps.verify.outputs.full == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-proof-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-proof/tests.json
+          if-no-files-found: error
