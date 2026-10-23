@@ -7,6 +7,9 @@ use const_gen::*;
 use xz2::read::XzEncoder;
 
 fn main() {
+    const FIRMWARE_VERSION: &str = "0.2.0";
+    const FIRMWARE_VERSION_BCD: &str = "0x0200";
+
     let vial_path = configured_path("VIAL_JSON_PATH", "vial.json");
     let keyboard_path = configured_path("KEYBOARD_TOML_PATH", "keyboard.toml");
 
@@ -18,6 +21,10 @@ fn main() {
 
     let product_id = generate_vial_config(&vial_path);
     validate_keyboard_product_id(&keyboard_path, product_id);
+    println!("cargo:rustc-env=RMK_FIRMWARE_VERSION={FIRMWARE_VERSION}");
+    println!("cargo:rustc-env=RMK_FIRMWARE_VERSION_BCD={FIRMWARE_VERSION_BCD}");
+    // The K:04 module settings, served to Vial and entropy as device settings.
+    println!("cargo:rustc-env=RMK_VIAL_DEVICE_SETTINGS_FN=crate::layer_names::vial_device_settings");
 
     let out = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
     File::create(out.join("memory.x"))
