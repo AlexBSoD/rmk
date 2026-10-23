@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+- Added the Phenom Series layer LED: the WS2812 on each half shows the active layer in its Entropy color, with the K:04 LED brightness and timeout settings in a new `LEDs settings` tab
+
 ### Fixes
 
 - Switched all six standalone K:04 Series images to the `production_v30g` profile derived from the field-validated K:04 build: host-first split wake ordering, accepted-anchor low-duty BLE parameters, fixed 15 ms vector-preserving HID pacing, and configured 1M PHY preservation; K:04 Qube and other keyboards retain their existing production profiles

@@ -4,6 +4,7 @@
 mod board;
 #[path = "../../common/default_layer_names.rs"]
 mod default_layer_names;
+mod layer_led;
 // The K:04 module sources, shared as they are. Phenom leaves their LED and
 // Qube parts unused, and does not declare their K:04-only features.
 #[allow(dead_code, unexpected_cfgs)]
@@ -27,11 +28,19 @@ use rmk::macros::rmk_central;
 mod keyboard_central {
     add_interrupt!(
         I2C0_IRQ => ::embassy_rp::i2c::InterruptHandler<::embassy_rp::peripherals::I2C0>;
+        PIO0_IRQ_0 => ::embassy_rp::pio::InterruptHandler<::embassy_rp::peripherals::PIO0>;
     );
 
     #[register_processor]
     fn module_settings_sync() -> crate::module_settings::ModuleSettingsSync {
         crate::module_settings::ModuleSettingsSync::new()
+    }
+
+    // DMA_CH1 serves the storage flash, and DMA_IRQ_0 is bound for both
+    // channels already.
+    #[register_processor]
+    fn layer_led() -> crate::layer_led::LayerLed {
+        crate::layer_led::LayerLed::new(p.PIO0, p.DMA_CH0, p.PIN_25, Irqs)
     }
 
     #[register_processor]
