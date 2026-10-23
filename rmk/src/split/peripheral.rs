@@ -166,6 +166,10 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                                 ))
                                 .await
                                 .ok();
+                            self.split_driver
+                                .write(&SplitMessage::DiagStats(crate::split::diag_stats::current_diag_stats()))
+                                .await
+                                .ok();
                         }
                         SplitMessage::KeyboardIndicator(indicator) => {
                             // Publish KeyboardIndicator event
@@ -307,6 +311,10 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                         trace!("Writing split pointing message to central");
                     } else {
                         debug!("Writing split message {:?} to central", e);
+                    }
+                    #[cfg(feature = "_ble")]
+                    if let SplitMessage::Key(KeyboardEvent { pressed: true, .. }) = e {
+                        crate::split::diag_stats::KEY_PRESSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     }
                     self.split_driver.write(&e).await.ok();
                 }

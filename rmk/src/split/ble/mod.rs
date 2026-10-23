@@ -26,10 +26,20 @@ impl PeerAddress {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub(crate) struct GattSplitMessage {
     buf: [u8; SplitMessage::POSTCARD_MAX_SIZE],
     len: usize,
+}
+
+// Not derived: `Default` is only implemented for arrays up to 32 bytes.
+impl Default for GattSplitMessage {
+    fn default() -> Self {
+        Self {
+            buf: [0; SplitMessage::POSTCARD_MAX_SIZE],
+            len: 0,
+        }
+    }
 }
 
 impl TryFrom<&SplitMessage> for GattSplitMessage {

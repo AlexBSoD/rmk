@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 #[cfg(feature = "subrating")]
 use bt_hci::cmd::le::LeSetHostFeature;
 use bt_hci::cmd::status::ReadRssi;
@@ -89,6 +91,7 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitReader for BleSplitPeripheralDrive
             match self.conn.next().await {
                 GattConnectionEvent::Disconnected { reason } => {
                     error!("Disconnected from central: {:?}", reason);
+                    crate::split::diag_stats::LAST_DISCONNECT_REASON.store(u8::from(reason), Ordering::Relaxed);
                     update_status(|c| *c = ConnectionStatus::new());
                     return Err(SplitDriverError::Disconnected);
                 }
@@ -107,6 +110,7 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitReader for BleSplitPeripheralDrive
                                 match parsed {
                                     Ok(message) => {
                                         trace!("Message from central: {:?}", message);
+                                        crate::split::diag_stats::SPLIT_RX.fetch_add(1, Ordering::Relaxed);
                                         break message;
                                     }
                                     Err(e) => error!("Postcard deserialize split message error: {}", e),
@@ -148,12 +152,20 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitReader for BleSplitPeripheralDrive
                     conn_interval,
                     peripheral_latency,
                     supervision_timeout,
-                } => info!(
-                    "[split] params updated: interval {:?}us, latency {:?}, timeout {:?}ms",
-                    conn_interval.as_micros(),
-                    peripheral_latency,
-                    supervision_timeout.as_millis()
-                ),
+                } => {
+                    info!(
+                        "[split] params updated: interval {:?}us, latency {:?}, timeout {:?}ms",
+                        conn_interval.as_micros(),
+                        peripheral_latency,
+                        supervision_timeout.as_millis()
+                    );
+                    crate::split::diag_stats::record_link_params(
+                        conn_interval.as_micros(),
+                        peripheral_latency,
+                        supervision_timeout.as_millis(),
+                        true,
+                    );
+                }
                 GattConnectionEvent::SubratingParamsUpdated {
                     subrate_factor,
                     peripheral_latency,
@@ -195,6 +207,7 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitWriter for BleSplitPeripheralDrive
             error!("BLE notify error: {:?}", e);
             SplitDriverError::BleError(1)
         })?;
+        crate::split::diag_stats::SPLIT_TX.fetch_add(1, Ordering::Relaxed);
         Ok(gatt_msg.len)
     }
 }
@@ -230,6 +243,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
     id: usize,
     stack: &'b Stack<'s, C, DefaultPacketPool>,
 ) {
+    crate::split::diag_stats::capture_boot();
     publish_event(CentralConnectedEvent { connected: false });
     publish_peripheral_split_state(id, SplitConnectionState::Searching);
     info!("[BOOT_R_V15] id={} split_task=started", id);
@@ -276,6 +290,13 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
 
                     publish_event(CentralConnectedEvent { connected: true });
                     publish_peripheral_split_state(id, SplitConnectionState::Connected);
+                    let params = conn.raw().params();
+                    crate::split::diag_stats::record_link_params(
+                        params.conn_interval.as_micros(),
+                        params.peripheral_latency,
+                        params.supervision_timeout.as_millis(),
+                        false,
+                    );
                     if central_addr != Some(new_addr) {
                         info!("Saving validated split central address to storage");
                         // RAM only follows flash here: a peer we cannot persist must be
@@ -314,6 +335,7 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
                         }
                     }
                     info!("Disconnected from the split central");
+                    crate::split::diag_stats::record_disconnect();
                 }
                 Err(BleHostError::BleHost(Error::Timeout)) => {
                     error!("Connect to split central timeout");
@@ -335,6 +357,8 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
         }
     };
 
+    #[cfg(feature = "diag_cpu")]
+    let peri_task = join(peri_task, crate::split::diag_stats::track_cpu_time());
     join(crate::ble::ble_task(runner, &crate::ble::NoopHandler), peri_task).await;
 }
 
@@ -353,6 +377,7 @@ where
         match conn.rssi(stack).await {
             Ok(rssi) => {
                 split_rssi_requires_restart(&mut consecutive_failures, true);
+                crate::split::diag_stats::RSSI.store(rssi, Ordering::Relaxed);
                 #[cfg(feature = "rtt_diag")]
                 info!("[SPLIT_RSSI] side=R id={} rssi_dbm={}", peripheral_id, rssi);
                 #[cfg(not(feature = "rtt_diag"))]
