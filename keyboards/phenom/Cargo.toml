@@ -68,6 +68,7 @@ defmt = "1"
 defmt-rtt = "1"
 panic-probe = { version = "1", features = ["print-defmt"] }
 portable-atomic = { version = "1", features = ["critical-section"] }
+smart-leds = "0.4"
 static_cell = "2"
 
 [build-dependencies]
