@@ -26,6 +26,7 @@ map = """
 
 [keymap]
 layers = 16
+no_action_layer_start = 5
 
 # The QMK home-row mods with shifted taps (HRM_*) become MT() with a SHIFTED()
 # tap; HRM_GUI_SCR is MT(User29, LGui) on the left and MT(User29, RGui) on the
@@ -89,8 +90,16 @@ _  _
 """
 encoders = [["MouseWheelUp", "MouseWheelDown"], ["MouseWheelUp", "MouseWheelDown"]]
 
+[rmk]
+combo_max_num = 32
+fork_max_num = 32
+morse_max_num = 32
+macro_space_size = 2048
+
 [storage]
 # RP2040 default: the settings area starts at 1 MiB of the 2 MiB flash.
+# 128 KiB, as on K:04, holds a full 16-layer keymap at the limits above.
+num_sectors = 32
 
 [event]
 # Sized like keyboards/k04: the Qube pointing processor subscribes to
