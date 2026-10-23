@@ -107,6 +107,8 @@ threshold = 2
 pointing.subs = 5
 # The split link and the auto mouse layer runner.
 layer_change.subs = 2
+# PhenomPointingMode reads the User28-36 mode keys.
+action.subs = 1
 
 [split]
 connection = "serial"
