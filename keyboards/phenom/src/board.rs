@@ -20,7 +20,7 @@ pub type TouchpadI2c = embassy_rp::i2c::I2c<'static, I2C0, embassy_rp::i2c::Asyn
 /// QMK firmware's default orientation. The left touch axis comes from testing
 /// on hardware; QMK turns the right touchpad 180° from the left one.
 pub const DEFAULT_BALL_AXIS: [u8; 2] = [2, 2];
-pub const DEFAULT_TOUCH_AXIS: [u8; 2] = [1, 3];
+pub const DEFAULT_TOUCH_AXIS: [u8; 2] = [3, 1];
 
 /// The PMW3610 pins of the module slot, the same on both halves. The slot has
 /// no MOTION line, so the trackball polls the sensor.
