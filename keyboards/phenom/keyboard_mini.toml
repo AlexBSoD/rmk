@@ -132,8 +132,9 @@ col_pins = ["PIN_7", "PIN_12", "PIN_13", "PIN_14", "PIN_15", "PIN_16", "PIN_17",
 bootmagic = [1, 5]
 
 [[split.central.input_device.encoder]]
-pin_a = "PIN_24"
-pin_b = "PIN_23"
+# Swapped against the QMK order (A GP24, B GP23), which turns the other way in RMK.
+pin_a = "PIN_23"
+pin_b = "PIN_24"
 phase = "resolution"
 resolution = 4
 internal_pullup = true
@@ -152,8 +153,9 @@ col_pins = ["PIN_7", "PIN_12", "PIN_13", "PIN_14", "PIN_15", "PIN_16", "PIN_17",
 bootmagic = [1, 5]
 
 [[split.peripheral.input_device.encoder]]
-pin_a = "PIN_24"
-pin_b = "PIN_23"
+# Swapped against the QMK order (A GP24, B GP23), which turns the other way in RMK.
+pin_a = "PIN_23"
+pin_b = "PIN_24"
 phase = "resolution"
 resolution = 4
 internal_pullup = true
