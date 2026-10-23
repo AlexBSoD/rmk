@@ -210,31 +210,9 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
         #[cfg(feature = "dfu_split")]
         let mut dfu_sub = DfuCmdEvent::subscriber();
 
-        // A peripheral that rebooted on its own comes up on hardcoded defaults,
-        // and no settings edit may ever follow to correct it. Ask the keyboard
-        // to re-publish its snapshot — after `settings_sub` exists, so the
-        // answer lands in our subscriber instead of being dropped.
-        publish_event(crate::event::PeripheralSettingsRefreshEvent);
-
-        // Send the current state when the session starts.
-        for message in [
-            SplitMessage::ConnectionStatus(crate::state::current_connection_status()),
-            SplitMessage::KeyboardIndicator(crate::keyboard::current_led_indicator().into_bits()),
-            SplitMessage::SleepState(crate::state::current_sleep_state()),
-        ] {
-            if self.send(&message).await.is_err() {
-                return;
-            }
-        }
-
-        #[cfg(feature = "_ble")]
-        if self
-            .send(&SplitMessage::BleAdvertisingMode(
-                crate::state::current_ble_advertising_mode(),
-            ))
-            .await
-            .is_err()
-        {
+        // After `settings_sub` exists, so the settings snapshot lands in our
+        // subscriber instead of being dropped.
+        if self.sync_peripheral().await.is_err() {
             return;
         }
 
@@ -278,6 +256,13 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
                     Ok(SplitMessage::FirmwareHashResponse(hash)) => {
                         self.handle_proactive_hash(hash).await;
                     }
+                    // A wired peripheral announces itself after rebooting on
+                    // its own, while this session kept running.
+                    Ok(SplitMessage::ProductId(_)) => {
+                        if self.sync_peripheral().await.is_err() {
+                            return;
+                        }
+                    }
                     Ok(split_message) => self.process_peripheral_message(split_message).await,
                     Err(e) => error!("Peripheral message read error: {:?}", e),
                 },
@@ -299,6 +284,26 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
                 }
             }
         }
+    }
+
+    /// Send the central's state to the peripheral.
+    ///
+    /// A peripheral that rebooted on its own comes up on hardcoded defaults,
+    /// and no settings edit may ever follow to correct it, so this also asks
+    /// the keyboard to re-publish its settings snapshot.
+    async fn sync_peripheral(&mut self) -> Result<(), ()> {
+        publish_event(crate::event::PeripheralSettingsRefreshEvent);
+
+        for message in [
+            SplitMessage::ConnectionStatus(crate::state::current_connection_status()),
+            SplitMessage::KeyboardIndicator(crate::keyboard::current_led_indicator().into_bits()),
+            SplitMessage::SleepState(crate::state::current_sleep_state()),
+            #[cfg(feature = "_ble")]
+            SplitMessage::BleAdvertisingMode(crate::state::current_ble_advertising_mode()),
+        ] {
+            self.send(&message).await?;
+        }
+        Ok(())
     }
 
     /// Process a single message from the peripheral.
@@ -404,5 +409,65 @@ mod sleep_sync_tests {
     #[test]
     fn connecting_peripheral_learns_the_keyboard_is_awake() {
         assert_eq!(startup_sleep_states(false), [false]);
+    }
+}
+
+#[cfg(all(test, not(feature = "dfu_split")))]
+mod resync_tests {
+    use core::cell::RefCell;
+
+    use embassy_futures::select::select;
+    use embassy_time::Timer;
+
+    use super::*;
+    use crate::test_support::test_block_on as block_on;
+
+    /// A wired peripheral that announces itself once, after the session started.
+    struct RebootedPeripheral<'a> {
+        announced: bool,
+        sent: &'a RefCell<heapless::Vec<SplitMessage, 16>>,
+    }
+
+    impl SplitReader for RebootedPeripheral<'_> {
+        async fn read(&mut self) -> Result<SplitMessage, SplitDriverError> {
+            if !self.announced {
+                self.announced = true;
+                return Ok(SplitMessage::ProductId(crate::SPLIT_PRODUCT_ID));
+            }
+            core::future::pending().await
+        }
+    }
+
+    impl SplitWriter for RebootedPeripheral<'_> {
+        async fn write(&mut self, message: &SplitMessage) -> Result<usize, SplitDriverError> {
+            let _ = self.sent.borrow_mut().push(*message);
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn rebooted_peripheral_gets_the_central_state_again() {
+        let sent = RefCell::new(heapless::Vec::new());
+        let manager = PeripheralManager::new(
+            RebootedPeripheral {
+                announced: false,
+                sent: &sent,
+            },
+            0,
+            PeripheralMatrixConfig {
+                rows: 1,
+                cols: 1,
+                row_offset: 0,
+                col_offset: 0,
+            },
+        );
+        block_on(async {
+            select(manager.run(), Timer::after_millis(10)).await;
+        });
+        let sent = sent.borrow();
+        let count = |pick: fn(&SplitMessage) -> bool| sent.iter().filter(|m| pick(m)).count();
+        assert_eq!(count(|m| matches!(m, SplitMessage::ConnectionStatus(_))), 2);
+        assert_eq!(count(|m| matches!(m, SplitMessage::KeyboardIndicator(_))), 2);
+        assert_eq!(count(|m| matches!(m, SplitMessage::SleepState(_))), 2);
     }
 }
