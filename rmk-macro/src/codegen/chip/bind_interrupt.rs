@@ -385,6 +385,7 @@ pub(crate) fn bind_interrupt_default(
                     #pio0_irq_0
                     #iqs5xx_interrupt
                     #display_interrupt
+                    #extern_irqs
                 });
                 #ble_task
             }

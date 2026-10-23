@@ -310,13 +310,18 @@ fn expand_bind_interrupt_for_split_peripheral(
                         DMA_IRQ_0 => ::embassy_rp::dma::InterruptHandler<::embassy_rp::peripherals::DMA_CH0>, ::embassy_rp::dma::InterruptHandler<::embassy_rp::peripherals::DMA_CH1>, ::embassy_rp::dma::InterruptHandler<::embassy_rp::peripherals::DMA_CH2>;
                         #iqs5xx_interrupt
                         #display_interrupt
+                        #extern_irqs
                     });
                     #[::embassy_executor::task]
                     async fn cyw43_task(runner: ::cyw43::Runner<'static, ::cyw43::SpiBus<::embassy_rp::gpio::Output<'static>, ::cyw43_pio::PioSpi<'static, ::embassy_rp::peripherals::PIO0, 0>>, ::cyw43::Cyw43439>) -> ! {
                         runner.run().await
                     }
                 }
-            } else if !display_interrupt.is_empty() || !iqs5xx_interrupt.is_empty() || dfu_enabled {
+            } else if !display_interrupt.is_empty()
+                || !iqs5xx_interrupt.is_empty()
+                || !extern_irqs.is_empty()
+                || dfu_enabled
+            {
                 // DFU external SPI flash DMA channels
                 let dfu_dma_channels = dfu
                     .and_then(|d| d.external_flash.as_ref())
@@ -341,6 +346,7 @@ fn expand_bind_interrupt_for_split_peripheral(
                         #dfu_dma_channels
                         #iqs5xx_interrupt
                         #display_interrupt
+                        #extern_irqs
                     });
                 }
             } else {
