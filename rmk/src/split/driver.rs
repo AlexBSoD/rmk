@@ -147,6 +147,11 @@ pub(crate) struct PeripheralManager<T: SplitReader + SplitWriter> {
     /// Set after a chunk fails all retries — aborts subsequent writes.
     #[cfg(feature = "dfu_split")]
     pub(crate) dfu_aborted: bool,
+    /// The layer last sent. A wired session spans the whole uptime of the
+    /// central, so this is the current layer; a BLE session starts afresh on
+    /// every connection and cannot tell.
+    #[cfg(not(feature = "_ble"))]
+    layer: u8,
 }
 
 impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
@@ -166,12 +171,18 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
             policy,
             #[cfg(feature = "dfu_split")]
             dfu_aborted: false,
+            #[cfg(not(feature = "_ble"))]
+            layer: 0,
         }
     }
 
     /// Send a message to the peripheral, returning Err on disconnect.
     pub(crate) async fn send(&mut self, msg: &SplitMessage) -> Result<(), ()> {
         debug!("Sending message to peripheral {}: {:?}", self.id, msg);
+        #[cfg(not(feature = "_ble"))]
+        if let SplitMessage::Layer(layer) = *msg {
+            self.layer = layer;
+        }
         match self.transceiver.write(msg).await {
             Ok(_) => Ok(()),
             Err(SplitDriverError::Disconnected) => Err(()),
@@ -298,6 +309,8 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
             SplitMessage::ConnectionStatus(crate::state::current_connection_status()),
             SplitMessage::KeyboardIndicator(crate::keyboard::current_led_indicator().into_bits()),
             SplitMessage::SleepState(crate::state::current_sleep_state()),
+            #[cfg(not(feature = "_ble"))]
+            SplitMessage::Layer(self.layer),
             #[cfg(feature = "_ble")]
             SplitMessage::BleAdvertisingMode(crate::state::current_ble_advertising_mode()),
         ] {
@@ -445,10 +458,11 @@ mod resync_tests {
         }
     }
 
-    #[test]
-    fn rebooted_peripheral_gets_the_central_state_again() {
+    /// Everything the central sends in a session where it first sends
+    /// `earlier` and the peripheral then announces a reboot.
+    fn session_with_reboot(earlier: &[SplitMessage]) -> heapless::Vec<SplitMessage, 16> {
         let sent = RefCell::new(heapless::Vec::new());
-        let manager = PeripheralManager::new(
+        let mut manager = PeripheralManager::new(
             RebootedPeripheral {
                 announced: false,
                 sent: &sent,
@@ -462,12 +476,37 @@ mod resync_tests {
             },
         );
         block_on(async {
+            for message in earlier {
+                manager.send(message).await.unwrap();
+            }
             select(manager.run(), Timer::after_millis(10)).await;
         });
-        let sent = sent.borrow();
+        sent.into_inner()
+    }
+
+    #[test]
+    fn rebooted_peripheral_gets_the_central_state_again() {
+        let sent = session_with_reboot(&[]);
         let count = |pick: fn(&SplitMessage) -> bool| sent.iter().filter(|m| pick(m)).count();
         assert_eq!(count(|m| matches!(m, SplitMessage::ConnectionStatus(_))), 2);
         assert_eq!(count(|m| matches!(m, SplitMessage::KeyboardIndicator(_))), 2);
         assert_eq!(count(|m| matches!(m, SplitMessage::SleepState(_))), 2);
+    }
+
+    /// A wired session knows the current layer and sends it again. A BLE
+    /// session only knows the layers it sent itself, so it leaves the layer
+    /// to the next change.
+    #[test]
+    fn rebooted_peripheral_gets_the_current_layer_on_a_wired_link() {
+        let sent = session_with_reboot(&[SplitMessage::Layer(3)]);
+        let layers: heapless::Vec<u8, 16> = sent
+            .iter()
+            .filter_map(|message| match message {
+                SplitMessage::Layer(layer) => Some(*layer),
+                _ => None,
+            })
+            .collect();
+        let expected: &[u8] = if cfg!(feature = "_ble") { &[3] } else { &[3, 3, 3] };
+        assert_eq!(layers, expected);
     }
 }
