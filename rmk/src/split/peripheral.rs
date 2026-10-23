@@ -60,6 +60,13 @@ pub async fn run_rmk_split_peripheral<
     #[cfg(not(feature = "_ble"))]
     {
         let mut peripheral = SplitPeripheral::new(SerialSplitDriver::new(serial));
+        // The central's session outlives our reboot on a wired link, so ask it
+        // to send its state again.
+        peripheral
+            .split_driver
+            .write(&SplitMessage::ProductId(crate::SPLIT_PRODUCT_ID))
+            .await
+            .ok();
 
         loop {
             peripheral.run().await;
