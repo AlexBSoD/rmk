@@ -328,8 +328,10 @@ pub struct PointingSetCpiEvent {
 }
 
 /// Pointing processor event
-/// TODO: Make the channel size configurable
-#[event(channel_size = 8, pubs = 2, subs = 2)]
+///
+/// Every `PointingProcessor` subscribes to this event and to `PointingEvent`, so
+/// both share the `[event.pointing]` subscriber count.
+#[event(channel_size = 8, pubs = 2, subs = crate::POINTING_EVENT_SUB_SIZE)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PointingProcessorEvent {
@@ -339,7 +341,8 @@ pub struct PointingProcessorEvent {
 
 /// Runtime transform applied by a pointing processor after its static hardware
 /// transform and before mode-specific processing.
-#[event(channel_size = 8, pubs = 2, subs = 2)]
+/// Sized like `PointingProcessorEvent`, for the same reason.
+#[event(channel_size = 8, pubs = 2, subs = crate::POINTING_EVENT_SUB_SIZE)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PointingTransformEvent {
