@@ -91,14 +91,19 @@ impl K04Battery {
     async fn publish_sample(&mut self) {
         let charge_state = current_charge_state();
         let charging = charge_state == ChargeState::Charging;
-        let measured = if charging {
+        let raw = if charging {
             // VBUS only tells us that charging power is present. The charger
             // raises terminal voltage toward 4.1 V before the cell is full,
             // so publishing that sample would create a false 100% reading.
             None
         } else {
-            self.sample_raw().await.map(percent)
+            self.sample_raw().await
         };
+        rmk::split::diag_stats::record_battery(
+            raw.map(|raw| (i32::from(raw) * RAW_PER_MV_DEN / RAW_PER_MV_NUM) as u16),
+            charging,
+        );
+        let measured = raw.map(percent);
         let level = self.level.observe(measured, charging);
         let status = if charging || level.is_some() {
             BatteryStatus::Available { charge_state, level }

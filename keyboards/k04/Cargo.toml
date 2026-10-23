@@ -42,7 +42,9 @@ qube = [
 ]
 # Diagnostic Qube halves use RTT/defmt. Enabling usb_log at the same time asks
 # trouble-host for mutually exclusive `log` and `defmt` backends.
-qube-half = ["rmk/defmt"]
+qube-half = ["rmk/defmt", "diag_cpu"]
+# CPU active time in the halves' power diagnostics (DWT cycle counter).
+diag_cpu = ["rmk/diag_cpu"]
 
 [dependencies]
 rmk = { path = "../../rmk", default-features = false, features = [
