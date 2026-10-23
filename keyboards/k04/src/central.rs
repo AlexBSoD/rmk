@@ -5,6 +5,7 @@ mod battery_level;
 mod battery_nrf;
 #[path = "../../common/ble_host_power.rs"]
 mod ble_host_power;
+mod board;
 #[path = "../../common/default_layer_names.rs"]
 mod default_layer_names;
 mod layer_led;
@@ -51,7 +52,10 @@ mod keyboard_central {
     #[register_processor]
     fn trackball() -> crate::trackball::Trackball {
         crate::trackball::Trackball::new_central(
-            crate::trackball::new_trackball_from_pins(0, p.P0_01, p.P0_00, p.P0_05, p.P1_09),
+            crate::trackball::new_trackball_from_pins(
+                0,
+                crate::board::TrackballPins::new(p.P0_01, p.P0_00, p.P0_05, p.P1_09),
+            ),
             0,
         )
     }

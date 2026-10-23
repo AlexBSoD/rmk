@@ -64,6 +64,8 @@ u8g2-fonts = { version = "0.5.2", features = ["embedded_graphics_textstyle"], op
 heapless = "0.9"
 embassy-futures = "0.1"
 embassy-sync = "0.8"
+embedded-hal-async = "1.0"
+portable-atomic = "1"
 nrf-sdc = { version = "0.4.0", features = [
     "defmt",
     "peripheral",

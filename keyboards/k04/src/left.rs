@@ -3,6 +3,7 @@
 
 mod battery_level;
 mod battery_nrf;
+mod board;
 #[path = "qube_layer_led.rs"]
 mod layer_led;
 mod module_settings;
@@ -35,7 +36,10 @@ mod keyboard_peripheral {
     #[register_processor]
     fn trackball() -> crate::trackball::Trackball {
         crate::trackball::Trackball::new_peripheral(
-            crate::trackball::new_trackball_from_pins(0, p.P0_01, p.P0_00, p.P0_05, p.P1_09),
+            crate::trackball::new_trackball_from_pins(
+                0,
+                crate::board::TrackballPins::new(p.P0_01, p.P0_00, p.P0_05, p.P1_09),
+            ),
             0,
         )
     }
