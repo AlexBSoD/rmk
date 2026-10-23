@@ -1,0 +1,412 @@
+{
+  "name": "Ergohaven Phenom Mini",
+  "manufacturer": "Ergohaven",
+  "vendorId": "0xE126",
+  "productId": "0x0053",
+  "firmware": {
+    "name": "RMK",
+    "version": "0.1.0"
+  },
+  "firmwareVersion": "0.1.0",
+  "lighting": "none",
+  "matrix": {
+    "rows": 10,
+    "cols": 8
+  },
+  "customKeycodes": [
+    {
+      "name": "EH_RSRV00",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV01",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV02",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV03",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV04",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV05",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV06",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV07",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV08",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV09",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV10",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV11",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV12",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV13",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV14",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV15",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV16",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV17",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV18",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV19",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV20",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV21",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV22",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV23",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV24",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV25",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV26",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_RSRV27",
+      "shortName": "",
+      "title": ""
+    },
+    {
+      "name": "EH_SNP",
+      "shortName": "Sniper\nmode",
+      "title": "Set both pointing devices to sniper mode"
+    },
+    {
+      "name": "EH_SCR",
+      "shortName": "Scroll\nmode",
+      "title": "Set both pointing devices to scroll mode"
+    },
+    {
+      "name": "EH_TXT",
+      "shortName": "Text\nmode",
+      "title": "Set both pointing devices to text mode"
+    },
+    {
+      "name": "EH_L_SNP",
+      "shortName": "Left\nSniper",
+      "title": "Set left pointing device to sniper mode"
+    },
+    {
+      "name": "EH_L_SCR",
+      "shortName": "Left\nScroll",
+      "title": "Set left pointing device to scroll mode"
+    },
+    {
+      "name": "EH_L_TXT",
+      "shortName": "Left\nText",
+      "title": "Set left pointing device to text mode"
+    },
+    {
+      "name": "EH_USR1",
+      "shortName": "Right\nSniper",
+      "title": "Set right pointing device to sniper mode"
+    },
+    {
+      "name": "EH_USR2",
+      "shortName": "Right\nScroll",
+      "title": "Set right pointing device to scroll mode"
+    },
+    {
+      "name": "EH_USR3",
+      "shortName": "Right\nText",
+      "title": "Set right pointing device to text mode"
+    }
+  ],
+  "layouts": {
+    "labels": [
+      "Hide left encoder",
+      "Hide right encoder"
+    ],
+    "keymap": [
+      [
+        {
+          "y": 0.45
+        },
+        "1,5",
+        "1,4",
+        {
+          "y": -0.45
+        },
+        "1,3",
+        {
+          "y": -0.1
+        },
+        "1,2",
+        {
+          "y": 0.1
+        },
+        "1,1",
+        "1,0"
+      ],
+      [
+        {
+          "y": 0.45
+        },
+        "2,5",
+        "2,4",
+        {
+          "y": -0.45
+        },
+        "2,3",
+        {
+          "y": -0.1
+        },
+        "2,2",
+        {
+          "y": 0.1
+        },
+        "2,1",
+        "2,0"
+      ],
+      [
+        {
+          "y": 0.45
+        },
+        "3,5",
+        "3,4",
+        {
+          "y": -0.45
+        },
+        "3,3",
+        {
+          "y": -0.1
+        },
+        "3,2",
+        {
+          "y": 0.1
+        },
+        "3,1",
+        "3,0"
+      ],
+      [
+        {
+          "x": 2
+        },
+        "4,3",
+        {
+          "y": -0.1
+        },
+        "4,2",
+        {
+          "x": 0.2,
+          "y": 0.3
+        },
+        "2,7",
+        {
+          "y": 0.2
+        },
+        "1,7",
+        {
+          "y": 0.2
+        },
+        "0,7"
+      ],
+      [
+        {
+          "rx": 11.5,
+          "ry": -0.05
+        },
+        "6,0",
+        "6,1",
+        {
+          "y": -0.1
+        },
+        "6,2",
+        {
+          "y": 0.1
+        },
+        "6,3",
+        {
+          "y": 0.45
+        },
+        "6,4",
+        "6,5"
+      ],
+      [
+        {
+          "y": -0.45
+        },
+        "7,0",
+        "7,1",
+        {
+          "y": -0.1
+        },
+        "7,2",
+        {
+          "y": 0.1
+        },
+        "7,3",
+        {
+          "y": 0.45
+        },
+        "7,4",
+        "7,5"
+      ],
+      [
+        {
+          "y": -0.45
+        },
+        "8,0",
+        "8,1",
+        {
+          "y": -0.1
+        },
+        "8,2",
+        {
+          "y": 0.1
+        },
+        "8,3",
+        {
+          "y": 0.45
+        },
+        "8,4",
+        "8,5"
+      ],
+      [
+        {
+          "x": -1.2,
+          "y": 0.15
+        },
+        "5,7",
+        {
+          "y": -0.2
+        },
+        "6,7",
+        {
+          "y": -0.2
+        },
+        "7,7",
+        {
+          "x": 0.2,
+          "y": -0.3
+        },
+        "9,2",
+        {
+          "y": 0.1
+        },
+        "9,3"
+      ],
+      [
+        {
+          "rx": 6.5,
+          "ry": 1.95
+        },
+        "4,7\n\n\n0,0",
+        {
+          "y": -0.5
+        },
+        "0,1\n\n\n0,0\n\n\n\n\n\ne",
+        {
+          "y": 1.0,
+          "x": -1
+        },
+        "0,0\n\n\n0,0\n\n\n\n\n\ne"
+      ],
+      [
+        {
+          "rx": 10.0,
+          "ry": 1.95
+        },
+        "9,7\n\n\n1,0",
+        {
+          "y": -0.5,
+          "x": -2
+        },
+        "1,1\n\n\n1,0\n\n\n\n\n\ne",
+        {
+          "y": 1.0,
+          "x": -1
+        },
+        "1,0\n\n\n1,0\n\n\n\n\n\ne"
+      ]
+    ]
+  }
+}
