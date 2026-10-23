@@ -18,12 +18,12 @@ use rmk::macros::rmk_central;
 #[rmk_central]
 mod keyboard_central {
     add_interrupt! {
-        SPIM3 => ::embassy_nrf::spim::InterruptHandler<::embassy_nrf::peripherals::SPI3>;
+        SPI2 => ::embassy_nrf::spim::InterruptHandler<::embassy_nrf::peripherals::SPI2>;
     }
 
     #[register_processor]
     fn display_processor() -> crate::qube_display::DongleScreen<Irqs> {
-        crate::qube_display::create_processor(p.SPI3, p.P1_11, p.P1_10, p.P1_13, p.P0_28, p.P0_03, p.P0_02, Irqs)
+        crate::qube_display::create_processor(p.SPI2, p.P1_11, p.P1_10, p.P1_13, p.P0_28, p.P0_03, p.P0_02, Irqs)
     }
 
     #[register_processor]
