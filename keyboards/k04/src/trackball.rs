@@ -598,7 +598,7 @@ impl Trackball {
 
     fn report_interval(&self) -> Duration {
         if cfg!(any(feature = "production_v22", feature = "pmw_axes_600_diag")) {
-            if self.is_central {
+            if self.is_central || !crate::board::PACE_SPLIT_TRACKBALL {
                 LOCAL_REPORT_INTERVAL
             } else {
                 SPLIT_REPORT_INTERVAL
