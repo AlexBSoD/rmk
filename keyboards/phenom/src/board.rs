@@ -53,3 +53,7 @@ pub fn set_split_link_pointing(_peripheral_id: usize, _pointing: bool) {}
 
 /// The serial split link keeps up with trackball reports at the local rate.
 pub const PACE_SPLIT_TRACKBALL: bool = false;
+
+/// The encoder pins are free whatever module sits in the slot, and there is no
+/// battery to save, so both encoders always run, as in the QMK firmware.
+pub const PARK_UNSELECTED_ENCODERS: bool = false;

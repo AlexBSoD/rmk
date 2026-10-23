@@ -304,8 +304,9 @@ fn apply_module_selection_runtime() {
         }
     });
 
-    rmk::input_device::rotary_encoder::set_encoder_enabled(0, selections[0] == ModuleSelection::Encoder);
-    rmk::input_device::rotary_encoder::set_encoder_enabled(1, selections[1] == ModuleSelection::Encoder);
+    let park = crate::board::PARK_UNSELECTED_ENCODERS;
+    rmk::input_device::rotary_encoder::set_encoder_enabled(0, !park || selections[0] == ModuleSelection::Encoder);
+    rmk::input_device::rotary_encoder::set_encoder_enabled(1, !park || selections[1] == ModuleSelection::Encoder);
 
     #[cfg(feature = "qube")]
     {

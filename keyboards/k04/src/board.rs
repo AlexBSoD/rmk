@@ -64,3 +64,7 @@ pub fn set_split_link_pointing(peripheral_id: usize, pointing: bool) {
 /// A peripheral trackball paces its reports to the BLE pointing connection
 /// interval, see `trackball/motion_pacing.rs`.
 pub const PACE_SPLIT_TRACKBALL: bool = true;
+
+/// An encoder runs only while its module is selected, so a parked one
+/// neither polls nor wakes the chip on battery.
+pub const PARK_UNSELECTED_ENCODERS: bool = true;
