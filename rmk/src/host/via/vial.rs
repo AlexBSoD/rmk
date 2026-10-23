@@ -704,7 +704,7 @@ mod lock_tests {
         use rmk_types::action::Action;
         use rmk_types::keycode::{HidKeyCode, KeyCode};
 
-        use crate::event::KeyboardEventPos;
+        use crate::event::KeyboardEventSource;
 
         let profiles = [
             ("k03", [(2, 2), (2, 1)], [(0, 5), (0, 4)]),
@@ -773,11 +773,11 @@ mod lock_tests {
             // on both layers. Unlock must not follow those current keycodes.
             for layer in 0..2 {
                 for (row, col) in unlock_keys {
-                    keymap.set_action_at(KeyboardEventPos::key_pos(col, row), layer, KeyAction::No);
+                    keymap.set_action_at(KeyboardEventSource::key_pos(col, row), layer, KeyAction::No);
                 }
                 for ((row, col), code) in old_keys.into_iter().zip([HidKeyCode::D, HidKeyCode::F]) {
                     keymap.set_action_at(
-                        KeyboardEventPos::key_pos(col, row),
+                        KeyboardEventSource::key_pos(col, row),
                         layer,
                         KeyAction::Single(Action::Key(KeyCode::Hid(code))),
                     );
