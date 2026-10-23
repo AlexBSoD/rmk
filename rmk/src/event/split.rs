@@ -96,8 +96,9 @@ pub struct PeripheralSettingsEvent(pub [u8; 27]);
 /// central would otherwise stay silent until the next settings edit.
 ///
 /// Only keyboards that own a settings snapshot subscribe to it, so `subs`
-/// defaults to 0 and publishing compiles away unless a board opts in.
-#[event(channel_size = crate::PERIPHERAL_SETTINGS_REFRESH_EVENT_CHANNEL_SIZE, pubs = crate::PERIPHERAL_SETTINGS_REFRESH_EVENT_PUB_SIZE, subs = crate::PERIPHERAL_SETTINGS_REFRESH_EVENT_SUB_SIZE)]
+/// defaults to 0 and publishing compiles away unless a board opts in. Tests
+/// get one more subscriber and slot, so they can count the publishes.
+#[event(channel_size = crate::PERIPHERAL_SETTINGS_REFRESH_EVENT_CHANNEL_SIZE + cfg!(test) as usize, pubs = crate::PERIPHERAL_SETTINGS_REFRESH_EVENT_PUB_SIZE, subs = crate::PERIPHERAL_SETTINGS_REFRESH_EVENT_SUB_SIZE + cfg!(test) as usize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PeripheralSettingsRefreshEvent;
