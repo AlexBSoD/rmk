@@ -33,6 +33,8 @@ const ERGOHAVEN_CUSTOM_NEXT_NATIVE_KEY_ACTION: u8 = 0x04;
 const ERGOHAVEN_CUSTOM_NATIVE_DYNAMIC_ACTION: u8 = 0x05;
 const ERGOHAVEN_CUSTOM_NEXT_NATIVE_DYNAMIC_ACTION: u8 = 0x06;
 const ERGOHAVEN_CUSTOM_COMBO_LAYER: u8 = 0x07;
+const ERGOHAVEN_CUSTOM_DIAG: u8 = 0x08;
+const ERGOHAVEN_DIAG_VERSION: u8 = 0x01;
 // v2: postcard layout of `KeyAction` follows upstream rmk-types
 // (`KeyboardAction` variants dropped, `TapHold` carries a profile index).
 const ERGOHAVEN_NATIVE_KEY_ACTION_VERSION: u8 = 0x02;
@@ -449,6 +451,88 @@ fn battery_halves_for_split<T>(
     }
 }
 
+/// Answer `ERGOHAVEN_CUSTOM_DIAG` with the power diagnostics a peripheral half
+/// last sent to the central (`split::diag_stats::DiagStats`). qubeherd parses
+/// this layout; keep both in step.
+///
+/// Request: `[0x08, 0xE8, 0x08, half, page, tag]`, half 0 = left, 1 = right; `tag`
+/// is any byte the host picks to tell its reply from others on the interface.
+///
+/// Reply, integers little-endian:
+/// - byte 3: reply version (1)
+/// - byte 4: 1 when bytes 5..29 hold the page, 0 for an unknown half or page,
+///   a central half, or a peripheral that has not reported yet
+/// - bytes 29, 30, 31: the request's tag, half and page, echoed
+///
+/// Page 0:
+/// - 5: DiagStats version; 6: flags (0x01 battery sampled, 0x02 VBUS present
+///   at that sample, 0x04 REG1 on DC/DC, 0x08 REG0 on DC/DC, 0x10 VDDH supply,
+///   0x20 CPU time measured)
+/// - 7..9: battery mV (u16); 9..13: RESETREAS of this boot (u32);
+///   13..15: boots since power-on (u16)
+/// - 15..19: uptime ms (u32); 19..23: CPU active ms (u32);
+///   23..27: key presses (u32)
+/// - 27: RSSI dBm (i8, 127 unknown); 28: last disconnect reason (HCI)
+///
+/// Page 1:
+/// - 5..9: connection interval µs (u32, 0 between sessions);
+///   9..11: peripheral latency (u16); 11..13: supervision timeout ms (u16)
+/// - 13..15: parameter updates (u16); 15..17: disconnects (u16)
+/// - 17..21: split messages sent (u32); 21..25: split messages received (u32)
+fn process_diag_get(report: &mut ViaReport) {
+    let (half, page, tag) = (report.output_data[3], report.output_data[4], report.output_data[5]);
+    report.input_data[3..].fill(0);
+    report.input_data[3] = ERGOHAVEN_DIAG_VERSION;
+    report.input_data[29] = tag;
+    report.input_data[30] = half;
+    report.input_data[31] = page;
+
+    #[cfg(all(feature = "split", feature = "_ble"))]
+    {
+        let (left, right) = battery_halves_for_split(
+            None,
+            crate::split::diag_stats::peripheral_diag_stats(0),
+            crate::split::diag_stats::peripheral_diag_stats(1),
+            crate::SPLIT_PERIPHERALS_NUM,
+            crate::SPLIT_CENTRAL_IS_LEFT,
+        );
+        let stats = match half {
+            0 => left,
+            1 => right,
+            _ => None,
+        };
+        let Some(stats) = stats else {
+            return;
+        };
+        let out = &mut report.input_data;
+        match page {
+            0 => {
+                out[5] = stats.version;
+                out[6] = stats.flags;
+                LittleEndian::write_u16(&mut out[7..9], stats.battery_mv);
+                LittleEndian::write_u32(&mut out[9..13], stats.reset_reason);
+                LittleEndian::write_u16(&mut out[13..15], stats.boot_count);
+                LittleEndian::write_u32(&mut out[15..19], stats.uptime_ms);
+                LittleEndian::write_u32(&mut out[19..23], stats.cpu_active_ms);
+                LittleEndian::write_u32(&mut out[23..27], stats.key_presses);
+                out[27] = stats.rssi as u8;
+                out[28] = stats.last_disconnect_reason;
+            }
+            1 => {
+                LittleEndian::write_u32(&mut out[5..9], stats.conn_interval_us);
+                LittleEndian::write_u16(&mut out[9..11], stats.peripheral_latency);
+                LittleEndian::write_u16(&mut out[11..13], stats.supervision_timeout_ms);
+                LittleEndian::write_u16(&mut out[13..15], stats.param_updates);
+                LittleEndian::write_u16(&mut out[15..17], stats.disconnects);
+                LittleEndian::write_u32(&mut out[17..21], stats.split_tx);
+                LittleEndian::write_u32(&mut out[21..25], stats.split_rx);
+            }
+            _ => return,
+        }
+        out[4] = 1;
+    }
+}
+
 pub struct VialService<'a> {
     ctx: KeyboardContext<'a>,
     vial_config: VialConfig<'static>,
@@ -667,6 +751,10 @@ impl<'a> VialService<'a> {
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_COMBO_LAYER
                 {
                     process_combo_layer_get(report, &self.ctx);
+                } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
+                    && report.output_data[2] == ERGOHAVEN_CUSTOM_DIAG
+                {
+                    process_diag_get(report);
                 } else {
                     // backlight/rgblight/rgb matrix/led matrix/audio settings here
                     warn!("Custom get value -- not supported")
@@ -1319,6 +1407,94 @@ mod tests {
             battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, false,),
             (battery(55), battery(80))
         );
+    }
+
+    fn diag_report(half: u8, page: u8) -> ViaReport {
+        let mut report = custom_report(ViaCommand::CustomGetValue, ERGOHAVEN_CUSTOM_DIAG);
+        report.output_data[3] = half;
+        report.output_data[4] = page;
+        report.output_data[5] = 0x5A;
+        report.input_data = report.output_data;
+        report
+    }
+
+    #[cfg(all(feature = "split", feature = "_ble"))]
+    #[test]
+    fn diag_pages_carry_the_peripheral_snapshot() {
+        let stats = crate::split::diag_stats::DiagStats {
+            version: 1,
+            flags: 0x15,
+            battery_mv: 3_912,
+            reset_reason: 0x0000_0004,
+            boot_count: 3,
+            uptime_ms: 0x0102_0304,
+            cpu_active_ms: 70_000,
+            key_presses: 1_234,
+            rssi: -61,
+            last_disconnect_reason: 0x08,
+            disconnects: 2,
+            conn_interval_us: 15_000,
+            peripheral_latency: 30,
+            supervision_timeout_ms: 6_000,
+            param_updates: 5,
+            split_tx: 100_000,
+            split_rx: 200,
+        };
+        crate::split::diag_stats::update_peripheral_diag_stats(0, stats);
+        // Peripheral 0 is the left half on a dongle, and opposite the central
+        // on a two-half split.
+        let half = if crate::SPLIT_PERIPHERALS_NUM == 1 && crate::SPLIT_CENTRAL_IS_LEFT {
+            1
+        } else {
+            0
+        };
+
+        with_service(|service| {
+            let mut report = diag_report(half, 0);
+            process(service, &mut report);
+            let page = report.input_data;
+            assert_eq!(page[..5], [0x08, 0xE8, 0x08, 1, 1]);
+            assert_eq!((page[5], page[6]), (1, 0x15));
+            assert_eq!(LittleEndian::read_u16(&page[7..9]), 3_912);
+            assert_eq!(LittleEndian::read_u32(&page[9..13]), 4);
+            assert_eq!(LittleEndian::read_u16(&page[13..15]), 3);
+            assert_eq!(LittleEndian::read_u32(&page[15..19]), 0x0102_0304);
+            assert_eq!(LittleEndian::read_u32(&page[19..23]), 70_000);
+            assert_eq!(LittleEndian::read_u32(&page[23..27]), 1_234);
+            assert_eq!((page[27] as i8, page[28]), (-61, 0x08));
+            assert_eq!(page[29..], [0x5A, half, 0]);
+
+            let mut report = diag_report(half, 1);
+            process(service, &mut report);
+            let page = report.input_data;
+            assert_eq!(page[4], 1);
+            assert_eq!(LittleEndian::read_u32(&page[5..9]), 15_000);
+            assert_eq!(LittleEndian::read_u16(&page[9..11]), 30);
+            assert_eq!(LittleEndian::read_u16(&page[11..13]), 6_000);
+            assert_eq!(LittleEndian::read_u16(&page[13..15]), 5);
+            assert_eq!(LittleEndian::read_u16(&page[15..17]), 2);
+            assert_eq!(LittleEndian::read_u32(&page[17..21]), 100_000);
+            assert_eq!(LittleEndian::read_u32(&page[21..25]), 200);
+            assert_eq!(page[25..29], [0; 4]);
+            assert_eq!(page[29..], [0x5A, half, 1]);
+        });
+    }
+
+    #[test]
+    fn diag_without_a_snapshot_is_absent() {
+        // No peripheral has reported, the other half, an unknown half and an
+        // unknown page all answer "not present" with nothing but the echo.
+        with_service(|service| {
+            for (half, page) in [(0, 0), (1, 1), (2, 0), (0, 2)] {
+                let mut report = diag_report(half, page);
+                report.output_data[10] = 0xAA;
+                report.input_data = report.output_data;
+                process(service, &mut report);
+                assert_eq!(report.input_data[3..5], [1, 0]);
+                assert_eq!(report.input_data[5..29], [0; 24]);
+                assert_eq!(report.input_data[29..], [0x5A, half, page]);
+            }
+        });
     }
 
     #[test]
