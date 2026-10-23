@@ -86,23 +86,24 @@ _  _       _          _          _          User30    User30  _          _      
 """
 encoders = [["MouseWheelUp", "MouseWheelDown"], ["MouseWheelUp", "MouseWheelDown"]]
 
-[[behavior.auto_mouse_layer]]
-# QMK AUTO_MOUSE_DEFAULT_LAYER 4 with the default 750 ms timeout.
-target_layer = 4
-timeout = "750ms"
-threshold = 2
-
 [storage]
 # RP2040 default: the settings area starts at 1 MiB of the 2 MiB flash.
 
 [event]
-# Four PointingProcessors (two trackballs, two touchpads) plus the auto mouse
-# layer runner. PointingProcessorEvent and PointingTransformEvent share this count.
-pointing.subs = 5
-# The split link and the auto mouse layer runner.
-layer_change.subs = 2
-# PhenomPointingMode reads the User28-36 mode keys.
+# Sized like keyboards/k04: the Qube pointing processor subscribes to
+# actions, keys, layer changes and peripheral settings.
+action.channel_size = 16
 action.subs = 1
+keyboard.subs = 4
+# One settings update publishes base, profile and encoder packets together.
+peripheral_settings.channel_size = 3
+# ModuleSettingsBroadcast answers the re-sync request raised on peripheral link-up.
+peripheral_settings_refresh.subs = 1
+layer_change.channel_size = 4
+layer_change.subs = 6
+modifier.channel_size = 8
+modifier.subs = 6
+sleep_state.subs = 4
 
 [split]
 connection = "serial"
@@ -128,35 +129,6 @@ phase = "resolution"
 resolution = 4
 internal_pullup = true
 
-# The module slot takes a trackball or a touchpad. Both drivers run; the one
-# without hardware gives up (PMW3610) or keeps retrying once a second (IQS5xx).
-# Device ids follow QMK: left ball, right ball, left touch, right touch.
-[[split.central.input_device.pmw3610]]
-name = "left_ball"
-id = 0
-spi.instance = "bitbang0"
-spi.sck = "PIN_10"
-spi.mosi = "PIN_11"
-spi.miso = "PIN_11"
-spi.cs = "PIN_9"
-cpi = 400
-# QMK default: ROT_90, then Y inverted.
-proc_invert_x = true
-proc_invert_y = true
-proc_swap_xy = true
-
-[[split.central.input_device.iqs5xx]]
-name = "left_touch"
-id = 2
-i2c.instance = "I2C0"
-i2c.sda = "PIN_20"
-i2c.scl = "PIN_21"
-# QMK default: AZOTEQ_IQS5XX_ROTATION_270 (FLIP_X | SWITCH_XY), then ROT_180 for
-# the left touchpad. The RMK driver already sets FLIP_X.
-proc_invert_x = true
-proc_invert_y = true
-proc_swap_xy = true
-
 [[split.peripheral]]
 rows = 5
 cols = 8
@@ -177,25 +149,3 @@ phase = "resolution"
 resolution = 4
 internal_pullup = true
 
-[[split.peripheral.input_device.pmw3610]]
-name = "right_ball"
-id = 1
-spi.instance = "bitbang0"
-spi.sck = "PIN_10"
-spi.mosi = "PIN_11"
-spi.miso = "PIN_11"
-spi.cs = "PIN_9"
-cpi = 400
-proc_invert_x = true
-proc_invert_y = true
-proc_swap_xy = true
-
-[[split.peripheral.input_device.iqs5xx]]
-name = "right_touch"
-id = 3
-i2c.instance = "I2C0"
-i2c.sda = "PIN_20"
-i2c.scl = "PIN_21"
-# QMK default: AZOTEQ_IQS5XX_ROTATION_270 (FLIP_X | SWITCH_XY). The RMK driver
-# already sets FLIP_X.
-proc_swap_xy = true

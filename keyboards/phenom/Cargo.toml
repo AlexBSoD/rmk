@@ -26,6 +26,14 @@ path = "src/peripheral.rs"
 test = false
 bench = false
 
+[features]
+default = ["standalone", "production_v22"]
+# Names shared with keyboards/k04, whose module sources test them: the K:04
+# Standalone settings layout and the production PMW3610 configuration.
+standalone = ["rmk/k04_standalone_timeout_14"]
+production_v22 = ["pmw_axes_600"]
+pmw_axes_600 = []
+
 [dependencies]
 rmk = { path = "../../rmk", default-features = false, features = [
     "defmt",
@@ -49,7 +57,10 @@ embassy-rp = { version = "0.10", features = [
     "rp2040",
     "time-driver",
 ] }
+embassy-sync = "0.8"
 embassy-time = { version = "0.5", features = ["defmt"] }
+embedded-hal-async = "1.0"
+heapless = "0.9"
 
 cortex-m-rt = "0.7.5"
 defmt = "1"
