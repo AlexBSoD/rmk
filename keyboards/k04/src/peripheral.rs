@@ -3,6 +3,7 @@
 
 mod battery_level;
 mod battery_nrf;
+mod board;
 mod layer_led;
 mod module_settings;
 mod touchpad;
@@ -36,7 +37,10 @@ mod keyboard_peripheral {
     #[register_processor]
     fn trackball() -> crate::trackball::Trackball {
         crate::trackball::Trackball::new_peripheral(
-            crate::trackball::new_trackball_from_pins(1, p.P0_01, p.P0_00, p.P0_05, p.P1_09),
+            crate::trackball::new_trackball_from_pins(
+                1,
+                crate::board::TrackballPins::new(p.P0_01, p.P0_00, p.P0_05, p.P1_09),
+            ),
             1,
         )
     }
