@@ -5,6 +5,7 @@
 //!
 //! Build: `cargo make uf2-qube`
 
+mod board;
 #[path = "../../common/default_layer_names.rs"]
 mod default_layer_names;
 mod layer_names;
