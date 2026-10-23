@@ -7,6 +7,7 @@
 - Switched all six standalone K:04 Series images to the `production_v30g` profile derived from the field-validated K:04 build: host-first split wake ordering, accepted-anchor low-duty BLE parameters, fixed 15 ms vector-preserving HID pacing, and configured 1M PHY preservation; K:04 Qube and other keyboards retain their existing production profiles
 - Prevented K:04 split LED reconciliation from starting a status phase after the render timestamp, avoiding an `Instant` underflow panic during reconnect
 - Resent the central's state, module settings, and active layer to a wired split peripheral that rebooted on its own, so the Phenom right-half module no longer stays off after flashing only that half
+- Enabled Universal Symbols and Layout Sync on the Phenom Series, together with the shared limits of 32 combos, 32 forks, 32 Morse entries, and 2048 bytes of macro storage, and compiled its layers 5–15 as `No`; the update erases the saved Phenom layout and settings, so export the layout before flashing and import it afterwards
 
 ## v0.1.10
 

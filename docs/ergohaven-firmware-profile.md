@@ -12,7 +12,11 @@ profiles share this software contract:
 - 5 Bluetooth profiles
 - Bluetooth reconnect and pairing windows of 60 seconds
 - persistent layer names at QSID 200–215, up to 12 UTF-8 bytes each
+- Universal Symbols, the `universal_symbols` RMK feature
 - firmware version 0.2.0 and manufacturer `Ergohaven`
+
+Phenom Series is wired and has no batteries, so the Bluetooth and battery
+parts of the contract do not apply to it.
 
 Every profile speaks Rynk with Ergohaven's commands (rmk feature
 `ergohaven_rynk`, `[host] rynk_enabled = true`). Over Rynk the same QSIDs,
