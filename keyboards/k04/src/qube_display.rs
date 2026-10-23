@@ -9,14 +9,18 @@
 //! - Each redraw: for each stripe → clip-draw full UI → SPI that stripe
 //!
 //! Pinout (`qube.overlay`):
-//! SPI3 SCK=P1.11 MOSI=P1.10 · CS=P1.13 · DC=P0.28 · RST=P0.03 · BL=P0.02
+//! SPI2 SCK=P1.11 MOSI=P1.10 · CS=P1.13 · DC=P0.28 · RST=P0.03 · BL=P0.02
+//!
+//! The overlay uses SPI3, but with the nrf-sdc/mpsl 0.4 core SPIM3's ENABLE reads back 0
+//! about 145 ms after boot and the panel stays dark. SPIM2 tops out at 8 MHz, the rate the
+//! panel runs at anyway.
 
 use core::fmt::Write as _;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
-use embassy_nrf::peripherals::{P0_02, P0_03, P0_28, P1_10, P1_11, P1_13, SPI3};
+use embassy_nrf::peripherals::{P0_02, P0_03, P0_28, P1_10, P1_11, P1_13, SPI2};
 use embassy_nrf::spim::{self, Spim};
 use embassy_nrf::{interrupt, Peri};
 use embassy_time::{Delay, Duration, Instant, Timer};
@@ -234,7 +238,7 @@ impl DrawTarget for StripeLcd {
 // --- Lazy init --------------------------------------------------------------
 
 struct PendingPins {
-    spi: Peri<'static, SPI3>,
+    spi: Peri<'static, SPI2>,
     sck: Peri<'static, P1_11>,
     mosi: Peri<'static, P1_10>,
     cs: Peri<'static, P1_13>,
@@ -255,7 +259,7 @@ pub struct LazyQubeLcd<I> {
 
 impl<I> LazyQubeLcd<I>
 where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
+    I: interrupt::typelevel::Binding<<SPI2 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI2>>
         + Copy
         + 'static,
 {
@@ -316,7 +320,7 @@ impl<I> OriginDimensions for LazyQubeLcd<I> {
 
 async fn try_init_lcd<I>(pins: PendingPins, irq: I) -> Option<StripeLcd>
 where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
+    I: interrupt::typelevel::Binding<<SPI2 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI2>>
         + Copy
         + 'static,
 {
@@ -356,7 +360,7 @@ where
 
 pub struct DongleScreen<I>
 where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
+    I: interrupt::typelevel::Binding<<SPI2 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI2>>
         + Copy
         + 'static,
 {
@@ -373,7 +377,7 @@ where
 }
 
 pub fn create_processor<I>(
-    spi: Peri<'static, SPI3>,
+    spi: Peri<'static, SPI2>,
     sck: Peri<'static, P1_11>,
     mosi: Peri<'static, P1_10>,
     cs: Peri<'static, P1_13>,
@@ -383,7 +387,7 @@ pub fn create_processor<I>(
     irq: I,
 ) -> DongleScreen<I>
 where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
+    I: interrupt::typelevel::Binding<<SPI2 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI2>>
         + Copy
         + 'static,
 {
@@ -419,7 +423,7 @@ where
 
 impl<I> DongleScreen<I>
 where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
+    I: interrupt::typelevel::Binding<<SPI2 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI2>>
         + Copy
         + 'static,
 {
@@ -477,7 +481,7 @@ where
 
 impl<I> Runnable for DongleScreen<I>
 where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
+    I: interrupt::typelevel::Binding<<SPI2 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI2>>
         + Copy
         + 'static,
 {
@@ -597,7 +601,7 @@ enum UiEv {
 
 impl<I> DongleScreen<I>
 where
-    I: interrupt::typelevel::Binding<<SPI3 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI3>>
+    I: interrupt::typelevel::Binding<<SPI2 as spim::Instance>::Interrupt, spim::InterruptHandler<SPI2>>
         + Copy
         + 'static,
 {
