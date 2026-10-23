@@ -72,8 +72,8 @@ name = "Adjust"
 # User0..User4=BT profiles 0..4, User5=NEXT BT, User6=PREV BT, User7=CLR BT, User8=BT toggle
 keys = """
 Bootloader  _  F1  F2  F3  F4  User0  User1  User2  User3  User4  User7
-_  _  F5  F6  F7  F8  OutputBluetooth  AudioVolDown  AudioMute  AudioVolUp  _  _
-_  _  F9  F10  F11  F12  _  _  OutputUsb  MediaPrevTrack  MediaPlayPause  MediaNextTrack  _  No
+_  _  F5  F6  F7  F8  User37  AudioVolDown  AudioMute  AudioVolUp  _  _
+_  _  F9  F10  F11  F12  _  _  User38  MediaPrevTrack  MediaPlayPause  MediaNextTrack  _  No
                     _  _  _  _  _  _
 """
 encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]
