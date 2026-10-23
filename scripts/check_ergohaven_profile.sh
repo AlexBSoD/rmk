@@ -129,9 +129,23 @@ non_k04_profiles=(
     keyboards/velvet/keyboard.toml
 )
 
+# Phenom is wired and has no batteries, so the Bluetooth part of the contract
+# does not apply to it.
+wired_profiles=(
+    keyboards/phenom/keyboard.toml
+    keyboards/phenom/keyboard_micro.toml
+    keyboards/phenom/keyboard_mini.toml
+)
+
 for file in "${live_matrix_cargo_manifests[@]}"; do
     rg -Fq '"host_lock"' "$file" \
         || fail "$file: Vial live matrix support requires host_lock"
+done
+
+mapfile -t keyboard_manifests < <(git ls-files 'keyboards/*/Cargo.toml')
+for file in "${keyboard_manifests[@]}"; do
+    rg -Fq '"universal_symbols"' "$file" \
+        || fail "$file: every Ergohaven keyboard must enable Universal Symbols"
 done
 
 for file in "${battery_reader_sources[@]}"; do
@@ -139,7 +153,7 @@ for file in "${battery_reader_sources[@]}"; do
         || fail "$file: custom battery reader must update the synchronous host cache"
 done
 
-for file in "${profiles[@]}"; do
+for file in "${profiles[@]}" "${wired_profiles[@]}"; do
     expect_toml "$file" manufacturer Ergohaven
     expect_toml "$file" layers 16
     expect_toml "$file" no_action_layer_start 5
@@ -147,11 +161,14 @@ for file in "${profiles[@]}"; do
     expect_toml "$file" fork_max_num 32
     expect_toml "$file" morse_max_num 32
     expect_toml "$file" macro_space_size 2048
+    expect_not_true "$file" clear_storage
+    expect_not_true "$file" clear_layout
+done
+
+for file in "${profiles[@]}"; do
     expect_toml "$file" ble_profiles_num 5
     expect_toml "$file" ble_reconnect_timeout_seconds 60
     expect_toml "$file" ble_pairing_timeout_seconds 60
-    expect_not_true "$file" clear_storage
-    expect_not_true "$file" clear_layout
 done
 
 python3 - <<'PY' || fail "shared K:04 crate must keep all topology and model identities"
