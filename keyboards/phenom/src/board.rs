@@ -50,3 +50,6 @@ pub fn vbus_detected() -> bool {
 /// The serial split link runs at one fixed rate, so there is no pointing
 /// cadence to switch to.
 pub fn set_split_link_pointing(_peripheral_id: usize, _pointing: bool) {}
+
+/// The serial split link keeps up with trackball reports at the local rate.
+pub const PACE_SPLIT_TRACKBALL: bool = false;

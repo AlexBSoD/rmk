@@ -60,3 +60,7 @@ pub fn set_split_link_pointing(peripheral_id: usize, pointing: bool) {
     };
     let _ = set_split_link_profile(peripheral_id, profile);
 }
+
+/// A peripheral trackball paces its reports to the BLE pointing connection
+/// interval, see `trackball/motion_pacing.rs`.
+pub const PACE_SPLIT_TRACKBALL: bool = true;
