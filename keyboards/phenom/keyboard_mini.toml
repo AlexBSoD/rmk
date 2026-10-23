@@ -9,8 +9,8 @@ chip = "rp2040"
 
 [host]
 vial_enabled = true
-# QMK VIAL_UNLOCK_COMBO_ROWS/COLS.
-unlock_keys = [[1, 5], [1, 4]]
+# Factory D + F, like every Ergohaven RMK profile.
+unlock_keys = [[2, 2], [2, 1]]
 
 [layout]
 rows = 10
