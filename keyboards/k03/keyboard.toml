@@ -76,12 +76,12 @@ encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"],["AudioV
 name = "Adjust"
 # User0..User4=BT profiles 0..4, User5=NEXT BT, User6=PREV BT, User7=CLR BT, User8=BT toggle
 # These match the customKeycodes in vial.json.
-# OutputBluetooth/OutputUsb: switch output mode
+# User37/User38: switch output to BLE/USB
 keys = """
 Bootloader  _  _  _  _  _  User0 User1 User2 User3 User4 User7
 _           _  _  _  _  _  _     _     _     _     _     _
-_           _  _  _  _  _  OutputBluetooth No _ _ _ _
-_           _  _  _  _  _  _     _     OutputUsb _ _ _ _ _
+_           _  _  _  _  _  User37 No _ _ _ _
+_           _  _  _  _  _  _     _     User38 _ _ _ _ _
 _           _  _  _  _  _  _     _     _     _
 """
 encoders = [["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"],["AudioVolUp","AudioVolDown"]]

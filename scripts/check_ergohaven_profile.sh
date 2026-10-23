@@ -130,8 +130,8 @@ non_k04_profiles=(
 )
 
 for file in "${live_matrix_cargo_manifests[@]}"; do
-    rg -Fq '"vial_lock"' "$file" \
-        || fail "$file: Vial live matrix support requires vial_lock/host_security"
+    rg -Fq '"host_lock"' "$file" \
+        || fail "$file: Vial live matrix support requires host_lock"
 done
 
 for file in "${battery_reader_sources[@]}"; do
@@ -242,8 +242,6 @@ replacements = {
     "User22": "User3",
     "User23": "User4",
     "User26": "User7",
-    "User37": "OutputBluetooth",
-    "User38": "OutputUsb",
     # Classic profiles have no K:04 status LED for the battery indication action.
     "User39": "No",
 }
