@@ -13,6 +13,8 @@ pub mod ble;
 pub mod central;
 #[cfg(feature = "dfu_split")]
 pub(crate) mod dfu;
+#[cfg(feature = "_ble")]
+pub mod diag_stats;
 /// Common abstraction layer of split driver
 pub(crate) mod driver;
 pub mod peripheral;
@@ -95,6 +97,9 @@ pub(crate) enum SplitMessage {
     /// Sleep statistics, from peripheral to central, answering `BatteryRefresh`.
     #[cfg(feature = "_ble")]
     SleepStats(SleepStats),
+    /// Power diagnostics, from peripheral to central, right after `SleepStats`.
+    #[cfg(feature = "_ble")]
+    DiagStats(diag_stats::DiagStats),
 
     // -----------------------------------------------------------------------
     // dfu_split — firmware update over split link

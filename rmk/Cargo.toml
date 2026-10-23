@@ -23,6 +23,10 @@ default = ["defmt", "storage", "vial", "host_lock", "watchdog"]
 ## Enable low-rate RTT counters for transport latency diagnostics.
 rtt_diag = ["defmt"]
 
+## Measure CPU active time on split peripherals with the DWT cycle counter and
+## report it in their power diagnostics. Enabling trace may itself add current.
+diag_cpu = []
+
 ## Pace merged mouse reports to the negotiated BLE HID slot.
 mouse_interval_control = []
 
