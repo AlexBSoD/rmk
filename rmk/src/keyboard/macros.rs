@@ -74,6 +74,9 @@ pub(crate) struct Macros<'a> {
     /// Whether flash has the macros yet. If not, the next save writes all of them.
     #[cfg(all(feature = "host", feature = "storage"))]
     stored: bool,
+    /// The chunks a Vial upload in progress has changed so far.
+    #[cfg(feature = "vial")]
+    unsaved: Range<usize>,
     queue: Deque<Cursor, 4>,
 }
 
@@ -90,6 +93,8 @@ impl<'a> Macros<'a> {
             buf,
             #[cfg(all(feature = "host", feature = "storage"))]
             stored,
+            #[cfg(feature = "vial")]
+            unsaved: 0..0,
             queue: Deque::new(),
         }
     }
@@ -199,6 +204,24 @@ impl<'a> Macros<'a> {
         offset / MACRO_CHUNK_SIZE..end.div_ceil(MACRO_CHUNK_SIZE)
     }
 
+    /// Write one piece of a Vial upload, see [`Self::write`], and return the chunks
+    /// the whole upload changed once it is complete. Vial and Entropy send every slot
+    /// in order, each ending in `0x00`, so the upload is complete when
+    /// `MACRO_MAX_NUM` terminators precede its end, or at the end of the buffer.
+    #[cfg(feature = "vial")]
+    pub(crate) fn write_upload(&mut self, offset: usize, data: &[u8]) -> Option<Range<usize>> {
+        let changed = self.write(offset, data);
+        if self.unsaved.is_empty() {
+            self.unsaved = changed;
+        } else if !changed.is_empty() {
+            self.unsaved = self.unsaved.start.min(changed.start)..self.unsaved.end.max(changed.end);
+        }
+        let end = (offset + data.len()).min(self.buf.len());
+        let complete =
+            end == self.buf.len() || self.buf[..end].iter().filter(|&&b| b == 0).count() >= crate::MACRO_MAX_NUM;
+        complete.then(|| core::mem::take(&mut self.unsaved))
+    }
+
     /// Empty every macro, all zero in both encodings, and return the chunks to persist.
     #[cfg(feature = "host")]
     pub(crate) fn clear(&mut self) -> Range<usize> {
@@ -237,7 +260,8 @@ pub(crate) fn encode_defaults(buf: &mut [u8], defaults: &[&[MacroOp]]) {
     }
 }
 
-/// Save the macro chunks a host `changed`.
+/// Save the macro chunks a host `changed`. With Vial they are staged for the
+/// storage task, which writes them once the host goes quiet.
 ///
 /// Before the first save, boot loads the default macros. After it, boot loads only
 /// what is in flash, so the first save writes the whole buffer.
@@ -258,6 +282,9 @@ pub(crate) async fn persist(keymap: &crate::keymap::KeyMap<'_>, changed: Range<u
         if !stored && idx > 0 && bytes == [0; MACRO_CHUNK_SIZE] {
             continue;
         }
+        #[cfg(feature = "vial")]
+        crate::storage::queue_macro_flash_write(idx, bytes);
+        #[cfg(not(feature = "vial"))]
         crate::storage::store(crate::storage::StorageItem::MacroChunk { idx: idx as u8, bytes }).await?;
     }
     keymap.macros(|m| m.stored = true);
