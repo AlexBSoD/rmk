@@ -575,12 +575,8 @@ pub(crate) struct ScanHandler;
 impl EventHandler for ScanHandler {
     fn on_adv_reports(&self, mut it: LeAdvReportsIter<'_>) {
         while let Some(Ok(report)) = it.next() {
-            let id = match Adv::decode(report.data) {
-                Some(Adv::SplitPeripheral { id }) => id,
-                _ => match legacy_split_peripheral_id_from_advertisement(report.data) {
-                    Some(id) => id,
-                    None => continue,
-                },
+            let Some(id) = split_peripheral_id_from_advertisement(report.data) else {
+                continue;
             };
             info!("Found split peripheral: id={:?}, addr={:?}", id, report.addr);
             PERIPHERAL_FOUND.signal((id, report.addr));
@@ -589,9 +585,18 @@ impl EventHandler for ScanHandler {
     }
 }
 
-/// Peripheral id from the advertisement of a half running the previous
-/// Ergohaven firmware: split service UUID plus product-tagged manufacturer data.
-fn legacy_split_peripheral_id_from_advertisement(data: &[u8]) -> Option<u8> {
+/// Peripheral id from the advertisement of one of this keyboard's halves, in
+/// RMK's format or the previous Ergohaven firmware's: split service UUID plus
+/// product-tagged manufacturer data. Another keyboard's half is skipped here:
+/// the product check after connecting rejected it, but every scan found it
+/// again and kept the central from its own halves.
+fn split_peripheral_id_from_advertisement(data: &[u8]) -> Option<u8> {
+    match Adv::decode(data) {
+        Some(Adv::SplitPeripheral { id, product_id }) => return (product_id == crate::SPLIT_PRODUCT_ID).then_some(id),
+        Some(_) => return None,
+        None => {}
+    }
+
     let mut has_split_service = false;
     let mut matching_product_peripheral_id = None;
     let mut offset = 0usize;
@@ -1792,17 +1797,46 @@ mod tests {
     #[test]
     fn legacy_advertisement_requires_matching_product() {
         let matching = legacy_advertisement(crate::SPLIT_PRODUCT_ID, 1);
-        assert_eq!(legacy_split_peripheral_id_from_advertisement(&matching), Some(1));
+        assert_eq!(split_peripheral_id_from_advertisement(&matching), Some(1));
 
         let mismatched = legacy_advertisement(crate::SPLIT_PRODUCT_ID.wrapping_add(1), 1);
-        assert_eq!(legacy_split_peripheral_id_from_advertisement(&mismatched), None);
+        assert_eq!(split_peripheral_id_from_advertisement(&mismatched), None);
     }
 
     #[test]
     fn legacy_advertisement_requires_split_service() {
         let mut data = legacy_advertisement(crate::SPLIT_PRODUCT_ID, 0);
         data[4] = 0x06;
-        assert_eq!(legacy_split_peripheral_id_from_advertisement(&data), None);
+        assert_eq!(split_peripheral_id_from_advertisement(&data), None);
+    }
+
+    fn rmk_advertisement(product_id: u16, peripheral_id: u8) -> [u8; 11] {
+        let [lo, hi] = product_id.to_le_bytes();
+        [
+            2,
+            0x01,
+            BR_EDR_NOT_SUPPORTED,
+            7,
+            0xff,
+            0x53,
+            0x52,
+            0,
+            peripheral_id,
+            lo,
+            hi,
+        ]
+    }
+
+    // The scan took any RMK split peripheral, and only the product check after
+    // connecting turned another keyboard's half away. Pairing after a reset
+    // kept landing on that half and never reached this keyboard's own.
+    #[test]
+    fn advertisement_of_another_keyboard_is_skipped_while_scanning() {
+        let own = rmk_advertisement(crate::SPLIT_PRODUCT_ID, 1);
+        assert_eq!(split_peripheral_id_from_advertisement(&own), Some(1));
+
+        let foreign = rmk_advertisement(crate::SPLIT_PRODUCT_ID.wrapping_add(1), 1);
+        assert_eq!(split_peripheral_id_from_advertisement(&foreign), None);
     }
 
     #[test]

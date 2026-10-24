@@ -451,7 +451,10 @@ async fn split_peripheral_advertise<'a, 'b, C: Controller>(
             result => return result.map(|conn| (conn, false)),
         }
     }
-    let seeking = Adv::SplitPeripheral { id: id as u8 };
+    let seeking = Adv::SplitPeripheral {
+        id: id as u8,
+        product_id: crate::SPLIT_PRODUCT_ID,
+    };
     advertise(peripheral, &server.server, seeking, Duration::from_secs(seeking_secs))
         .await
         .map(|conn| (conn, true))

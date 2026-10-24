@@ -22,8 +22,9 @@ pub(crate) enum Adv<'a> {
     Directed(Address),
     /// Any BLE host, which finds us as a standard HID keyboard.
     Host { name: &'a str },
-    /// The split central that owns peripheral `id`.
-    SplitPeripheral { id: u8 },
+    /// The split central that owns peripheral `id` of keyboard `product_id`, so a
+    /// central skips the halves of other keyboards while it scans.
+    SplitPeripheral { id: u8, product_id: u16 },
     /// An RMK dongle whose pairing window is open.
     DongleSeeking,
 }
@@ -45,11 +46,11 @@ impl Adv<'_> {
             // The two kinds below name themselves to another RMK device and nothing
             // else, undiscoverable: only RMK should act on these, and no host should
             // list them.
-            Self::SplitPeripheral { id } => &[
+            Self::SplitPeripheral { id, product_id } => &[
                 AdStructure::Flags(BR_EDR_NOT_SUPPORTED),
                 AdStructure::ManufacturerSpecificData {
                     company_identifier: RMK_ADV_COMPANY_ID,
-                    payload: &[SPLIT_PERIPHERAL, id],
+                    payload: &[SPLIT_PERIPHERAL, id, product_id as u8, (product_id >> 8) as u8],
                 },
             ],
             Self::DongleSeeking => &[
@@ -84,7 +85,10 @@ impl Adv<'_> {
                 continue;
             }
             return match payload {
-                [SPLIT_PERIPHERAL, id] => Some(Adv::SplitPeripheral { id: *id }),
+                [SPLIT_PERIPHERAL, id, lo, hi] => Some(Adv::SplitPeripheral {
+                    id: *id,
+                    product_id: u16::from_le_bytes([*lo, *hi]),
+                }),
                 [DONGLE_SEEKING] => Some(Adv::DongleSeeking),
                 // A kind only a newer firmware knows.
                 _ => None,
@@ -139,7 +143,10 @@ mod tests {
 
     #[test]
     fn every_advertisement_fits_the_legacy_budget() {
-        assert!(fits(Adv::SplitPeripheral { id: 0xFF }));
+        assert!(fits(Adv::SplitPeripheral {
+            id: 0xFF,
+            product_id: 0xFFFF
+        }));
         assert!(fits(Adv::DongleSeeking));
         // Where BLE_ADV_NAME_MAX_LEN comes from: this name fills the budget exactly.
         const LONGEST_NAME: &str = "0123456789abcdef";
@@ -152,7 +159,13 @@ mod tests {
 
     #[test]
     fn every_rmk_kind_round_trips_through_an_advertisement() {
-        for adv in [Adv::SplitPeripheral { id: 2 }, Adv::DongleSeeking] {
+        for adv in [
+            Adv::SplitPeripheral {
+                id: 2,
+                product_id: 0x0071,
+            },
+            Adv::DongleSeeking,
+        ] {
             let mut buf = [0; 31];
             adv.build(&mut buf).unwrap();
             assert_eq!(Adv::decode(&buf), Some(adv));
@@ -162,10 +175,16 @@ mod tests {
     #[test]
     fn decode_skips_preceding_structures() {
         // An 18-byte 128-bit service UUID list sits between the flags and the MSD.
-        let mut data = [0u8; 27];
+        let mut data = [0u8; 29];
         data[..5].copy_from_slice(&[0x02, 0x01, 0x06, 0x11, 0x07]);
-        data[21..].copy_from_slice(&[0x05, 0xFF, 0x53, 0x52, 0x00, 0x02]);
-        assert_eq!(Adv::decode(&data), Some(Adv::SplitPeripheral { id: 2 }));
+        data[21..].copy_from_slice(&[0x07, 0xFF, 0x53, 0x52, 0x00, 0x02, 0x71, 0x00]);
+        assert_eq!(
+            Adv::decode(&data),
+            Some(Adv::SplitPeripheral {
+                id: 2,
+                product_id: 0x0071
+            })
+        );
     }
 
     #[test]
@@ -179,5 +198,7 @@ mod tests {
         assert_eq!(Adv::decode(&[0x04, 0xFF, 0x53, 0x52, 0x7F]), None);
         // A length running past the end of the report.
         assert_eq!(Adv::decode(&[0x02, 0x01, 0x04, 0x09, 0xFF, 0x53]), None);
+        // A split peripheral that does not name its keyboard.
+        assert_eq!(Adv::decode(&[0x05, 0xFF, 0x53, 0x52, 0x00, 0x02]), None);
     }
 }
