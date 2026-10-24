@@ -16,14 +16,17 @@ use embassy_sync::pipe::Pipe;
 use rmk::config::{BehaviorConfig, PositionalConfig, RmkConfig};
 use rmk::core_traits::Runnable;
 use rmk::event::{LayerChangeEvent, publish_event};
-use rmk::host::HostService as RynkService;
+use rmk::host::{HostService as RynkService, RynkVendor};
 use rmk::keymap::{KeyMap, KeymapData};
 use rmk_types::action::{Action, KeyAction};
 use rmk_types::combo::Combo;
 use rmk_types::constants::RYNK_BUFFER_SIZE;
 use rmk_types::keyboard_macros::MacroOp;
 use rmk_types::keycode::{HidKeyCode, KeyCode};
-use rmk_types::protocol::rynk::{ProtocolVersion, RYNK_MAX_PAYLOAD_SIZE, RynkError, StorageResetMode};
+use rmk_types::protocol::rynk::command::Endpoint;
+use rmk_types::protocol::rynk::{
+    Cmd, ProtocolVersion, RYNK_MAX_PAYLOAD_SIZE, RynkError, RynkMessage, StorageResetMode,
+};
 use rynk::layout::{Key, Rect, Variant};
 use rynk::{Client, LayoutInfo, RynkDevice, RynkHostError, TopicEvent};
 
@@ -278,6 +281,53 @@ async fn lock_gate_rejects_and_reports() {
         rmk::test_support::drain_flash_channel(),
     );
     match select(device, script).await {
+        Either::First(_) => panic!("run_session ended before the client script finished"),
+        Either::Second(()) => {}
+    }
+}
+
+/// A vendor endpoint, outside RMK's table: the byte it is sent, plus one.
+enum Bump {}
+
+impl Endpoint for Bump {
+    const CMD: Cmd = Cmd::from_raw(0x7001);
+    type Request = u8;
+    type Response = u8;
+}
+
+struct BumpVendor;
+
+impl RynkVendor for BumpVendor {
+    fn dispatch(&self, msg: &mut RynkMessage<'_>) -> Option<Result<(), RynkError>> {
+        (msg.header().cmd == Bump::CMD).then(|| {
+            msg.decode_request::<u8>()
+                .and_then(|byte| msg.encode_response(&(byte + 1)))
+        })
+    }
+}
+
+/// A firmware's vendor command and the host's own endpoint for it meet over
+/// the wire, with nothing in RMK's tables.
+#[tokio::test(flavor = "current_thread")]
+async fn vendor_endpoint_round_trips() {
+    let mut behavior = BehaviorConfig::default();
+    let positional: PositionalConfig<2, 2> = PositionalConfig::default();
+    let mut data: KeymapData<2, 2, 1, 0> = KeymapData::new([[[KeyAction::No; 2]; 2]; 1]);
+    let keymap = KeyMap::new(&mut data, &mut behavior, &positional).await;
+    let config: RmkConfig<'static> = RmkConfig::default();
+    let service = RynkService::new(&keymap, &config).with_vendor(&BumpVendor);
+
+    let h2d = Link::new();
+    let d2h = Link::new();
+    let mut dev_rx: &Link = &h2d;
+    let mut dev_tx: &Link = &d2h;
+    let device = DuplexDevice { rx: &d2h, tx: &h2d };
+
+    let script = with_session(device, async |client| {
+        assert_eq!(client.request::<Bump>(&41).await.unwrap(), 42);
+    });
+
+    match select(service.run_session(&mut dev_rx, &mut dev_tx), script).await {
         Either::First(_) => panic!("run_session ended before the client script finished"),
         Either::Second(()) => {}
     }

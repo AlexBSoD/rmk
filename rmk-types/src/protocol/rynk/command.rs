@@ -6,6 +6,12 @@
 //! - `0x0000..=0x7FFF` (Bit 15 = 0): Request/Response pairs.
 //! - `0x8000..=0xFFFF` (Bit 15 = 1): Topics (Server -> Host push).
 //!
+//! The top 4096 values of each half are left to vendors, for commands a
+//! downstream firmware adds to its own build: requests `0x7000..=0x7FFF` and
+//! topics `0xF000..=0xFFFF`. RMK's tables never use them, so a vendor command
+//! cannot collide with a later RMK one. A firmware without a vendor handler
+//! answers vendor requests with `UnknownCmd`.
+//!
 
 #[cfg(not(feature = "host"))]
 use postcard::experimental::max_size::MaxSize;
@@ -36,6 +42,10 @@ use crate::protocol::rynk::PeripheralStatus;
 
 /// CMD high bit marking a topic (server → host push).
 const RYNK_TOPIC_BIT: u16 = 0x8000;
+
+/// CMD bits that are all set in the vendor ranges, the top 4096 values of the
+/// request and the topic half.
+const RYNK_VENDOR_BITS: u16 = 0x7000;
 
 /// A request/response endpoint: its [`Cmd`] plus both payload types — the wire
 /// schema and nothing else. Buffer sizing stays out of it: postcard is
@@ -77,6 +87,12 @@ impl Cmd {
     /// Returns `true` for topic / unsolicited push CMDs (high bit set).
     pub const fn is_topic(self) -> bool {
         self.0 & RYNK_TOPIC_BIT != 0
+    }
+
+    /// Returns `true` for vendor CMDs: requests `0x7000..=0x7FFF` and topics
+    /// `0xF000..=0xFFFF`.
+    pub const fn is_vendor(self) -> bool {
+        self.0 & RYNK_VENDOR_BITS == RYNK_VENDOR_BITS
     }
 }
 
@@ -381,6 +397,26 @@ mod tests {
         assert!(Cmd::from_raw(0x80ff).is_topic());
         assert!(!Cmd::from_raw(0x0001).is_topic());
         assert!(!Cmd::from_raw(0x7fff).is_topic());
+    }
+
+    #[test]
+    fn vendor_ranges_top_both_halves() {
+        for raw in [0x7000, 0x7fff, 0xf000, 0xffff] {
+            assert!(Cmd::from_raw(raw).is_vendor(), "{raw:#06x}");
+        }
+        for raw in [0x0001, 0x6fff, 0x8000, 0xefff] {
+            assert!(!Cmd::from_raw(raw).is_vendor(), "{raw:#06x}");
+        }
+    }
+
+    #[test]
+    fn the_tables_leave_the_vendor_ranges_free() {
+        for row in ENDPOINT_META {
+            assert!(!Cmd::from_raw(row.cmd).is_vendor(), "{} = {:#06x}", row.name, row.cmd);
+        }
+        for row in TOPIC_META {
+            assert!(!Cmd::from_raw(row.cmd).is_vendor(), "{} = {:#06x}", row.name, row.cmd);
+        }
     }
 
     #[test]

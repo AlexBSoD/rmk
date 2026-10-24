@@ -216,12 +216,15 @@ impl Client {
 
     /// One typed request/response round trip for endpoint `E`.
     ///
+    /// Vendor commands go through here too: implement [`Endpoint`] for a
+    /// marker type whose `CMD` is in the vendor range, `0x7000..=0x7FFF`.
+    ///
     /// No built-in timeout (this crate has no async runtime): a silent peer
     /// or a dead link keeps this pending until the surrounding `select`
     /// cancels it; callers that need a deadline use their runtime's timeout.
-    /// Dropping the call is safe: [`SlotGuard`] frees the slot and the late
-    /// reply is dropped as unmatched.
-    pub(crate) async fn request<E: Endpoint>(&self, req: &E::Request) -> Result<E::Response, RynkHostError> {
+    /// Dropping the call is safe: its slot is freed and the late reply is
+    /// dropped as unmatched.
+    pub async fn request<E: Endpoint>(&self, req: &E::Request) -> Result<E::Response, RynkHostError> {
         let cmd = E::CMD;
         let idx = self.free.receive().await;
         let _guard = SlotGuard { client: self, idx };

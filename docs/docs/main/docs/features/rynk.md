@@ -245,3 +245,47 @@ the matching `get_*` method.
 Firmware and host share the same message types (via `rmk-types`), so the two ends
 can never disagree about a message's format. The client crates handle all the
 encoding for you, so you never touch the raw bytes on the wire.
+
+### Vendor commands
+
+A firmware can add its own commands next to RMK's. Requests `0x7000..=0x7FFF`
+and topics `0xF000..=0xFFFF` are left to vendors: RMK's tables never use them, so
+a vendor command can't collide with a later RMK one. Define each command once, in
+a crate both ends depend on:
+
+```rust
+use rmk::types::protocol::rynk::Cmd;
+use rmk::types::protocol::rynk::command::Endpoint;
+
+/// Reads the board's LED brightness.
+pub enum GetBrightness {}
+
+impl Endpoint for GetBrightness {
+    const CMD: Cmd = Cmd::from_raw(0x7001);
+    type Request = ();
+    type Response = u8;
+}
+```
+
+The firmware serves it with a `RynkVendor` attached to the host service:
+
+```rust
+use rmk::host::{HostService, RynkVendor};
+use rmk::types::protocol::rynk::{RynkError, RynkMessage};
+
+struct Board;
+
+impl RynkVendor for Board {
+    fn dispatch(&self, msg: &mut RynkMessage<'_>) -> Option<Result<(), RynkError>> {
+        match msg.header().cmd {
+            GetBrightness::CMD => Some(msg.encode_response(&brightness())),
+            _ => None,
+        }
+    }
+}
+
+let host_service = HostService::new(&keymap, &rmk_config).with_vendor(&Board);
+```
+
+A host tool sends it with `client.request::<GetBrightness>(&()).await`. A
+firmware that doesn't serve the command answers `UnknownCmd`.

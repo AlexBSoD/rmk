@@ -23,5 +23,7 @@ pub(crate) mod via;
 /// two are mutually exclusive).
 #[cfg(feature = "rynk")]
 pub use rynk::RynkService as HostService;
+#[cfg(feature = "rynk")]
+pub use rynk::RynkVendor;
 #[cfg(feature = "vial")]
 pub use via::VialService as HostService;

@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Make `rmk::state::current_ble_status()` and `current_connection_status()` public, so user code can read the current status without subscribing to `ConnectionStatusChangeEvent`.
 - Forks accept a `layers` filter, so they only fire for keys from those layers.
 - Forks accept a list of triggers, and their outputs are optional: an omitted `positive_output` is the trigger, and an omitted `negative_output` leaves the key alone.
+- Rynk vendor commands: `0x7000..=0x7FFF` (requests) and `0xF000..=0xFFFF` (topics) are left to firmware-specific commands, which RMK's tables never use. A `RynkVendor` attached with `HostService::with_vendor` serves vendor requests, and the `rynk` client sends them through `Client::request`, now public.
 
 ### Fixed
 

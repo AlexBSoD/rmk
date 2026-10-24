@@ -1233,7 +1233,8 @@ mod protocol_reference {
              ```\n\n\
              On the wire the whole frame is COBS-encoded and terminated by a single `0x00` delimiter, so the byte stream is self-synchronizing.\n\n\
              - **Requests** use CMD `0x0000..=0x7FFF`. The response echoes CMD and SEQ and wraps its payload in postcard `Result<T, RynkError>` (`T = ()` for `Set*`).\n\
-             - **Topics** use CMD `0x8000..=0xFFFF` (server → host push, SEQ `0`, bare payload).\n\n\
+             - **Topics** use CMD `0x8000..=0xFFFF` (server → host push, SEQ `0`, bare payload).\n\
+             - **Vendor** commands use the top 4096 values of each half, requests `0x7000..=0x7FFF` and topics `0xF000..=0xFFFF`. No row below uses them; a firmware without a vendor handler answers vendor requests `UnknownCmd`.\n\n\
              Which commands a firmware answers depends on the RMK Cargo features it was built with: a row with no **Feature** is present once `rynk` is on, and the rest need their feature (`_ble`, `split`, …) compiled in. A command the firmware wasn't built with answers `UnknownCmd`.\n\n\
              ## Transports\n\n\
              The same COBS-framed byte stream runs over every transport; only how a host finds and opens the link differs.\n\n\

@@ -25,6 +25,22 @@ use crate::keymap::KeyMap;
 /// Unlock attempts live long enough for BLE WebHID round trips.
 const RYNK_UNLOCK_WINDOW: embassy_time::Duration = embassy_time::Duration::from_millis(500);
 
+/// Commands a firmware adds in the vendor request range, `0x7000..=0x7FFF`,
+/// next to RMK's own table. Attach one with [`RynkService::with_vendor`].
+pub trait RynkVendor {
+    /// Answer `msg` in place, as RMK's handlers do: decode the request with
+    /// [`RynkMessage::decode_request`] and encode the reply with
+    /// [`RynkMessage::encode_response`]. `None` for a command this vendor does
+    /// not serve, which the host gets as `UnknownCmd`.
+    fn dispatch(&self, msg: &mut RynkMessage<'_>) -> Option<Result<(), RynkError>>;
+
+    /// Whether `cmd` needs an unlocked device. No vendor command does by
+    /// default.
+    fn requires_unlock(&self, _cmd: Cmd) -> bool {
+        false
+    }
+}
+
 /// Transport-agnostic Rynk service.
 pub struct RynkService<'a> {
     ctx: KeyboardContext<'a>,
@@ -32,6 +48,8 @@ pub struct RynkService<'a> {
     device: DeviceConfig<'static>,
     /// Policy copied into each session's authorization gate.
     lock_config: LockConfig,
+    /// Serves the vendor request range; without one it answers `UnknownCmd`.
+    vendor: Option<&'a dyn RynkVendor>,
 }
 
 impl<'a> RynkService<'a> {
@@ -43,7 +61,14 @@ impl<'a> RynkService<'a> {
             ctx,
             device: config.device_config.clone(),
             lock_config: config.lock_config,
+            vendor: None,
         }
+    }
+
+    /// Serve `vendor`'s commands in the vendor request range.
+    pub fn with_vendor(mut self, vendor: &'a dyn RynkVendor) -> Self {
+        self.vendor = Some(vendor);
+        self
     }
 
     /// Whether `cmd` needs a storage write to persist its effect.
@@ -71,6 +96,7 @@ impl<'a> RynkService<'a> {
             // Deleting a bond opens a re-pair hijack window; BLE-only command.
             #[cfg(feature = "_ble")]
             Cmd::ClearBleProfile => true,
+            _ if cmd.is_vendor() => self.vendor.is_some_and(|vendor| vendor.requires_unlock(cmd)),
             _ => Self::needs_storage_write(cmd) && self.lock_config.write_requires_unlock,
         }
     }
@@ -143,6 +169,10 @@ impl<'a> RynkService<'a> {
 
             Cmd::GetLayout => serve::<command::GetLayout, _>(self, msg).await,
 
+            _ if cmd.is_vendor() => self
+                .vendor
+                .and_then(|vendor| vendor.dispatch(msg))
+                .unwrap_or(Err(RynkError::UnknownCmd)),
             _ => Err(RynkError::UnknownCmd),
         }
     }
@@ -635,6 +665,127 @@ mod tests {
         assert_eq!(
             postcard::from_bytes::<Result<ProtocolVersion, RynkError>>(&resp[0].2).unwrap(),
             Err(RynkError::Busy),
+        );
+    }
+
+    /// Claims every command it is handed, answering with the byte it was sent
+    /// plus one, except `0x7FFF`, which it does not serve. `0x7002` needs an
+    /// unlocked device.
+    struct Bump;
+
+    impl RynkVendor for Bump {
+        fn dispatch(&self, msg: &mut RynkMessage<'_>) -> Option<Result<(), RynkError>> {
+            if msg.header().cmd.raw() == 0x7FFF {
+                return None;
+            }
+            Some(
+                msg.decode_request::<u8>()
+                    .and_then(|byte| msg.encode_response(&(byte + 1))),
+            )
+        }
+
+        fn requires_unlock(&self, cmd: Cmd) -> bool {
+            cmd.raw() == 0x7002
+        }
+    }
+
+    /// Serve `requests` on one session of `service` and return each reply's payload.
+    fn exchange(service: &RynkService<'_>, requests: impl IntoIterator<Item = Vec<u8>>) -> Vec<Vec<u8>> {
+        let mut rx = ChunkRead {
+            chunks: VecDeque::from_iter(requests),
+        };
+        let mut tx = VecWrite { captured: Vec::new() };
+        block_on(service.run_session(&mut rx, &mut tx));
+        decode_frames(&tx.captured)
+            .into_iter()
+            .map(|(_, _, payload)| payload)
+            .collect()
+    }
+
+    /// Only the vendor request range reaches the vendor, and a command it does
+    /// not serve is as unknown as one outside every table.
+    #[test]
+    fn vendor_requests_reach_the_vendor_and_nothing_else() {
+        let mut behavior = BehaviorConfig::default();
+        let positional: PositionalConfig<1, 1> = PositionalConfig::default();
+        let mut data: KeymapData<1, 1, 1, 0> = KeymapData::new([[[KeyAction::No]]]);
+        let keymap = block_on(KeyMap::new(&mut data, &mut behavior, &positional));
+        let config = RmkConfig::default();
+        let service = RynkService::new(&keymap, &config).with_vendor(&Bump);
+
+        let replies = exchange(
+            &service,
+            [
+                req_with(0x7001, 1, &41u8),
+                req_with(0x7FFF, 2, &41u8),
+                req_with(0x6FFF, 3, &41u8),
+                req(Cmd::GetVersion.raw(), 4),
+            ],
+        );
+
+        assert_eq!(
+            postcard::from_bytes::<Result<u8, RynkError>>(&replies[0]).unwrap(),
+            Ok(42)
+        );
+        assert_eq!(
+            postcard::from_bytes::<Result<u8, RynkError>>(&replies[1]).unwrap(),
+            Err(RynkError::UnknownCmd)
+        );
+        assert_eq!(
+            postcard::from_bytes::<Result<u8, RynkError>>(&replies[2]).unwrap(),
+            Err(RynkError::UnknownCmd)
+        );
+        assert_eq!(
+            postcard::from_bytes::<Result<ProtocolVersion, RynkError>>(&replies[3]).unwrap(),
+            Ok(ProtocolVersion::CURRENT)
+        );
+    }
+
+    #[test]
+    fn without_a_vendor_vendor_requests_are_unknown() {
+        let mut behavior = BehaviorConfig::default();
+        let positional: PositionalConfig<1, 1> = PositionalConfig::default();
+        let mut data: KeymapData<1, 1, 1, 0> = KeymapData::new([[[KeyAction::No]]]);
+        let keymap = block_on(KeyMap::new(&mut data, &mut behavior, &positional));
+        let config = RmkConfig::default();
+        let service = RynkService::new(&keymap, &config);
+
+        let replies = exchange(&service, [req_with(0x7001, 1, &41u8)]);
+
+        assert_eq!(
+            postcard::from_bytes::<Result<u8, RynkError>>(&replies[0]).unwrap(),
+            Err(RynkError::UnknownCmd)
+        );
+    }
+
+    /// A vendor command the vendor gates waits for the unlock like RMK's own
+    /// gated commands, and an ungated one does not.
+    #[test]
+    fn a_vendor_command_can_require_an_unlock() {
+        let mut behavior = BehaviorConfig::default();
+        let positional: PositionalConfig<1, 1> = PositionalConfig::default();
+        let mut data: KeymapData<1, 1, 1, 0> = KeymapData::new([[[KeyAction::No]]]);
+        let keymap = block_on(KeyMap::new(&mut data, &mut behavior, &positional));
+        const UNLOCK_KEYS: &[(u8, u8)] = &[(0, 0)];
+        let config = RmkConfig {
+            lock_config: LockConfig {
+                unlock_keys: UNLOCK_KEYS,
+                insecure: false,
+                write_requires_unlock: false,
+            },
+            ..Default::default()
+        };
+        let service = RynkService::new(&keymap, &config).with_vendor(&Bump);
+
+        let replies = exchange(&service, [req_with(0x7002, 1, &41u8), req_with(0x7001, 2, &41u8)]);
+
+        assert_eq!(
+            postcard::from_bytes::<Result<u8, RynkError>>(&replies[0]).unwrap(),
+            Err(RynkError::Locked)
+        );
+        assert_eq!(
+            postcard::from_bytes::<Result<u8, RynkError>>(&replies[1]).unwrap(),
+            Ok(42)
         );
     }
 }
