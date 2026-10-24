@@ -2314,11 +2314,8 @@ async fn serve_keyboard_connection<
     #[cfg(not(feature = "dongle"))]
     let dongle_event_task = core::future::pending::<()>();
 
-    let workers = run_ble_session_workers(
-        &session_ready,
-        writer_task,
-        join3(led_task, host_task, dongle_event_task),
-    );
+    let background_task = core::pin::pin!(join3(led_task, host_task, dongle_event_task));
+    let workers = run_ble_session_workers(&session_ready, writer_task, background_task);
 
     match select(communication_task, workers).await {
         Either::First(exit) => exit,
@@ -2449,10 +2446,14 @@ where
 /// Run the per-connection workers. Only the HID writer waits for the session
 /// to be ready, and only its exit ends the session; `background_task` (LED,
 /// host protocol, dongle events) starts with the physical connection.
+///
+/// `background_task` is borrowed pinned because it carries the host protocol
+/// session. Moved in by value, it would be stored once as this function's
+/// argument and again in each future that awaits it.
 async fn run_ble_session_workers<H, B>(
     session_ready: &Signal<crate::RawMutex, ()>,
     hid_task: H,
-    background_task: B,
+    background_task: core::pin::Pin<&mut B>,
 ) -> H::Output
 where
     H: core::future::Future,
@@ -3609,7 +3610,7 @@ mod tests {
         let exit = block_on(run_ble_session_workers(
             &session_ready,
             async { BleKeyboardExit::Disconnected },
-            core::future::pending::<()>(),
+            core::pin::pin!(core::future::pending::<()>()),
         ));
 
         assert_eq!(exit, BleKeyboardExit::Disconnected);
