@@ -557,7 +557,11 @@ fn rynk_step(value: &Value) -> Result<TokenStream2, String> {
         "rynk",
         "{ cmd = \"...\", payload = ..., reply = ... }",
     )?;
-    let cmd = command_ident(&step.cmd)?;
+    // Ergohaven's commands are their own table, named `ergohaven::Name`.
+    let (table, cmd) = match step.cmd.split_once("::") {
+        Some(("ergohaven", name)) => (format_ident!("ergohaven"), command_ident(name)?),
+        _ => (format_ident!("command"), command_ident(&step.cmd)?),
+    };
     let request = json(step.payload.as_ref())?;
 
     let reply = match (&step.reply, &step.error) {
@@ -580,7 +584,7 @@ fn rynk_step(value: &Value) -> Result<TokenStream2, String> {
         }
     };
     Ok(quote! {
-        .rynk::<::rmk::types::protocol::rynk::command::#cmd>(#request, #reply)
+        .rynk::<::rmk::types::protocol::rynk::#table::#cmd>(#request, #reply)
     })
 }
 

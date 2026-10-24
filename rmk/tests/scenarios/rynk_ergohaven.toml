@@ -1,0 +1,22 @@
+# Ergohaven's commands, `ergohaven::Name`. The ones that only read the board's
+# build constants are unit tests in `rmk/src/host/rynk/ergohaven.rs`.
+features = ["rynk", "ergohaven_rynk"]
+
+[layout]
+rows = 1
+cols = 2
+map = """
+(0,0)  (0,1)
+"""
+
+[[keymap.layer]]
+keys = "A  B"
+
+# The layout option a host sets is the one it reads back, as over Vial.
+[[test]]
+name = "layout_option_reads_back_what_was_set"
+steps = [
+  { rynk = { cmd = "ergohaven::GetLayoutOption", reply = 0 } },
+  { rynk = { cmd = "ergohaven::SetLayoutOption", payload = 3 } },
+  { rynk = { cmd = "ergohaven::GetLayoutOption", reply = 3 } },
+]

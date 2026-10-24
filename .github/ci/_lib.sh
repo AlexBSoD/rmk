@@ -62,6 +62,9 @@ RMK_FEATURESETS=(
     "dongle,rynk,_ble,storage"
     "dongle,vial,split,_ble,storage"
     "dongle,vial,_ble,storage"
+    # Ergohaven's Rynk boards: BLE split and wired split
+    "split,ergohaven_rynk,storage,async_matrix,_ble"
+    "split,ergohaven_rynk,storage,async_matrix"
 )
 
 # Behavioral coverage only; RMK_FEATURESETS remains the compile/clippy matrix.
@@ -74,6 +77,9 @@ RMK_TEST_FEATURESETS=(
     "dongle,vial,_ble,storage,custom_message"
     # Ergohaven's BLE split boards
     "split,vial,storage,_ble"
+    # Ergohaven's Rynk boards: BLE split and wired split
+    "split,ergohaven_rynk,storage,async_matrix,_ble"
+    "split,ergohaven_rynk,storage,async_matrix"
 )
 
 # Examples auto-discovery skiplist. Reasons:

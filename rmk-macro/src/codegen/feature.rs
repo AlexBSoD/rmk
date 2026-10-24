@@ -24,6 +24,10 @@ pub(crate) fn get_rmk_features() -> Option<Vec<String>> {
         feature_set.push("host_lock".to_string());
         feature_set.push("watchdog".to_string());
     }
+    // Must mirror `ergohaven_rynk = ["rynk", ...]` in rmk/Cargo.toml.
+    if feature_set.iter().any(|f| f == "ergohaven_rynk") {
+        feature_set.push("rynk".to_string());
+    }
     Some(feature_set)
 }
 

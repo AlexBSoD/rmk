@@ -4,6 +4,8 @@ mod ble_battery;
 #[cfg(feature = "_ble")]
 mod ble_host_power;
 mod device;
+#[cfg(feature = "ergohaven_rynk")]
+mod ergohaven;
 #[cfg(feature = "rynk")]
 mod lock;
 mod positional;
@@ -21,6 +23,8 @@ pub use ble_host_power::BleHostPowerConfig;
 #[cfg(feature = "rp2040")]
 pub use device::rp2040_serial_number;
 pub use device::{DeviceConfig, SerialNumberInput, build_serial_number};
+#[cfg(feature = "ergohaven_rynk")]
+pub use ergohaven::ErgohavenConfig;
 #[cfg(feature = "rynk")]
 pub use lock::LockConfig;
 pub use positional::{Hand, PositionalConfig};
@@ -39,6 +43,8 @@ pub struct RmkConfig<'a> {
     /// Baked at build time from `[layout].map`; empty when there's no layout.
     #[cfg(feature = "rynk")]
     pub layout_blob: &'a [u8],
+    #[cfg(feature = "ergohaven_rynk")]
+    pub ergohaven_config: ErgohavenConfig<'a>,
     #[cfg(feature = "storage")]
     pub storage_config: StorageConfig,
     #[cfg(feature = "_ble")]
@@ -54,6 +60,8 @@ impl Default for RmkConfig<'_> {
             vial_config: VialConfig::default(),
             lock_config: LockConfig::default(),
             layout_blob: rmk_types::constants::LAYOUT_BLOB,
+            #[cfg(feature = "ergohaven_rynk")]
+            ergohaven_config: ErgohavenConfig::default(),
             #[cfg(feature = "storage")]
             storage_config: StorageConfig::default(),
             #[cfg(feature = "_ble")]

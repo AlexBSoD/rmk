@@ -91,11 +91,9 @@ fn unlock_keys_tokens(host: &Host) -> proc_macro2::TokenStream {
     quote! { &[#(#keys_expr),*] }
 }
 
-pub(crate) fn expand_vial_config(host: &Host) -> proc_macro2::TokenStream {
-    if !host.vial_enabled {
-        return quote! {};
-    }
-    let firmware_version = std::env::var("RMK_FIRMWARE_VERSION")
+/// `RMK_FIRMWARE_VERSION` packed as `major << 16 | minor << 8 | patch`.
+fn configured_firmware_version() -> u32 {
+    std::env::var("RMK_FIRMWARE_VERSION")
         .ok()
         .map(|value| {
             parse_firmware_version(&value).unwrap_or_else(|| {
@@ -104,7 +102,14 @@ pub(crate) fn expand_vial_config(host: &Host) -> proc_macro2::TokenStream {
                 )
             })
         })
-        .unwrap_or(rmk_types::protocol::vial::VIA_FIRMWARE_VERSION);
+        .unwrap_or(rmk_types::protocol::vial::VIA_FIRMWARE_VERSION)
+}
+
+pub(crate) fn expand_vial_config(host: &Host) -> proc_macro2::TokenStream {
+    if !host.vial_enabled {
+        return quote! {};
+    }
+    let firmware_version = configured_firmware_version();
     let unlock_keys = unlock_keys_tokens(host);
     let insecure = host.insecure;
     let device_settings = std::env::var("RMK_VIAL_DEVICE_SETTINGS_FN")
@@ -120,6 +125,23 @@ pub(crate) fn expand_vial_config(host: &Host) -> proc_macro2::TokenStream {
             unlock_keys: #unlock_keys,
             device_settings: #device_settings,
             insecure: #insecure,
+            firmware_version: #firmware_version,
+        };
+    }
+}
+
+/// The board constants Ergohaven's Rynk commands serve: the same Vial id and
+/// Vial JSON the board's build script writes for Vial.
+pub(crate) fn expand_ergohaven_config(ergohaven: bool) -> proc_macro2::TokenStream {
+    if !ergohaven {
+        return quote! {};
+    }
+    let firmware_version = configured_firmware_version();
+    quote! {
+        include!(concat!(env!("OUT_DIR"), "/config_generated.rs"));
+        const ERGOHAVEN_CONFIG: ::rmk::config::ErgohavenConfig = ::rmk::config::ErgohavenConfig {
+            keyboard_uid: &VIAL_KEYBOARD_ID,
+            board_definition: &VIAL_KEYBOARD_DEF,
             firmware_version: #firmware_version,
         };
     }
