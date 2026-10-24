@@ -2808,9 +2808,7 @@ impl AccumulatedMouseReport {
             .iter()
             .all(|value| i16::try_from(*value).is_ok());
         let (x, y, wheel, pan) = if !fits && self.preserve_vector {
-            let (x, y, wheel, pan) =
-                crate::mouse_chunk::take_vector_chunk(&mut self.x, &mut self.y, &mut self.wheel, &mut self.pan);
-            (x.into(), y.into(), wheel.into(), pan.into())
+            crate::mouse_chunk::take_vector_chunk(&mut self.x, &mut self.y, &mut self.wheel, &mut self.pan)
         } else {
             (
                 take_axis(&mut self.x),
@@ -3733,6 +3731,29 @@ mod tests {
             }
             assert_eq!((total_x, total_y), (x, y));
         }
+    }
+
+    // A merged delta past the i16 range used to be cut into i8 chunks for the
+    // 16-bit report, so a stalled link drained it in hundreds of reports.
+    #[test]
+    fn vector_chunks_past_the_i16_range_use_the_whole_report() {
+        let mut accumulated = super::AccumulatedMouseReport {
+            buttons: 0,
+            x: 70_000,
+            y: -21_000,
+            wheel: 0,
+            pan: 0,
+            oldest_enqueued_at: Instant::now(),
+            source_reports: 1,
+            preserve_vector: true,
+        };
+        let mut chunks = 0;
+        while accumulated.has_relative_motion() {
+            let (chunk, _) = accumulated.take_chunk();
+            assert!(chunk.x > i16::from(i8::MAX));
+            chunks += 1;
+        }
+        assert_eq!(chunks, 3);
     }
 
     #[test]
