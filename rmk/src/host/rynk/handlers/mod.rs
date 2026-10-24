@@ -6,7 +6,7 @@ use rmk_types::protocol::rynk::{RynkError, RynkMessage};
 mod behavior;
 mod bulk;
 mod combo;
-mod connection;
+pub(super) mod connection;
 mod fork;
 mod keymap;
 mod layout;

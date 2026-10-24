@@ -1,5 +1,6 @@
 //! Connection handlers — USB/BLE preferred-transport read, BLE profile management.
 
+use rmk_types::ble::BleState;
 #[cfg(feature = "_ble")]
 use rmk_types::ble::BleStatus;
 use rmk_types::connection::{ConnectionStatus, ConnectionType};
@@ -17,18 +18,28 @@ impl Handle<GetConnectionType> for RynkService<'_> {
     }
 }
 
+/// `status` as RMK's wire has it. `BleState::Sleeping`, a host link this
+/// firmware dropped while idle, is no part of that wire, so it goes out as
+/// `Inactive`, which is what an RMK host makes of it.
+pub(in crate::host::rynk) fn wire_connection_status(mut status: ConnectionStatus) -> ConnectionStatus {
+    if status.ble.state == BleState::Sleeping {
+        status.ble.state = BleState::Inactive;
+    }
+    status
+}
+
 /// `Cmd::GetConnectionStatus` — the same payload the `ConnectionChange`
 /// topic pushes, so a host can recover a missed push.
 impl Handle<GetConnectionStatus> for RynkService<'_> {
     async fn handle(&self, _: ()) -> Result<ConnectionStatus, RynkError> {
-        Ok(self.ctx.connection_status())
+        Ok(wire_connection_status(self.ctx.connection_status()))
     }
 }
 
 #[cfg(feature = "_ble")]
 impl Handle<GetBleStatus> for RynkService<'_> {
     async fn handle(&self, _: ()) -> Result<BleStatus, RynkError> {
-        Ok(self.ctx.connection_status().ble)
+        Ok(wire_connection_status(self.ctx.connection_status()).ble)
     }
 }
 
@@ -66,6 +77,37 @@ impl RynkService<'_> {
             Err(RynkError::Invalid)
         } else {
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rmk_types::ble::{BleState, BleStatus};
+    use rmk_types::connection::{ConnectionStatus, ConnectionType, UsbState};
+
+    use super::wire_connection_status;
+
+    fn status(state: BleState) -> ConnectionStatus {
+        ConnectionStatus {
+            usb: UsbState::Disabled,
+            ble: BleStatus {
+                profile: 2,
+                state,
+                bonded: true,
+            },
+            preferred: ConnectionType::Ble,
+        }
+    }
+
+    #[test]
+    fn a_sleeping_host_link_goes_out_as_inactive() {
+        assert_eq!(
+            wire_connection_status(status(BleState::Sleeping)),
+            status(BleState::Inactive)
+        );
+        for state in [BleState::Advertising, BleState::Connected, BleState::Inactive] {
+            assert_eq!(wire_connection_status(status(state)), status(state));
         }
     }
 }
