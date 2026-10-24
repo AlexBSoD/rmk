@@ -72,7 +72,7 @@ where
     );
 }
 
-mod snapshot {
+pub(crate) mod snapshot {
     extern crate alloc;
     extern crate std;
 

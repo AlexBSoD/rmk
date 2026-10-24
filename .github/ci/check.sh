@@ -55,3 +55,5 @@ cargo +stable clippy --target-dir "$clippy_target" --manifest-path rmk/Cargo.tom
 cargo +stable clippy --target-dir "$clippy_target" --manifest-path rmk-config/Cargo.toml -- -D warnings
 cargo +stable clippy --target-dir "$clippy_target" --manifest-path rmk-macro/Cargo.toml -- -D warnings
 cargo +stable clippy --target-dir "$clippy_target" --manifest-path rmk-types/Cargo.toml -- -D warnings
+# The Ergohaven table as firmware builds it: buffer-size fold included.
+cargo +stable clippy --target-dir "$clippy_target" --manifest-path rmk-types/Cargo.toml --features ergohaven -- -D warnings
