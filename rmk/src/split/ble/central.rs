@@ -417,6 +417,7 @@ pub(crate) async fn scan_and_connect_peripherals<'a, C: Controller + ControllerC
     }
 
     let mut central = stack.central();
+    let mut reconnect = SleepReconnect::default();
     wait_for_stack_started().await;
     loop {
         // Mark ended sessions `Disconnected`, or forget the peer when its
@@ -484,11 +485,7 @@ pub(crate) async fn scan_and_connect_peripherals<'a, C: Controller + ControllerC
                     false
                 }
             };
-            // If connecting to the peripheral failed, and the central is sleeping,
-            // don't keep connecting, just wait.
-            if !connected {
-                wait_until_wakeup(ended).await;
-            }
+            reconnect.after_attempt(connected, ended).await;
         } else if peripheral_slots.iter().all(|s| matches!(s, SlotState::Connected(_))) {
             // All peripherals are connected: wait until a session ends.
             ended.ready_to_receive().await;
@@ -526,6 +523,37 @@ pub(crate) async fn scan_and_connect_peripherals<'a, C: Controller + ControllerC
                 }
             }
         }
+    }
+}
+
+/// The wait before a sleeping central's next attempt at a dropped link, doubled
+/// after each failure in a row up to `SLEEP_RECONNECT_MAX`.
+const SLEEP_RECONNECT_FIRST: Duration = Duration::from_secs(1);
+const SLEEP_RECONNECT_MAX: Duration = Duration::from_secs(30);
+
+/// Paces the connect attempts of a sleeping central. Its peripherals can't wake it
+/// while their links are down, so it keeps trying on its own, backing off to keep
+/// the radio mostly idle. An awake central retries at once.
+#[derive(Default)]
+struct SleepReconnect {
+    failures: u32,
+}
+
+impl SleepReconnect {
+    /// Hold off the next attempt after one that failed while the central sleeps.
+    /// A wake-up or another ended session cuts the wait short.
+    async fn after_attempt(
+        &mut self,
+        connected: bool,
+        ended: &Channel<NoopRawMutex, usize, { crate::SPLIT_PERIPHERALS_NUM }>,
+    ) {
+        if connected || !crate::state::current_sleep_state() {
+            self.failures = 0;
+            return;
+        }
+        let wait = (SLEEP_RECONNECT_FIRST * (1 << self.failures.min(5))).min(SLEEP_RECONNECT_MAX);
+        self.failures = self.failures.saturating_add(1);
+        let _ = with_timeout(wait, wait_until_wakeup(ended)).await;
     }
 }
 
@@ -1648,6 +1676,99 @@ mod tests {
                 consecutive_failures: 1
             }
         );
+    }
+
+    type Ended = Channel<NoopRawMutex, usize, { crate::SPLIT_PERIPHERALS_NUM }>;
+
+    /// How long `after_attempt` holds off the next attempt, by the mock clock.
+    async fn held_off(reconnect: &mut SleepReconnect, connected: bool, ended: &Ended) -> Duration {
+        let start = Instant::now();
+        reconnect.after_attempt(connected, ended).await;
+        Instant::now() - start
+    }
+
+    fn set_asleep(asleep: bool) {
+        crate::ble::sleep::SLEEPING_STATE.store(asleep, Ordering::Release);
+    }
+
+    /// Every failed attempt while asleep is followed by another, never by a wait
+    /// for a wake-up only the dropped peripheral could cause. The waits double
+    /// and stop growing at `SLEEP_RECONNECT_MAX`.
+    #[test]
+    fn sleeping_central_retries_a_failed_connect_with_bounded_backoff() {
+        set_asleep(true);
+        let ended = Ended::new();
+        let mut reconnect = SleepReconnect::default();
+        crate::test_support::test_block_on(async {
+            for secs in [1, 2, 4, 8] {
+                let waited = held_off(&mut reconnect, false, &ended).await;
+                assert!(waited >= Duration::from_secs(secs), "{waited:?} < {secs} s");
+                assert!(waited < Duration::from_secs(secs) + Duration::from_millis(10));
+            }
+            reconnect.failures = 9;
+            let waited = held_off(&mut reconnect, false, &ended).await;
+            assert!(waited >= SLEEP_RECONNECT_MAX, "{waited:?}");
+            assert!(waited < SLEEP_RECONNECT_MAX + Duration::from_millis(10));
+        });
+    }
+
+    /// A link that reconnects in the middle of a failing streak restarts the
+    /// backoff from its first step.
+    #[test]
+    fn reconnect_midway_restarts_the_backoff() {
+        set_asleep(true);
+        let ended = Ended::new();
+        let mut reconnect = SleepReconnect::default();
+        crate::test_support::test_block_on(async {
+            held_off(&mut reconnect, false, &ended).await;
+            held_off(&mut reconnect, false, &ended).await;
+            assert_eq!(held_off(&mut reconnect, true, &ended).await, Duration::from_ticks(0));
+            let waited = held_off(&mut reconnect, false, &ended).await;
+            assert!(waited < SLEEP_RECONNECT_FIRST + Duration::from_millis(10));
+        });
+    }
+
+    /// A wake-up or another dropped link ends the wait early: either changes what
+    /// the next attempt should do.
+    #[test]
+    fn backoff_ends_on_wake_or_another_dropped_link() {
+        set_asleep(true);
+        let ended = Ended::new();
+        let mut reconnect = SleepReconnect {
+            failures: 3, // an 8 s wait
+        };
+        crate::test_support::test_block_on(async {
+            let drop = async {
+                Timer::after_secs(2).await;
+                ended.try_send(0).unwrap();
+            };
+            let (waited, ()) = embassy_futures::join::join(held_off(&mut reconnect, false, &ended), drop).await;
+            assert!(waited < Duration::from_secs(3), "{waited:?}");
+            ended.try_receive().unwrap();
+
+            let wake = async {
+                Timer::after_secs(3).await;
+                set_asleep(false);
+            };
+            let (waited, ()) = embassy_futures::join::join(held_off(&mut reconnect, false, &ended), wake).await;
+            assert!(waited < Duration::from_secs(5), "{waited:?}");
+        });
+    }
+
+    /// Awake there is nothing to back off: a failed attempt is retried at once and
+    /// drops a streak left from sleep, so the first failure after falling asleep
+    /// again waits only the first step.
+    #[test]
+    fn awake_central_retries_at_once() {
+        set_asleep(false);
+        let ended = Ended::new();
+        let mut reconnect = SleepReconnect { failures: 4 };
+        crate::test_support::test_block_on(async {
+            assert_eq!(held_off(&mut reconnect, false, &ended).await, Duration::from_ticks(0));
+            set_asleep(true);
+            let waited = held_off(&mut reconnect, false, &ended).await;
+            assert!(waited < SLEEP_RECONNECT_FIRST + Duration::from_millis(10));
+        });
     }
 
     fn legacy_advertisement(product_id: u16, peripheral_id: u8) -> [u8; 28] {

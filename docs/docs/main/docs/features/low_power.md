@@ -62,7 +62,7 @@ split_central_sleep_timeout_seconds = 600
 
 When the keyboard falls asleep, RMK publishes a `SleepStateEvent`, holds battery level reports, and on a split central switches the peripheral links to slower connection parameters. Any key press wakes the keyboard up. The host's HID suspend and exit-suspend commands also put the keyboard to sleep and wake it.
 
-A sleeping split central keeps its radio idle rather than scanning, so a peripheral link that drops gets a single reconnect attempt. If that attempt fails, the central keeps the peripheral's address: press a key on the central half while the peripheral is still advertising (about five minutes) and the halves relink instead of rediscovering each other. After that the peripheral stops advertising too, so it takes a key press on each half to bring the link back.
+A sleeping split central doesn't scan for new peripherals, but it keeps reconnecting a peripheral whose link dropped: after each failed attempt it waits 1 s, doubling up to 30 s, and it keeps the peripheral's address so the halves relink instead of rediscovering each other. A peripheral stops advertising about five minutes after the drop and starts again on its next key press, so the central's next attempt brings the link back.
 
 Two related behaviors are always on:
 
