@@ -111,6 +111,7 @@ live_matrix_cargo_manifests=(
 )
 
 battery_reader_sources=(
+    keyboards/k04/src/battery_nrf.rs
     keyboards/imperial44/src/battery_nrf.rs
     keyboards/k03/src/battery_nrf.rs
     keyboards/op36/src/battery_nrf.rs
@@ -137,6 +138,10 @@ done
 for file in "${battery_reader_sources[@]}"; do
     rg -Fq 'publish_battery_status(' "$file" \
         || fail "$file: custom battery reader must update the synchronous host cache"
+    # A split half answers the central from that cache, so a reading published
+    # around it reaches the central as Unavailable.
+    rg -Fq 'publish_event(BatteryStatusEvent' "$file" \
+        && fail "$file: battery reader must not publish around the synchronous cache"
 done
 
 for file in "${profiles[@]}"; do

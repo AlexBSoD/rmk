@@ -59,7 +59,7 @@ mod keyboard_peripheral {
     }
 
     #[register_processor]
-    fn battery() -> crate::battery_nrf::K04QubeBattery {
-        crate::battery_nrf::K04QubeBattery::new(p.SAADC, p.P0_31)
+    fn battery() -> crate::battery_nrf::K04Battery {
+        crate::battery_nrf::K04Battery::new(p.SAADC, p.P0_31)
     }
 }
