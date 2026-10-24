@@ -2,10 +2,12 @@
 use core::cell::RefCell;
 use core::fmt::Debug;
 use core::future::{Future, poll_fn};
+#[cfg(feature = "host")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_embedded_hal::adapter::BlockingAsync;
 #[cfg(feature = "host")]
-use embassy_futures::select::{Either5, select5};
+use embassy_futures::select::{Either6, select6};
 use embassy_sync::channel::{Channel, TrySendError};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -146,6 +148,11 @@ impl<T: Copy, const N: usize> PendingWrites<T, N> {
     fn is_empty(&self) -> bool {
         self.values.iter().all(Option::is_none)
     }
+
+    #[cfg(feature = "ergohaven_rynk")]
+    fn len(&self) -> usize {
+        self.values.iter().filter(|value| value.is_some()).count()
+    }
 }
 
 #[cfg(feature = "host")]
@@ -157,11 +164,61 @@ static KEYMAP_FLASH_PENDING: embassy_sync::blocking_mutex::Mutex<
 #[cfg(feature = "host")]
 static KEYMAP_FLASH_SIGNAL: Signal<crate::RawMutex, ()> = Signal::new();
 
+/// A staged write failed since the last commit.
+#[cfg(feature = "host")]
+static STAGED_WRITE_FAULT: AtomicBool = AtomicBool::new(false);
+
+/// Drains the staged writes now instead of after the quiet period.
+#[cfg(feature = "host")]
+static COMMIT_SIGNAL: Signal<crate::RawMutex, ()> = Signal::new();
+
+/// Longest a reboot waits for staged writes: a whole K:04 keymap takes about 45 s.
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+const STAGED_FLUSH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Staged keymap writes and macro chunks not in flash yet, and whether a staged
+/// write failed since the last commit.
+#[cfg(feature = "ergohaven_rynk")]
+pub(crate) fn staged_write_status() -> (usize, usize, bool) {
+    (
+        KEYMAP_FLASH_PENDING.lock(|pending| pending.borrow().len()),
+        MACRO_FLASH_PENDING.lock(|pending| pending.borrow().len()),
+        STAGED_WRITE_FAULT.load(Ordering::Relaxed),
+    )
+}
+
+/// Write the staged changes now instead of after the quiet period, and forget
+/// earlier failures, so the next status is about this commit.
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+pub(crate) fn commit_staged_writes() {
+    STAGED_WRITE_FAULT.store(false, Ordering::Relaxed);
+    COMMIT_SIGNAL.signal(());
+}
+
+/// Commit the staged changes and wait until they are in flash, giving up after
+/// `STAGED_FLUSH_TIMEOUT`. A reboot or a bootloader jump would lose them.
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+pub(crate) async fn flush_staged_writes() {
+    commit_staged_writes();
+    let drained = async {
+        while !KEYMAP_FLASH_PENDING.lock(|pending| pending.borrow().is_empty())
+            || !MACRO_FLASH_PENDING.lock(|pending| pending.borrow().is_empty())
+        {
+            Timer::after_millis(10).await;
+        }
+        // The storage task answers this only after the write it took last.
+        let _ = read(StorageKey::StorageConfig).await;
+    };
+    if embassy_time::with_timeout(STAGED_FLUSH_TIMEOUT, drained).await.is_err() {
+        warn!("Staged writes still pending after the flush timeout");
+    }
+}
+
 /// Stage the latest action for one key without waiting for flash. Different
 /// positions are kept independently; repeated writes to the same position
 /// collapse to the latest action. `false` when the position lies outside the
 /// `keyboard.toml` layout the staging area is sized by.
-#[cfg(feature = "vial")]
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
 pub(crate) fn queue_keymap_flash_write(layer: u8, row: u8, col: u8, action: KeyAction) -> bool {
     let (layer, row, col) = (layer as usize, row as usize, col as usize);
     if layer >= crate::KEYMAP_LAYERS || row >= crate::KEYMAP_ROWS || col >= crate::KEYMAP_COLS {
@@ -187,7 +244,7 @@ static MACRO_FLASH_SIGNAL: Signal<crate::RawMutex, ()> = Signal::new();
 /// Stage macro chunk `idx` without waiting for flash. The storage task writes the
 /// staged chunks once the host has been quiet for `MACRO_FLASH_SETTLE_TIMEOUT`;
 /// staging a chunk again before that replaces its bytes.
-#[cfg(feature = "vial")]
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
 pub(crate) fn queue_macro_flash_write(idx: usize, bytes: [u8; MACRO_CHUNK_SIZE]) {
     if MACRO_FLASH_PENDING.lock(|pending| pending.borrow_mut().insert(idx, bytes)) {
         MACRO_FLASH_SIGNAL.signal(());
@@ -723,21 +780,22 @@ impl<F: AsyncNorFlash> crate::core_traits::Runnable for Storage<F> {
             // Staged keymap and macro writes drain one per turn once the host goes quiet,
             // interleaved with the requests so none of them waits for a bulk upload.
             #[cfg(feature = "host")]
-            let (message, reply_id) = match select5(
+            let (message, reply_id, staged) = match select6(
                 FLASH_CHANNEL.receive(),
                 KEYMAP_FLASH_SIGNAL.wait(),
                 Timer::at(keymap_deadline.unwrap_or(Instant::MAX)),
                 MACRO_FLASH_SIGNAL.wait(),
                 Timer::at(macro_deadline.unwrap_or(Instant::MAX)),
+                COMMIT_SIGNAL.wait(),
             )
             .await
             {
-                Either5::First(request) => request,
-                Either5::Second(()) => {
+                Either6::First((message, reply_id)) => (message, reply_id, false),
+                Either6::Second(()) => {
                     keymap_deadline = Some(Instant::now() + KEYMAP_FLASH_SETTLE_TIMEOUT);
                     continue;
                 }
-                Either5::Third(()) => {
+                Either6::Third(()) => {
                     let next = KEYMAP_FLASH_PENDING.lock(|pending| {
                         let mut pending = pending.borrow_mut();
                         let next = pending.take_next();
@@ -757,13 +815,13 @@ impl<F: AsyncNorFlash> crate::core_traits::Runnable for Storage<F> {
                         col: (index % crate::KEYMAP_COLS) as u8,
                         action,
                     };
-                    (FlashOperationMessage::Store(item), None)
+                    (FlashOperationMessage::Store(item), None, true)
                 }
-                Either5::Fourth(()) => {
+                Either6::Fourth(()) => {
                     macro_deadline = Some(Instant::now() + MACRO_FLASH_SETTLE_TIMEOUT);
                     continue;
                 }
-                Either5::Fifth(()) => {
+                Either6::Fifth(()) => {
                     let next = MACRO_FLASH_PENDING.lock(|pending| {
                         let mut pending = pending.borrow_mut();
                         let next = pending.take_next();
@@ -775,7 +833,13 @@ impl<F: AsyncNorFlash> crate::core_traits::Runnable for Storage<F> {
                     };
                     macro_deadline = more.then(Instant::now);
                     let item = StorageItem::MacroChunk { idx: idx as u8, bytes };
-                    (FlashOperationMessage::Store(item), None)
+                    (FlashOperationMessage::Store(item), None, true)
+                }
+                // A commit drains both queues now rather than after the quiet period.
+                Either6::Sixth(()) => {
+                    keymap_deadline = Some(Instant::now());
+                    macro_deadline = Some(Instant::now());
+                    continue;
                 }
             };
             #[cfg(not(feature = "host"))]
@@ -792,6 +856,10 @@ impl<F: AsyncNorFlash> crate::core_traits::Runnable for Storage<F> {
                     core::future::pending().await
                 }
             };
+            #[cfg(feature = "host")]
+            if staged && result.is_err() {
+                STAGED_WRITE_FAULT.store(true, Ordering::Relaxed);
+            }
             if let Some(id) = reply_id {
                 REPLY.signal((id, result));
             }
@@ -1190,8 +1258,8 @@ mod tests {
             let save = async {
                 let changed = keymap.macros(|m| m.write(0, &shorter));
                 crate::keyboard::macros::persist(&keymap, changed).await.unwrap();
-                // Vial saves land once the host has been quiet.
-                #[cfg(feature = "vial")]
+                // Staged saves land once the host has been quiet.
+                #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
                 Timer::after(MACRO_FLASH_SETTLE_TIMEOUT + Duration::from_millis(100)).await;
                 keymap.macros(|m| m.bytes().to_vec())
             };
@@ -1211,7 +1279,7 @@ mod tests {
 
     /// A reset erases and reboots from the storage task itself, so nothing a host
     /// staged before it, keymap or macros, is written after the erase.
-    #[cfg(feature = "vial")]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     #[test]
     fn reset_drops_staged_writes() {
         let part = Part::new();

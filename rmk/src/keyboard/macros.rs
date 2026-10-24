@@ -308,9 +308,9 @@ pub(crate) async fn persist(keymap: &crate::keymap::KeyMap<'_>, changed: Range<u
         if !stored && idx > 0 && bytes == [0; MACRO_CHUNK_SIZE] {
             continue;
         }
-        #[cfg(feature = "vial")]
+        #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
         crate::storage::queue_macro_flash_write(idx, bytes);
-        #[cfg(not(feature = "vial"))]
+        #[cfg(not(any(feature = "vial", feature = "ergohaven_rynk")))]
         crate::storage::store(crate::storage::StorageItem::MacroChunk { idx: idx as u8, bytes }).await?;
     }
     keymap.macros(|m| m.stored = true);

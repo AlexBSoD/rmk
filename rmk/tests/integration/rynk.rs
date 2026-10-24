@@ -20,6 +20,8 @@ use rmk::types::keycode::HidKeyCode;
 use rmk_types::connection::ConnectionStatus;
 use rmk_types::led_indicator::LedIndicator;
 use rmk_types::protocol::rynk::command::Endpoint;
+#[cfg(feature = "ergohaven_rynk")]
+use rmk_types::protocol::rynk::ergohaven;
 use rmk_types::protocol::rynk::{Cmd, RynkError, RynkHeader, command, encode_frame};
 
 use crate::simulator::SimKeyboard;
@@ -94,6 +96,10 @@ fn payload<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> T {
     serde_json::from_str(json).unwrap_or_else(|e| panic!("rynk {what} payload `{json}`: {e}"))
 }
 
+/// The write status after a staged write the flash refused.
+#[cfg(feature = "ergohaven_rynk")]
+const FAULTED: &str = r#"{"pending_keys":0,"pending_macro_chunks":0,"fault":true}"#;
+
 /// A macro write lands in flash and outlives the keyboard; a write the flash
 /// refuses is reported, and the slot stays as it was.
 #[cfg(feature = "storage")]
@@ -109,15 +115,21 @@ fn macro_write_survives_restart_and_reports_a_storage_fault() {
             let mut keyboard = SimKeyboard::builder([[[rmk::macros!(0), rmk::macros!(1)]]])
                 .build_with_flash(flash.clone())
                 .await;
-            keyboard
-                .rynk::<command::SetMacro>(SET_0, RynkReply::Ok("null"))
-                .run()
-                .await;
+            keyboard.rynk::<command::SetMacro>(SET_0, RynkReply::Ok("null"));
+            // Ergohaven stages macro saves until the host has been quiet for 3 s.
+            #[cfg(feature = "ergohaven_rynk")]
+            keyboard.delay(3_100);
+            keyboard.run().await;
             flash.fail_writes(true);
+            // Staged, the refused write answers `Ok` and shows up in the write status.
+            #[cfg(not(feature = "ergohaven_rynk"))]
+            keyboard.rynk::<command::SetMacro>(SET_1, RynkReply::Err(RynkError::StorageFault));
+            #[cfg(feature = "ergohaven_rynk")]
             keyboard
-                .rynk::<command::SetMacro>(SET_1, RynkReply::Err(RynkError::StorageFault))
-                .run()
-                .await;
+                .rynk::<command::SetMacro>(SET_1, RynkReply::Ok("null"))
+                .delay(3_100)
+                .rynk::<ergohaven::GetWriteStatus>("null", RynkReply::Ok(FAULTED));
+            keyboard.run().await;
             flash.fail_writes(false);
         }
         let mut keyboard = SimKeyboard::builder([[[rmk::macros!(0), rmk::macros!(1)]]])
@@ -145,10 +157,11 @@ fn keymap_write_survives_restart() {
         let flash = crate::simulator::Flash::new();
         {
             let mut keyboard = SimKeyboard::builder([[[k!(A)]]]).build_with_flash(flash.clone()).await;
-            keyboard
-                .rynk::<command::SetKeyAction>(SET_KEY_B, RynkReply::Ok("null"))
-                .run()
-                .await;
+            keyboard.rynk::<command::SetKeyAction>(SET_KEY_B, RynkReply::Ok("null"));
+            // Ergohaven stages keymap writes until the host has been quiet.
+            #[cfg(feature = "ergohaven_rynk")]
+            keyboard.delay(600);
+            keyboard.run().await;
         }
         let mut keyboard = SimKeyboard::builder([[[k!(A)]]]).build_with_flash(flash).await;
         keyboard
@@ -173,8 +186,15 @@ fn set_key_on_failing_flash_replies_storage_fault() {
         {
             let mut keyboard = SimKeyboard::builder([[[k!(A)]]]).build_with_flash(flash.clone()).await;
             flash.fail_writes(true);
+            // Staged, the refused write answers `Ok` and shows up in the write status.
+            #[cfg(not(feature = "ergohaven_rynk"))]
+            keyboard.rynk::<command::SetKeyAction>(SET_KEY_B, RynkReply::Err(RynkError::StorageFault));
+            #[cfg(feature = "ergohaven_rynk")]
             keyboard
-                .rynk::<command::SetKeyAction>(SET_KEY_B, RynkReply::Err(RynkError::StorageFault))
+                .rynk::<command::SetKeyAction>(SET_KEY_B, RynkReply::Ok("null"))
+                .delay(600)
+                .rynk::<ergohaven::GetWriteStatus>("null", RynkReply::Ok(FAULTED));
+            keyboard
                 .tap(0, 0, 10)
                 .expect_keys([HidKeyCode::B])
                 .expect_keys([])
