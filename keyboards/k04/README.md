@@ -90,9 +90,17 @@ The agent panel is a 2×2 grid — `WORKING`, `BLOCKED` on the top row, `IDLE`,
 state worth interrupting typing for, so it keeps the second slot and a distinct
 colour. While no counts are known the panel renders `NO AGENT FEED` instead.
 
-Counts come from the host, not from the firmware. A daemon pushes them over the
-existing raw-HID (Via) OUT endpoint as a 32-byte packet handled by
-`process_host_data_packet` in `rmk/src/host/via/mod.rs`:
+Counts come from the host, not from the firmware. A Rynk build with the
+`qube_side` feature takes them as `SetAgents` (`0x7EF0`) and the limits as
+`SetUsage` (`0x7EF1`). `GetHalvesDiag` (`0x7EF8`) reads the halves'
+diagnostics, and `GetSideInfo` (`0x7EFF`) tells a host which of these a build
+serves; a build without them answers `UnknownCmd`. The wire is defined in
+`rmk-types/src/protocol/rynk/side.rs`, with golden frames in
+`rmk-types/src/protocol/rynk/snapshots/side.snap`.
+
+A Vial build takes the same counts over the raw-HID (Via) OUT endpoint as a
+32-byte packet handled by `process_host_data_packet` in
+`rmk/src/host/via/mod.rs`:
 
 | Byte | Meaning |
 |------|---------|

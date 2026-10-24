@@ -34,6 +34,7 @@ right_uf2_cleanup = []
 qube = [
     "rmk/usb_log",
     "rmk/st7789",
+    "rmk/qube_side",
     "dep:lcd-async",
     "dep:embedded-hal-bus",
     "dep:embedded-graphics",

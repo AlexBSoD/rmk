@@ -7,6 +7,8 @@
 #[cfg(feature = "ergohaven_rynk")]
 mod ergohaven;
 mod handlers;
+#[cfg(feature = "qube_side")]
+mod side;
 mod topics;
 
 use embassy_futures::select::{Either, select};

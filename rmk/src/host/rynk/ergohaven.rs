@@ -45,6 +45,9 @@ impl RynkService<'_> {
             Cmd::GetBatteryHalves => serve::<GetBatteryHalves, _>(self, msg).await,
             Cmd::CommitWrites => serve::<CommitWrites, _>(self, msg).await,
             Cmd::GetWriteStatus => serve::<GetWriteStatus, _>(self, msg).await,
+            #[cfg(feature = "qube_side")]
+            _ => return self.dispatch_side(msg).await,
+            #[cfg(not(feature = "qube_side"))]
             _ => return None,
         })
     }

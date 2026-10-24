@@ -73,6 +73,10 @@ rynk = ["host", "host_lock", "rmk-types/rynk"]
 ## Ergohaven's commands on top of Rynk.
 ergohaven_rynk = ["rynk", "rmk-types/ergohaven"]
 
+## Personal Qube commands next to Ergohaven's: the host-agent window and the
+## halves' diagnostics. No release carries them.
+qube_side = ["ergohaven_rynk", "rmk-types/qube_side"]
+
 ## Enable dongle support.
 dongle = [
     "storage",

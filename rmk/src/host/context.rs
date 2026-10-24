@@ -328,7 +328,7 @@ impl<'a> KeyboardContext<'a> {
         #[cfg(all(feature = "split", feature = "_ble"))]
         {
             crate::event::publish_event(crate::event::PeripheralBatteryRefreshEvent);
-            let (left, right) = battery_halves_for_split(
+            let (left, right) = halves_for_split(
                 self.battery_status(),
                 self.peripheral_battery_status(0),
                 self.peripheral_battery_status(1),
@@ -399,16 +399,16 @@ impl<'a> KeyboardContext<'a> {
     }
 }
 
-/// Which battery is which half: with one peripheral the central is the other
+/// Which reading is which half: with one peripheral the central is the other
 /// half, with two (a dongle) the peripherals are the halves.
 #[cfg(all(feature = "split", feature = "_ble"))]
-fn battery_halves_for_split(
-    central: BatteryStatus,
-    peripheral_0: BatteryStatus,
-    peripheral_1: BatteryStatus,
+pub(crate) fn halves_for_split<T>(
+    central: T,
+    peripheral_0: T,
+    peripheral_1: T,
     peripheral_count: usize,
     central_is_left: bool,
-) -> (BatteryStatus, BatteryStatus) {
+) -> (T, T) {
     if peripheral_count == 1 {
         if central_is_left {
             (central, peripheral_0)
@@ -424,7 +424,7 @@ fn battery_halves_for_split(
 mod tests {
     use rmk_types::battery::{BatteryStatus, ChargeState};
 
-    use super::battery_halves_for_split;
+    use super::halves_for_split;
 
     fn battery(level: u8) -> BatteryStatus {
         BatteryStatus::Available {
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn no_qube_split_uses_central_and_first_peripheral_batteries() {
         assert_eq!(
-            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, true),
+            halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, true),
             (battery(80), battery(55))
         );
     }
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn right_central_split_reports_physical_battery_order() {
         assert_eq!(
-            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, false),
+            halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, false),
             (battery(55), battery(80))
         );
     }
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn qube_split_uses_both_peripheral_batteries() {
         assert_eq!(
-            battery_halves_for_split(battery(100), battery(80), battery(55), 2, true),
+            halves_for_split(battery(100), battery(80), battery(55), 2, true),
             (battery(80), battery(55))
         );
     }
