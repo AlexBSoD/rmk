@@ -4,6 +4,8 @@
 //! [`run_session`](RynkService::run_session) creates its own authorization gate
 //! ([`HostLock`]) and topic subscriptions, so transports never share either.
 
+#[cfg(feature = "ergohaven_rynk")]
+mod ergohaven;
 mod handlers;
 mod topics;
 
@@ -32,6 +34,13 @@ pub struct RynkService<'a> {
     device: DeviceConfig<'static>,
     /// Policy copied into each session's authorization gate.
     lock_config: LockConfig,
+    /// What the Ergohaven commands serve.
+    #[cfg(feature = "ergohaven_rynk")]
+    ergohaven: crate::config::ErgohavenConfig<'static>,
+    /// Ergohaven keeps one gate for the whole service, as its Vial firmware
+    /// did: an unlock lasts until `Lock` or a reboot, not one connection.
+    #[cfg(feature = "ergohaven_rynk")]
+    lock: HostLock<'a>,
 }
 
 impl<'a> RynkService<'a> {
@@ -43,6 +52,15 @@ impl<'a> RynkService<'a> {
             ctx,
             device: config.device_config.clone(),
             lock_config: config.lock_config,
+            #[cfg(feature = "ergohaven_rynk")]
+            ergohaven: config.ergohaven_config,
+            #[cfg(feature = "ergohaven_rynk")]
+            lock: HostLock::new(
+                config.lock_config.unlock_keys,
+                keymap,
+                config.lock_config.insecure,
+                RYNK_UNLOCK_WINDOW,
+            ),
         }
     }
 
@@ -71,6 +89,8 @@ impl<'a> RynkService<'a> {
             // Deleting a bond opens a re-pair hijack window; BLE-only command.
             #[cfg(feature = "_ble")]
             Cmd::ClearBleProfile => true,
+            #[cfg(feature = "ergohaven_rynk")]
+            _ if Self::ergohaven_writes(cmd) => self.lock_config.write_requires_unlock,
             _ => Self::needs_storage_write(cmd) && self.lock_config.write_requires_unlock,
         }
     }
@@ -143,7 +163,13 @@ impl<'a> RynkService<'a> {
 
             Cmd::GetLayout => serve::<command::GetLayout, _>(self, msg).await,
 
-            _ => Err(RynkError::UnknownCmd),
+            _ => {
+                #[cfg(feature = "ergohaven_rynk")]
+                if let Some(served) = self.dispatch_ergohaven(msg).await {
+                    return served;
+                }
+                Err(RynkError::UnknownCmd)
+            }
         }
     }
 
@@ -151,12 +177,15 @@ impl<'a> RynkService<'a> {
     ///
     /// Owns frame reassembly/dispatch; transport setup and reconnect stay outside.
     pub async fn run_session<R: Read, T: Write>(&self, rx: &mut R, tx: &mut T) {
-        let locker = HostLock::new(
+        #[cfg(not(feature = "ergohaven_rynk"))]
+        let locker = &HostLock::new(
             self.lock_config.unlock_keys,
             self.ctx.keymap,
             self.lock_config.insecure,
             RYNK_UNLOCK_WINDOW,
         );
+        #[cfg(feature = "ergohaven_rynk")]
+        let locker = &self.lock;
         let mut topics = TopicSubscribers::new();
         let mut buf = [0u8; RYNK_BUFFER_SIZE];
         let mut df = Deframer::new();
@@ -177,7 +206,7 @@ impl<'a> RynkService<'a> {
                     // Hosts never send topic-range cmds; drop without a reply.
                     warn!("Rynk: dropping topic-range request {:?}", cmd);
                 } else {
-                    let served = self.dispatch(&locker, &mut msg).await;
+                    let served = self.dispatch(locker, &mut msg).await;
                     // The version handshake completes on GetCapabilities.
                     handshaked |= cmd == Cmd::GetCapabilities;
                     let written = match served {
@@ -238,7 +267,7 @@ impl<'a> RynkService<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     extern crate alloc;
 
     use alloc::collections::VecDeque;
@@ -253,7 +282,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::config::{BehaviorConfig, LockConfig, PositionalConfig, RmkConfig, build_serial_number};
+    #[cfg(not(feature = "ergohaven_rynk"))]
+    use crate::config::LockConfig;
+    use crate::config::{BehaviorConfig, PositionalConfig, RmkConfig, build_serial_number};
     use crate::event::KeyboardEvent;
     use crate::keymap::{KeyMap, KeymapData};
     use crate::test_support::test_block_on as block_on;
@@ -261,8 +292,8 @@ mod tests {
     /// Returns each item in `chunks` as a separate `read` call, with partial
     /// buffers handled by draining bytes from the head of the front chunk.
     /// Yields `Ok(0)` (EOF) once all chunks are drained.
-    struct ChunkRead {
-        chunks: VecDeque<Vec<u8>>,
+    pub(super) struct ChunkRead {
+        pub(super) chunks: VecDeque<Vec<u8>>,
     }
 
     impl ErrorType for ChunkRead {
@@ -285,8 +316,8 @@ mod tests {
     }
 
     /// Captures every byte handed to `write` into a `Vec` for later assertion.
-    struct VecWrite {
-        captured: Vec<u8>,
+    pub(super) struct VecWrite {
+        pub(super) captured: Vec<u8>,
     }
 
     impl ErrorType for VecWrite {
@@ -305,12 +336,12 @@ mod tests {
     }
 
     /// A COBS request frame with an empty payload, as a host sends it.
-    fn req(cmd_raw: u16, seq: u8) -> Vec<u8> {
+    pub(super) fn req(cmd_raw: u16, seq: u8) -> Vec<u8> {
         req_with(cmd_raw, seq, &())
     }
 
     /// A COBS request frame carrying `payload`, as a host sends it.
-    fn req_with<T: serde::Serialize>(cmd_raw: u16, seq: u8, payload: &T) -> Vec<u8> {
+    pub(super) fn req_with<T: serde::Serialize>(cmd_raw: u16, seq: u8, payload: &T) -> Vec<u8> {
         let mut buf = [0u8; 64];
         let n = encode_frame(
             &mut buf,
@@ -326,7 +357,7 @@ mod tests {
 
     /// Decode a captured response stream into `(cmd, seq, decoded payload)` per
     /// frame, using the production Deframer.
-    fn decode_frames(buf: &[u8]) -> Vec<(u16, u8, Vec<u8>)> {
+    pub(super) fn decode_frames(buf: &[u8]) -> Vec<(u16, u8, Vec<u8>)> {
         let mut work = buf.to_vec();
         let mut df = Deframer::new();
         df.commit(work.len());
@@ -381,6 +412,7 @@ mod tests {
     /// itself lives in `tests/scenarios/rynk_lock.toml`, which holds the
     /// challenge with real matrix input; only the session boundary needs a
     /// second `run_session`, which one timeline cannot express.
+    #[cfg(not(feature = "ergohaven_rynk"))]
     #[test]
     fn a_new_session_starts_locked_again() {
         let mut behavior = BehaviorConfig::default();

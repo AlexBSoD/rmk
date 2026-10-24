@@ -62,6 +62,9 @@ RMK_FEATURESETS=(
     "dongle,rynk,_ble,storage"
     "dongle,vial,split,_ble,storage"
     "dongle,vial,_ble,storage"
+    # Ergohaven's Rynk boards: BLE split and wired split
+    "split,ergohaven_rynk,storage,async_matrix,_ble"
+    "split,ergohaven_rynk,storage,async_matrix"
 )
 
 # Behavioral coverage only; RMK_FEATURESETS remains the compile/clippy matrix.
@@ -77,6 +80,9 @@ RMK_TEST_FEATURESETS=(
     # The rmk features of the K:04 standalone firmware (`standalone` + `production_v30g`),
     # except `k04_standalone_timeout_14`: its tests need the K:04 keyboard.toml (test.sh)
     "split,vial,host_lock,storage,universal_symbols,async_matrix,display,_ble,fixed_mouse_pacing_15ms,host_first_split_wake"
+    # Ergohaven's Rynk boards: BLE split and wired split
+    "split,ergohaven_rynk,storage,async_matrix,_ble"
+    "split,ergohaven_rynk,storage,async_matrix"
 )
 
 # All rmk features of the K:04 standalone firmware, for the pointing tests that

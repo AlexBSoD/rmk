@@ -20,8 +20,8 @@ use super::feature::{get_rmk_features, is_feature_enabled};
 use super::import::expand_custom_imports;
 use super::input_device::expand_input_device_config;
 use super::keyboard_config::{
-    expand_device_config, expand_keyboard_info, expand_lock_config, expand_vial_config,
-    read_keyboard_toml_config,
+    expand_device_config, expand_ergohaven_config, expand_keyboard_info, expand_lock_config,
+    expand_vial_config, read_keyboard_toml_config,
 };
 use super::keymap::expand_default_keymap;
 use super::matrix::{expand_bootmagic_check, expand_matrix_config};
@@ -114,7 +114,9 @@ pub(crate) fn parse_keyboard_mod(item_mod: syn::ItemMod) -> TokenStream2 {
     }
 
     // Generate imports and statics
-    let imports_and_statics = expand_imports_and_constants(&host, &hardware, &behavior, &keymap);
+    let ergohaven = host.rynk_enabled && is_feature_enabled(&rmk_features, "ergohaven_rynk");
+    let imports_and_statics =
+        expand_imports_and_constants(&host, &hardware, &behavior, &keymap, ergohaven);
 
     // Generate main function body
     let main_function = expand_main(
@@ -186,6 +188,7 @@ pub(crate) fn expand_imports_and_constants(
     hardware: &Hardware,
     behavior: &Behavior,
     keymap: &Keymap,
+    ergohaven: bool,
 ) -> TokenStream2 {
     // Generate keyboard info and number of rows/cols/layers
     let keyboard_info_static_var = expand_keyboard_info(keymap);
@@ -195,6 +198,7 @@ pub(crate) fn expand_imports_and_constants(
     let vial_static_var = expand_vial_config(host);
     // Generate rynk lock-gate config
     let lock_static_var = expand_lock_config(host);
+    let ergohaven_static_var = expand_ergohaven_config(ergohaven);
 
     // Generate extra imports, panic handler and logger
     let imports = match hardware.chip.series {
@@ -234,6 +238,7 @@ pub(crate) fn expand_imports_and_constants(
         #keyboard_info_static_var
         #vial_static_var
         #lock_static_var
+        #ergohaven_static_var
         #default_keymap
     }
 }
@@ -347,6 +352,12 @@ fn expand_main(
     } else {
         quote! {}
     };
+    let ergohaven_config =
+        if host.rynk_enabled && is_feature_enabled(rmk_features, "ergohaven_rynk") {
+            quote! { ergohaven_config: ERGOHAVEN_CONFIG, }
+        } else {
+            quote! {}
+        };
 
     let rmk_config = if hardware.storage.is_some() {
         quote! {
@@ -356,6 +367,7 @@ fn expand_main(
                 #vial_config
                 #lock_config
                 #rynk_layout_field
+                #ergohaven_config
                 storage_config,
                 ..Default::default()
             };
@@ -368,6 +380,7 @@ fn expand_main(
                 #vial_config
                 #lock_config
                 #rynk_layout_field
+                #ergohaven_config
                 ..Default::default()
             };
         }
