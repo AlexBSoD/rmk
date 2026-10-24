@@ -439,9 +439,9 @@ mod tests {
         use rmk_types::keyboard_macros::{Macro, MacroOp};
         use rmk_types::keycode::{HidKeyCode, KeyCode};
         use rmk_types::protocol::rynk::command::{SetKeyAction, SetMacro};
-        use rmk_types::protocol::rynk::{KeyPosition, SetKeyRequest, SetMacroRequest};
+        use rmk_types::protocol::rynk::{KeyPosition, RYNK_HEADER_SIZE, SetKeyRequest, SetMacroRequest};
 
-        use super::super::super::handlers::Handle;
+        use super::super::super::handlers::{Handle, HandleBulk};
         use super::*;
         use crate::config::StorageConfig;
         use crate::core_traits::Runnable;
@@ -527,21 +527,44 @@ mod tests {
             });
         }
 
+        /// A decoded `SetMacro` frame in `buf` that saves `A` to slot 0.
+        fn set_macro_a(buf: &mut [u8]) -> RynkMessage<'_> {
+            let set = SetMacroRequest {
+                index: 0,
+                macro_ops: Macro::from_slice(&[MacroOp::Tap(Action::Key(KeyCode::Hid(HidKeyCode::A)))]).unwrap(),
+            };
+            buf[..2].copy_from_slice(&Cmd::SetMacro.raw().to_le_bytes());
+            let len = RYNK_HEADER_SIZE + postcard::to_slice(&set, &mut buf[RYNK_HEADER_SIZE..]).unwrap().len();
+            RynkMessage::from_decoded(buf, len)
+        }
+
         /// A macro save waits in the stage too, chunk by chunk.
         #[test]
         fn a_macro_save_waits_for_a_commit() {
             let part = Part::new();
             with_storage(&part, async |service| {
-                let ops = [MacroOp::Tap(Action::Key(KeyCode::Hid(HidKeyCode::A)))];
-                let set = SetMacroRequest {
-                    index: 0,
-                    macro_ops: Macro::from_slice(&ops).unwrap(),
-                };
-                Handle::<SetMacro>::handle(service, set).await.unwrap();
+                let mut buf = [0; 64];
+                HandleBulk::<SetMacro>::handle_bulk(service, &mut set_macro_a(&mut buf))
+                    .await
+                    .unwrap();
                 assert!(status(service).await.pending_macro_chunks > 0);
                 Handle::<CommitWrites>::handle(service, ()).await.unwrap();
                 Timer::after(Duration::from_millis(50)).await;
                 assert_eq!(status(service).await.pending_macro_chunks, 0);
+            });
+        }
+
+        /// A session future is as big as its biggest handler, so the save must
+        /// not hold the macro buffer it was sent.
+        #[test]
+        fn a_macro_save_does_not_hold_the_macro() {
+            let part = Part::new();
+            with_storage(&part, async |service| {
+                let mut buf = [0; 64];
+                let mut msg = set_macro_a(&mut buf);
+                let save = HandleBulk::<SetMacro>::handle_bulk(service, &mut msg);
+                assert!(core::mem::size_of_val(&save) < core::mem::size_of::<Macro>());
+                save.await.unwrap();
             });
         }
 
