@@ -1447,7 +1447,8 @@ impl<'a> Keyboard<'a> {
                 self.update_osl(event);
             }
             Action::TriggerMacro(idx) => {
-                if !self.keymap.macros(|m| m.queue(idx, event.pressed)) {
+                let nested = event.source == KeyboardEventSource::Macro;
+                if !self.keymap.macros(|m| m.queue(idx, event.pressed, nested)) {
                     warn!("Macro queue full, dropped macro {}", idx);
                 }
             }

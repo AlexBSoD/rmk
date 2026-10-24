@@ -29,6 +29,10 @@ enum Source {
     Buffer,
 }
 
+/// How many macros deep a macro may trigger another: a key's macro is level 0,
+/// a macro one of its ops triggers is level 1, and so on.
+const MACRO_NESTING_MAX: usize = 3;
+
 /// A macro half on its way through playback: ops `pos..end` of its source, op
 /// indices for a default, byte offsets into the buffer otherwise.
 #[derive(Clone, Copy)]
@@ -38,6 +42,10 @@ struct Cursor {
     end: usize,
     /// A wait before the first op, the release half's 20ms.
     lead_delay: u16,
+    /// The slots of the macros that triggered this one, outermost first, then
+    /// its own: `chain[..=level]`.
+    chain: [u8; MACRO_NESTING_MAX + 1],
+    level: u8,
 }
 
 impl Cursor {
@@ -100,12 +108,26 @@ impl<'a> Macros<'a> {
     }
 
     /// Queue the press or release half of the macro at `slot`, `false` when the
-    /// queue is full.
-    pub(crate) fn queue(&mut self, slot: u8, pressed: bool) -> bool {
+    /// queue is full. A `nested` macro, one the playing macro's ops trigger, is
+    /// dropped when it is already in the chain that triggered it or would nest
+    /// past `MACRO_NESTING_MAX`, so macros that trigger each other stop.
+    pub(crate) fn queue(&mut self, slot: u8, pressed: bool, nested: bool) -> bool {
         // Past the last slot the buffer holds whatever a longer save left behind.
         if slot as usize >= crate::MACRO_MAX_NUM {
             return true;
         }
+        let (mut chain, level) = match self.queue.front().filter(|_| nested) {
+            Some(parent) => {
+                if parent.chain[..=parent.level as usize].contains(&slot) || parent.level as usize == MACRO_NESTING_MAX
+                {
+                    warn!("Macro {} would re-enter its own chain or nest too deep, dropped", slot);
+                    return true;
+                }
+                (parent.chain, parent.level + 1)
+            }
+            None => ([0; MACRO_NESTING_MAX + 1], 0),
+        };
+        chain[level as usize] = slot;
         let buf = &*self.buf;
         // Without Vial a host's buffer is lossless, so the defaults only seed it.
         let default = self
@@ -125,6 +147,8 @@ impl<'a> Macros<'a> {
                 pos: 0,
                 end: ops.len(),
                 lead_delay: 0,
+                chain,
+                level,
             },
             #[cfg(feature = "host")]
             None => Cursor {
@@ -132,6 +156,8 @@ impl<'a> Macros<'a> {
                 pos: range.start,
                 end: range.end,
                 lead_delay: 0,
+                chain,
+                level,
             },
             #[cfg(not(feature = "host"))]
             None => return true,
