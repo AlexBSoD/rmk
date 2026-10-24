@@ -5,6 +5,9 @@ pub(crate) mod context;
 pub(crate) mod lock;
 #[cfg(feature = "rynk")]
 pub(crate) mod rynk;
+// QSID settings, served by Vial and by Ergohaven's Rynk commands.
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+pub(crate) mod settings;
 #[cfg(feature = "storage")]
 pub(crate) mod storage;
 // Shared transport-adapter error, used by the USB/BLE Vial and BLE Rynk

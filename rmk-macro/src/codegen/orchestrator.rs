@@ -264,7 +264,8 @@ fn expand_main(
     let behavior_config = expand_behavior_config(behavior);
     let matrix_config = expand_matrix_config(hardware, rmk_features);
     let output_config = expand_output_config(hardware);
-    let keymap_and_storage = expand_keymap_and_storage(hardware, keymap, host);
+    let ergohaven = host.rynk_enabled && is_feature_enabled(rmk_features, "ergohaven_rynk");
+    let keymap_and_storage = expand_keymap_and_storage(hardware, keymap, host, ergohaven);
     let split_central_config = expand_split_central_config(hardware);
     let (input_device_config, devices, processors) = expand_input_device_config(hardware);
     let matrix_and_keyboard = expand_matrix_and_keyboard_init(hardware);
@@ -508,6 +509,7 @@ pub(crate) fn expand_keymap_and_storage(
     hardware: &Hardware,
     keymap: &Keymap,
     host: &Host,
+    ergohaven: bool,
 ) -> TokenStream2 {
     let row = keymap.rows as usize;
     let col = keymap.cols as usize;
@@ -547,9 +549,11 @@ pub(crate) fn expand_keymap_and_storage(
     };
 
     if hardware.storage.is_some() {
-        // The parameter exists only in Vial builds.
-        let vial_config = if host.vial_enabled {
-            quote! { Some(&rmk_config.vial_config), }
+        // The board's settings hook; a plain Rynk build has none to pass.
+        let device_settings = if host.vial_enabled {
+            quote! { rmk_config.vial_config.device_settings, }
+        } else if ergohaven {
+            quote! { rmk_config.ergohaven_config.device_settings, }
         } else {
             quote! {}
         };
@@ -563,7 +567,7 @@ pub(crate) fn expand_keymap_and_storage(
                 &rmk_config.storage_config,
                 &mut behavior_config,
                 &per_key_config,
-                #vial_config
+                #device_settings
             ).await;
         }
     } else {

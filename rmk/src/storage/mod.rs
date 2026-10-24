@@ -254,7 +254,7 @@ pub(crate) enum StorageKey {
     /// A slot the board defines, see [`store_user_data`].
     UserData(u8),
     /// Keyboard-specific Vial settings.
-    #[cfg(all(feature = "host", feature = "vial"))]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     DeviceSettings,
     // Tail namespace: layers at or above `StorageConfig::no_action_layer_start` are stored here,
     // so a firmware that turns them into no-action defaults ignores what was stored for them under
@@ -324,7 +324,7 @@ pub(crate) enum StorageItem {
         slot: u8,
         data: heapless::Vec<u8, USER_DATA_MAX_SIZE>,
     },
-    #[cfg(all(feature = "host", feature = "vial"))]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     DeviceSettings(config::VialDeviceSettingsData),
 }
 
@@ -362,7 +362,7 @@ impl StorageItem {
             #[cfg(feature = "_ble")]
             Self::ActiveBleProfile(v) => (StorageKey::ActiveBleProfile, StorageValue::ActiveBleProfile(v)),
             Self::UserData { slot, data } => (StorageKey::UserData(slot), StorageValue::UserData(data)),
-            #[cfg(all(feature = "host", feature = "vial"))]
+            #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
             Self::DeviceSettings(v) => (StorageKey::DeviceSettings, StorageValue::DeviceSettings(v)),
         }
     }
@@ -413,7 +413,7 @@ pub(crate) enum StorageValue {
     #[cfg(feature = "_ble")]
     ActiveBleProfile(u8),
     UserData(heapless::Vec<u8, USER_DATA_MAX_SIZE>),
-    #[cfg(all(feature = "host", feature = "vial"))]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     DeviceSettings(config::VialDeviceSettingsData),
 }
 
@@ -490,7 +490,7 @@ pub(crate) const SCHEMA_HASH: u32 = {
         hash = fnv_hash(hash, &(crate::COMBO_SIZE as u32).to_le_bytes());
         hash = fnv_hash(hash, &(crate::MORSE_SIZE as u32).to_le_bytes());
     }
-    #[cfg(all(feature = "host", feature = "vial"))]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     {
         hash = fnv_hash(
             hash,
@@ -520,7 +520,7 @@ impl<F: AsyncNorFlash> Storage<F> {
         self.no_action_layer_start.is_some_and(|start| layer >= start)
     }
 
-    #[cfg(all(feature = "host", feature = "vial"))]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     pub(crate) async fn read_device_settings(&mut self) -> Result<Option<config::VialDeviceSettingsData>, ()> {
         match self.fetch(StorageKey::DeviceSettings).await? {
             Some(StorageValue::DeviceSettings(data)) => Ok(Some(data)),
@@ -1260,7 +1260,7 @@ mod tests {
             #[cfg(feature = "_ble")]
             StorageKey::BondInfo(10),
             StorageKey::UserData(11),
-            #[cfg(all(feature = "host", feature = "vial"))]
+            #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
             StorageKey::DeviceSettings,
             #[cfg(feature = "host")]
             StorageKey::KeymapTailV3 {
@@ -1303,7 +1303,7 @@ mod tests {
             #[cfg(feature = "_ble")]
             StorageValue::ActiveBleProfile(0),
             StorageValue::UserData(heapless::Vec::new()),
-            #[cfg(all(feature = "host", feature = "vial"))]
+            #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
             StorageValue::DeviceSettings(config::VialDeviceSettingsData::empty()),
         ];
         let mut buffer = [0u8; BUFFER_SIZE];
@@ -1456,7 +1456,7 @@ mod tests {
         });
     }
 
-    #[cfg(all(feature = "host", feature = "vial"))]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     #[test]
     fn device_settings_round_trip() {
         let mut settings = config::VialDeviceSettingsData::empty();

@@ -3,7 +3,7 @@ use rmk_types::action::KeyAction;
 use rmk_types::constants::{COMBO_MAX_LENGTH, COMBO_MAX_NUM, FORK_MAX_NUM, MORSE_MAX_NUM};
 use rmk_types::fork::{Fork, ForkOptions, StateBits};
 use rmk_types::modifier::ModifierCombination;
-use rmk_types::morse::{DOUBLE_TAP, HOLD, HOLD_AFTER_TAP, Morse, MorseMode, TAP};
+use rmk_types::morse::{DOUBLE_TAP, HOLD, HOLD_AFTER_TAP, Morse, TAP};
 use rmk_types::protocol::vial::{
     SettingKey, VIAL_EP_SIZE, VIAL_KEY_OVERRIDE_OPTION_BITS, VIAL_PROTOCOL_VERSION, VialCommand, VialDynamic,
 };
@@ -11,9 +11,8 @@ use rmk_types::protocol::vial::{
 use crate::config::VialConfig;
 use crate::hid::ViaReport;
 use crate::host::context::KeyboardContext;
+use crate::host::settings;
 use crate::host::via::keycode_convert::{from_via_keycode, to_via_keycode};
-
-const BUILTIN_SETTING_KEYS: &[u16] = &[0x02, 0x06, 0x07, 0x12, 0x13, 0x16, 0x17, 0x19, 0x1A, 0x1B];
 
 /// Note: vial uses little endian, while via uses big endian
 pub(crate) async fn process_vial<'a>(
@@ -110,194 +109,33 @@ pub(crate) async fn process_vial<'a>(
         }
         VialCommand::BehaviorSettingQuery => {
             report.input_data.fill(0xFF);
-            let value = u16::from_le_bytes([report.output_data[2], report.output_data[3]]);
-            let mut out_idx = 0usize;
-            for key in BUILTIN_SETTING_KEYS {
-                if *key > value && out_idx + 2 <= report.input_data.len() {
-                    LittleEndian::write_u16(&mut report.input_data[out_idx..out_idx + 2], *key);
-                    out_idx += 2;
-                }
-            }
-            if let Some(device_settings) = vial_config.device_settings {
-                let mut setting_value = [0u8; VIAL_EP_SIZE];
-                for key in device_settings.setting_keys {
-                    if *key > value
-                        && out_idx + 2 <= report.input_data.len()
-                        && (device_settings.get_setting)(*key, &mut setting_value).is_some()
-                    {
-                        LittleEndian::write_u16(&mut report.input_data[out_idx..out_idx + 2], *key);
-                        out_idx += 2;
-                    }
-                }
+            let after = u16::from_le_bytes([report.output_data[2], report.output_data[3]]);
+            for (slot, key) in report
+                .input_data
+                .chunks_exact_mut(2)
+                .zip(settings::keys_after(after, vial_config.device_settings))
+            {
+                slot.copy_from_slice(&key.to_le_bytes());
             }
         }
         VialCommand::GetBehaviorSetting => {
             report.input_data.fill(0xFF);
-            let value = u16::from_le_bytes([report.output_data[2], report.output_data[3]]);
-            report.input_data[0] = 0;
-            match value.into() {
-                SettingKey::None => {
-                    if let Some(device_settings) = vial_config.device_settings {
-                        if let Some(len) = (device_settings.get_setting)(value, &mut report.input_data[1..]) {
-                            report.input_data[1 + len..].fill(0xFF);
-                        } else {
-                            report.input_data[0] = 0xFF;
-                        }
-                    } else {
-                        report.input_data[0] = 0xFF;
-                    }
-                }
-                SettingKey::ComboTimeout => {
-                    let combo_timeout = ctx.combo_timeout().as_millis() as u16;
-                    LittleEndian::write_u16(&mut report.input_data[1..3], combo_timeout);
-                }
-                SettingKey::MorseTimeout => {
-                    let tapping_term = ctx.morse_default_profile().hold_timeout_ms().unwrap_or(250);
-                    LittleEndian::write_u16(&mut report.input_data[1..3], tapping_term);
-                }
-                SettingKey::OneShotTimeout => {
-                    let one_shot_timeout = ctx.one_shot_timeout().as_millis() as u16;
-                    LittleEndian::write_u16(&mut report.input_data[1..3], one_shot_timeout);
-                }
-                SettingKey::TapInterval => {
-                    let tap_interval = ctx.tap_interval();
-                    LittleEndian::write_u16(&mut report.input_data[1..3], tap_interval);
-                }
-                SettingKey::TapCapslockInterval => {
-                    let tap_capslock_interval = ctx.tap_capslock_interval();
-                    LittleEndian::write_u16(&mut report.input_data[1..3], tap_capslock_interval);
-                }
-                SettingKey::PermissiveHold => {
-                    if let Some(m) = ctx.morse_default_profile().mode()
-                        && m == MorseMode::PermissiveHold
-                    {
-                        report.input_data[1] = 1
-                    } else {
-                        report.input_data[1] = 0
-                    }
-                }
-                SettingKey::HoldOnOtherKeyPress => {
-                    if let Some(m) = ctx.morse_default_profile().mode()
-                        && m == MorseMode::HoldOnOtherPress
-                    {
-                        report.input_data[1] = 1
-                    } else {
-                        report.input_data[1] = 0
-                    }
-                }
-                SettingKey::QuickTapTerm => {
-                    let quick_tap_term = ctx.morse_default_profile().quick_tap_timeout_ms().unwrap_or(0);
-                    LittleEndian::write_u16(&mut report.input_data[1..3], quick_tap_term);
-                }
-                SettingKey::UnilateralTap => {
-                    let unilateral_tap = ctx.morse_default_profile().unilateral_tap().unwrap_or(false);
-                    if unilateral_tap {
-                        report.input_data[1] = 1;
-                    } else {
-                        report.input_data[1] = 0;
-                    };
-                }
-                SettingKey::PriorIdleTime => {
-                    let prior_idle_time = ctx.morse_prior_idle_time().as_millis() as u16;
-                    LittleEndian::write_u16(&mut report.input_data[1..3], prior_idle_time);
-                }
-            }
+            let id = u16::from_le_bytes([report.output_data[2], report.output_data[3]]);
+            let value = &mut report.input_data[1..];
+            report.input_data[0] = match settings::get(ctx, vial_config.device_settings, id, value) {
+                Some(_) => 0,
+                None => 0xFF,
+            };
         }
         VialCommand::SetBehaviorSetting => {
-            let key = u16::from_le_bytes([report.output_data[2], report.output_data[3]]);
-            match key.into() {
-                SettingKey::None => {
-                    report.input_data[0] = 0;
-                    if let Some(device_settings) = vial_config.device_settings {
-                        if (device_settings.set_setting)(key, &report.output_data[4..]) {
-                            #[cfg(feature = "storage")]
-                            crate::storage::store_unchecked(crate::storage::StorageItem::DeviceSettings(
-                                (device_settings.serialize)(),
-                            ))
-                            .await;
-                        } else {
-                            report.input_data[0] = 0xFF;
-                        }
-                    } else {
-                        report.input_data[0] = 0xFF;
-                    }
-                }
-                SettingKey::ComboTimeout => {
-                    let combo_timeout = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    let _ = ctx.set_combo_timeout(combo_timeout).await;
-                }
-                SettingKey::MorseTimeout => {
-                    let timeout_time = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    let new_profile = ctx.morse_default_profile().with_hold_timeout_ms(Some(timeout_time));
-                    let _ = ctx.set_morse_default_profile(new_profile).await;
-                }
-                SettingKey::OneShotTimeout => {
-                    let timeout_time = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    let _ = ctx.set_one_shot_timeout(timeout_time).await;
-                }
-                SettingKey::TapInterval => {
-                    let tap_interval = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    let _ = ctx.set_tap_interval(tap_interval).await;
-                }
-                SettingKey::TapCapslockInterval => {
-                    let tap_capslock_interval = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    let _ = ctx.set_tap_capslock_interval(tap_capslock_interval).await;
-                }
-
-                SettingKey::PermissiveHold => {
-                    let enabled = report.output_data[4] == 1;
-                    let old = ctx.morse_default_profile();
-                    let new_mode = if enabled {
-                        // Hold On Other Key Press has higher priority
-                        if old.mode() == Some(MorseMode::HoldOnOtherPress) {
-                            old.mode()
-                        } else {
-                            // Enable: Set to Permissive Hold
-                            Some(MorseMode::PermissiveHold)
-                        }
-                    } else {
-                        // Disable: Only set to Normal if currently PermissiveHold
-                        if old.mode() == Some(MorseMode::PermissiveHold) {
-                            Some(MorseMode::Normal)
-                        } else {
-                            old.mode() // Keep current mode unchanged
-                        }
-                    };
-                    let _ = ctx.set_morse_default_profile(old.with_mode(new_mode)).await;
-                }
-                SettingKey::HoldOnOtherKeyPress => {
-                    let enabled = report.output_data[4] == 1;
-                    let old = ctx.morse_default_profile();
-                    let new_mode = if enabled {
-                        // Enable: Set to HoldOnOtherPress (will override other modes)
-                        Some(MorseMode::HoldOnOtherPress)
-                    } else {
-                        // Disable: Only set to Normal if currently HoldOnOtherPress
-                        if old.mode() == Some(MorseMode::HoldOnOtherPress) {
-                            Some(MorseMode::Normal)
-                        } else {
-                            old.mode() // Keep current mode unchanged
-                        }
-                    };
-                    let _ = ctx.set_morse_default_profile(old.with_mode(new_mode)).await;
-                }
-                SettingKey::QuickTapTerm => {
-                    let timeout_time = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    let new_profile = ctx
-                        .morse_default_profile()
-                        .with_quick_tap_timeout_ms(Some(timeout_time));
-                    let _ = ctx.set_morse_default_profile(new_profile).await;
-                }
-                SettingKey::UnilateralTap => {
-                    let new_profile = ctx
-                        .morse_default_profile()
-                        .with_unilateral_tap(Some(report.output_data[4] == 1));
-                    let _ = ctx.set_morse_default_profile(new_profile).await;
-                }
-                SettingKey::PriorIdleTime => {
-                    let prior_idle_time = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    let _ = ctx.set_morse_prior_idle_time(prior_idle_time).await;
-                }
+            let id = u16::from_le_bytes([report.output_data[2], report.output_data[3]]);
+            let value = report.output_data[4..]
+                .try_into()
+                .expect("a Vial report holds a whole value");
+            let served = settings::set(ctx, vial_config.device_settings, id, value).await;
+            // Only a board's own setting reports its status.
+            if SettingKey::from(id) == SettingKey::None {
+                report.input_data[0] = if served { 0 } else { 0xFF };
             }
         }
         VialCommand::DynamicEntryOp => {
