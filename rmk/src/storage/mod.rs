@@ -5,7 +5,7 @@ use core::future::{Future, poll_fn};
 
 use embassy_embedded_hal::adapter::BlockingAsync;
 #[cfg(feature = "host")]
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either5, select5};
 use embassy_sync::channel::{Channel, TrySendError};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -110,43 +110,49 @@ pub(crate) fn reset() -> impl Future<Output = ()> {
 #[cfg(feature = "host")]
 const KEYMAP_FLASH_SETTLE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// The latest staged action per key position, by flat keymap index.
+/// Quiet period before draining a staged macro save. Longer than Entropy's 2.5 s
+/// BLE reply timeout, so consecutive editor saves collapse into one flash write.
 #[cfg(feature = "host")]
-struct PendingKeymapWrites<const N: usize> {
-    actions: [Option<KeyAction>; N],
+const MACRO_FLASH_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The latest staged value per index: a key's action by flat keymap index, or a
+/// macro chunk's bytes by chunk index.
+#[cfg(feature = "host")]
+struct PendingWrites<T, const N: usize> {
+    values: [Option<T>; N],
 }
 
 #[cfg(feature = "host")]
-impl<const N: usize> PendingKeymapWrites<N> {
+impl<T: Copy, const N: usize> PendingWrites<T, N> {
     const fn new() -> Self {
-        Self { actions: [None; N] }
+        Self { values: [None; N] }
     }
 
-    fn insert(&mut self, index: usize, action: KeyAction) -> bool {
-        let Some(slot) = self.actions.get_mut(index) else {
+    fn insert(&mut self, index: usize, value: T) -> bool {
+        let Some(slot) = self.values.get_mut(index) else {
             return false;
         };
-        *slot = Some(action);
+        *slot = Some(value);
         true
     }
 
-    fn take_next(&mut self) -> Option<(usize, KeyAction)> {
-        self.actions
+    fn take_next(&mut self) -> Option<(usize, T)> {
+        self.values
             .iter_mut()
             .enumerate()
-            .find_map(|(index, action)| action.take().map(|action| (index, action)))
+            .find_map(|(index, value)| value.take().map(|value| (index, value)))
     }
 
     fn is_empty(&self) -> bool {
-        self.actions.iter().all(Option::is_none)
+        self.values.iter().all(Option::is_none)
     }
 }
 
 #[cfg(feature = "host")]
 static KEYMAP_FLASH_PENDING: embassy_sync::blocking_mutex::Mutex<
     crate::RawMutex,
-    RefCell<PendingKeymapWrites<{ crate::KEYMAP_STORAGE_ENTRY_COUNT }>>,
-> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(PendingKeymapWrites::new()));
+    RefCell<PendingWrites<KeyAction, { crate::KEYMAP_STORAGE_ENTRY_COUNT }>>,
+> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(PendingWrites::new()));
 
 #[cfg(feature = "host")]
 static KEYMAP_FLASH_SIGNAL: Signal<crate::RawMutex, ()> = Signal::new();
@@ -167,6 +173,25 @@ pub(crate) fn queue_keymap_flash_write(layer: u8, row: u8, col: u8, action: KeyA
         KEYMAP_FLASH_SIGNAL.signal(());
     }
     queued
+}
+
+#[cfg(feature = "host")]
+static MACRO_FLASH_PENDING: embassy_sync::blocking_mutex::Mutex<
+    crate::RawMutex,
+    RefCell<PendingWrites<[u8; MACRO_CHUNK_SIZE], { crate::MACRO_SPACE_SIZE / MACRO_CHUNK_SIZE }>>,
+> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(PendingWrites::new()));
+
+#[cfg(feature = "host")]
+static MACRO_FLASH_SIGNAL: Signal<crate::RawMutex, ()> = Signal::new();
+
+/// Stage macro chunk `idx` without waiting for flash. The storage task writes the
+/// staged chunks once the host has been quiet for `MACRO_FLASH_SETTLE_TIMEOUT`;
+/// staging a chunk again before that replaces its bytes.
+#[cfg(feature = "vial")]
+pub(crate) fn queue_macro_flash_write(idx: usize, bytes: [u8; MACRO_CHUNK_SIZE]) {
+    if MACRO_FLASH_PENDING.lock(|pending| pending.borrow_mut().insert(idx, bytes)) {
+        MACRO_FLASH_SIGNAL.signal(());
+    }
 }
 
 /// The most one user slot holds. It is part of [`SCHEMA_HASH`], so changing it
@@ -691,24 +716,28 @@ impl<F: AsyncNorFlash> crate::core_traits::Runnable for Storage<F> {
     async fn run(&mut self) -> ! {
         #[cfg(feature = "host")]
         let mut keymap_deadline: Option<Instant> = None;
+        #[cfg(feature = "host")]
+        let mut macro_deadline: Option<Instant> = None;
 
         loop {
-            // Staged keymap writes drain one per turn once the host goes quiet,
+            // Staged keymap and macro writes drain one per turn once the host goes quiet,
             // interleaved with the requests so none of them waits for a bulk upload.
             #[cfg(feature = "host")]
-            let (message, reply_id) = match select3(
+            let (message, reply_id) = match select5(
                 FLASH_CHANNEL.receive(),
                 KEYMAP_FLASH_SIGNAL.wait(),
                 Timer::at(keymap_deadline.unwrap_or(Instant::MAX)),
+                MACRO_FLASH_SIGNAL.wait(),
+                Timer::at(macro_deadline.unwrap_or(Instant::MAX)),
             )
             .await
             {
-                Either3::First(request) => request,
-                Either3::Second(()) => {
+                Either5::First(request) => request,
+                Either5::Second(()) => {
                     keymap_deadline = Some(Instant::now() + KEYMAP_FLASH_SETTLE_TIMEOUT);
                     continue;
                 }
-                Either3::Third(()) => {
+                Either5::Third(()) => {
                     let next = KEYMAP_FLASH_PENDING.lock(|pending| {
                         let mut pending = pending.borrow_mut();
                         let next = pending.take_next();
@@ -728,6 +757,24 @@ impl<F: AsyncNorFlash> crate::core_traits::Runnable for Storage<F> {
                         col: (index % crate::KEYMAP_COLS) as u8,
                         action,
                     };
+                    (FlashOperationMessage::Store(item), None)
+                }
+                Either5::Fourth(()) => {
+                    macro_deadline = Some(Instant::now() + MACRO_FLASH_SETTLE_TIMEOUT);
+                    continue;
+                }
+                Either5::Fifth(()) => {
+                    let next = MACRO_FLASH_PENDING.lock(|pending| {
+                        let mut pending = pending.borrow_mut();
+                        let next = pending.take_next();
+                        (next, !pending.is_empty())
+                    });
+                    let (Some((idx, bytes)), more) = next else {
+                        macro_deadline = None;
+                        continue;
+                    };
+                    macro_deadline = more.then(Instant::now);
+                    let item = StorageItem::MacroChunk { idx: idx as u8, bytes };
                     (FlashOperationMessage::Store(item), None)
                 }
             };
@@ -1143,6 +1190,9 @@ mod tests {
             let save = async {
                 let changed = keymap.macros(|m| m.write(0, &shorter));
                 crate::keyboard::macros::persist(&keymap, changed).await.unwrap();
+                // Vial saves land once the host has been quiet.
+                #[cfg(feature = "vial")]
+                Timer::after(MACRO_FLASH_SETTLE_TIMEOUT + Duration::from_millis(100)).await;
                 keymap.macros(|m| m.bytes().to_vec())
             };
             let saved = match select(storage.run(), save).await {
@@ -1156,6 +1206,22 @@ mod tests {
             let mut b = behavior();
             let keymap = KeyMap::new_from_storage(&mut data, Some(&mut storage), &mut b, &positional).await;
             assert_eq!(keymap.macros(|m| m.bytes().to_vec()), saved);
+        });
+    }
+
+    /// A reset erases and reboots from the storage task itself, so nothing a host
+    /// staged before it, keymap or macros, is written after the erase.
+    #[cfg(feature = "vial")]
+    #[test]
+    fn reset_drops_staged_writes() {
+        let part = Part::new();
+        with_storage_task(part.clone(), async {
+            assert!(queue_keymap_flash_write(0, 0, 0, KeyAction::Transparent));
+            queue_macro_flash_write(0, [b'a'; MACRO_CHUNK_SIZE]);
+            let before = part.writes();
+            reset().await;
+            Timer::after(MACRO_FLASH_SETTLE_TIMEOUT * 2).await;
+            assert_eq!(part.writes(), before);
         });
     }
 
@@ -1278,7 +1344,7 @@ mod tests {
     #[cfg(feature = "host")]
     #[test]
     fn pending_keymap_writes_keep_distinct_positions_and_latest_value() {
-        let mut pending = PendingKeymapWrites::<4>::new();
+        let mut pending = PendingWrites::<KeyAction, 4>::new();
 
         assert!(pending.insert(1, KeyAction::No));
         assert!(pending.insert(3, KeyAction::Transparent));

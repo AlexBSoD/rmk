@@ -684,19 +684,21 @@ impl<'a> VialService<'a> {
                 let offset = BigEndian::read_u16(&report.output_data[1..3]) as usize;
                 let size = report.output_data[3] as usize;
                 if size <= 28 {
-                    let changed = self
+                    // A save is one upload of many packets: persist it once, when the last arrives.
+                    let upload = self
                         .ctx
                         .keymap
-                        .macros(|m| m.write(offset, &report.output_data[4..4 + size]));
+                        .macros(|m| m.write_upload(offset, &report.output_data[4..4 + size]));
                     #[cfg(feature = "storage")]
-                    if crate::keyboard::macros::persist(self.ctx.keymap, changed)
-                        .await
-                        .is_err()
+                    if let Some(changed) = upload
+                        && crate::keyboard::macros::persist(self.ctx.keymap, changed)
+                            .await
+                            .is_err()
                     {
                         error!("Failed to save the macros");
                     }
                     #[cfg(not(feature = "storage"))]
-                    if !changed.is_empty() {
+                    if upload.is_some_and(|changed| !changed.is_empty()) {
                         warn!("Macros changed but not saved: there is no storage");
                     }
                 } else {
@@ -1026,6 +1028,137 @@ mod tests {
             process(service, &mut report);
             assert_eq!(report.input_data[0], 0xFF);
         });
+    }
+
+    #[cfg(feature = "storage")]
+    type Part = crate::test_support::InMemoryFlash<16_384, 4_096, 1>;
+
+    /// The packets of a Vial macro save: `slot0`, then every other slot empty, each
+    /// slot ending in `0x00`, 28 bytes per packet.
+    #[cfg(feature = "storage")]
+    fn macro_upload(slot0: &[u8]) -> Vec<ViaReport> {
+        let mut bytes = slot0.to_vec();
+        bytes.resize(slot0.len() + MACRO_MAX_NUM, 0);
+        bytes
+            .chunks(28)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let mut report = macro_set_buffer_report_at((i * 28) as u16, chunk.len() as u8);
+                report.output_data[4..4 + chunk.len()].copy_from_slice(chunk);
+                report.input_data = report.output_data;
+                report
+            })
+            .collect()
+    }
+
+    /// Run `body` against a Vial service over `part` with its storage task live, then
+    /// boot `part` again and return the macro buffer it restores.
+    #[cfg(feature = "storage")]
+    fn with_storage(part: &Part, body: impl AsyncFnOnce(&VialService)) -> Vec<u8> {
+        use embassy_futures::select::{Either, select};
+
+        use crate::config::StorageConfig;
+        use crate::core_traits::Runnable;
+        use crate::storage::{Storage, async_flash_wrapper};
+
+        crate::test_support::clear_flash_channel();
+        crate::test_support::test_block_on(async {
+            let config = StorageConfig::default();
+            let positional = PositionalConfig::<1, 1>::default();
+            let mut storage = Box::pin(Storage::new(async_flash_wrapper(part.clone()), &config)).await;
+            let mut data = KeymapData::new([[[KeyAction::No]]]);
+            let mut behavior = BehaviorConfig::default();
+            let keymap = KeyMap::new_from_storage(&mut data, Some(&mut storage), &mut behavior, &positional).await;
+            let service = VialService::new(&keymap, &RmkConfig::default());
+            if let Either::First(never) = select(storage.run(), body(&service)).await {
+                never
+            }
+
+            let (flash, _) = storage.flash.destroy();
+            let mut storage = Box::pin(Storage::new(flash, &config)).await;
+            let mut data = KeymapData::new([[[KeyAction::No]]]);
+            let mut behavior = BehaviorConfig::default();
+            let keymap = KeyMap::new_from_storage(&mut data, Some(&mut storage), &mut behavior, &positional).await;
+            keymap.macros(|m| m.bytes().to_vec())
+        })
+    }
+
+    /// Save each of `slots` as macro 0, 2 s apart, and return the flash writes it took
+    /// and the macro buffer the next boot restores.
+    #[cfg(feature = "storage")]
+    fn save_macros(slots: &[&[u8]]) -> (usize, Vec<u8>) {
+        use embassy_time::{Duration, Timer};
+
+        let part = Part::new();
+        let mut writes = 0;
+        let restored = with_storage(&part, async |service| {
+            let before = part.writes();
+            for (i, slot) in slots.iter().enumerate() {
+                if i > 0 {
+                    Timer::after(Duration::from_secs(2)).await;
+                }
+                for mut packet in macro_upload(slot) {
+                    service.process_via_packet(&mut packet).await;
+                    assert_eq!(part.writes(), before, "a macro packet reached flash");
+                }
+            }
+            Timer::after(Duration::from_millis(2_900)).await;
+            assert_eq!(part.writes(), before, "saved before the host went quiet for 3 s");
+            Timer::after(Duration::from_millis(200)).await;
+            writes = part.writes() - before;
+        });
+        (writes, restored)
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn macro_save_reaches_flash_once_after_the_host_goes_quiet() {
+        let (writes, restored) = save_macros(&[b"first", b"second"]);
+        assert!(restored.starts_with(b"second\0"));
+        // The first save, replaced within the quiet period, costs no flash write.
+        assert_eq!(writes, save_macros(&[b"second"]).0);
+        assert!(writes > 0);
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn unfinished_macro_upload_is_not_saved() {
+        use embassy_time::{Duration, Timer};
+
+        let part = Part::new();
+        let mut packets = macro_upload(b"partial");
+        packets.pop();
+        let restored = with_storage(&part, async |service| {
+            let before = part.writes();
+            for mut packet in packets {
+                service.process_via_packet(&mut packet).await;
+            }
+            Timer::after(Duration::from_secs(10)).await;
+            assert_eq!(part.writes(), before);
+        });
+        assert!(restored.iter().all(|&b| b == 0));
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn macro_reset_after_a_pending_save_wins() {
+        use embassy_time::{Duration, Timer};
+
+        let part = Part::new();
+        let restored = with_storage(&part, async |service| {
+            for mut packet in macro_upload(b"first") {
+                service.process_via_packet(&mut packet).await;
+            }
+            let mut output_data = [0u8; 32];
+            output_data[0] = ViaCommand::DynamicKeymapMacroReset as u8;
+            let mut reset = ViaReport {
+                input_data: output_data,
+                output_data,
+            };
+            service.process_via_packet(&mut reset).await;
+            Timer::after(Duration::from_secs(4)).await;
+        });
+        assert!(restored.iter().all(|&b| b == 0));
     }
 
     #[test]

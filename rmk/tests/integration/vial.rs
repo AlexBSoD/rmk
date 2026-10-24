@@ -294,18 +294,25 @@ fn a_macro_past_the_slots_plays_nothing() {
     });
 }
 
-/// Save [`MACROS`] the way vial-gui does, with slot 1 changed to `yo`: every
-/// macro from offset 0, each `0x00`-terminated, without padding, the last
-/// packet sent twice when `resend_last`. The packets are 8 bytes rather than
-/// vial-gui's 28 so that the resent one lands past offset 0.
+/// A Vial save reaches flash once the host has been quiet for 3 s.
 #[cfg(feature = "storage")]
-async fn save_from_vial_gui(resend_last: bool) -> (SimKeyboard, crate::simulator::Flash) {
-    let flash = crate::simulator::Flash::new();
-    let mut keyboard = macro_keyboard().build_with_flash(flash.clone()).await;
-    // Slot 0 is sent back as read, slot 1 becomes `yo`, the rest are empty.
-    let mut data = vec![0x01, 0x01, 0x04, 0x01, 0x01, 0x05, 0x00, b'y', b'o', 0x00];
-    data.resize(data.len() + MACRO_MAX_NUM - 2, 0);
-    let packets: Vec<_> = data
+const SAVE_QUIET_MS: u64 = 3_100;
+
+/// [`MACROS`] as vial-gui saves them with slot 1 changed to `slot1`: slot 0 sent
+/// back as read, every macro `0x00`-terminated, the rest empty, without padding.
+#[cfg(feature = "storage")]
+fn vial_gui_save(slot1: &[u8]) -> Vec<u8> {
+    let mut data = vec![0x01, 0x01, 0x04, 0x01, 0x01, 0x05, 0x00];
+    data.extend_from_slice(slot1);
+    data.resize(data.len() + MACRO_MAX_NUM - 1, 0);
+    data
+}
+
+/// Save [`MACROS`] the way vial-gui does, with slot 1 changed to `slot1`, in 8-byte
+/// packets rather than vial-gui's 28 so the second one lands past offset 0.
+#[cfg(feature = "storage")]
+fn save_in_8_byte_packets(keyboard: &mut SimKeyboard, slot1: &[u8]) -> Vec<[u8; REPORT]> {
+    let packets: Vec<_> = vial_gui_save(slot1)
         .chunks(8)
         .enumerate()
         .map(|(i, chunk)| macro_buffer(ViaCommand::DynamicKeymapMacroSetBuffer, i as u16 * 8, chunk))
@@ -313,10 +320,20 @@ async fn save_from_vial_gui(resend_last: bool) -> (SimKeyboard, crate::simulator
     for packet in &packets {
         keyboard.echo(*packet);
     }
-    if resend_last {
+    packets
+}
+
+/// Save [`MACROS`] the way vial-gui does, with slot 1 changed to `yo`, the second
+/// packet sent again once the save is complete when `resend`.
+#[cfg(feature = "storage")]
+async fn save_from_vial_gui(resend: bool) -> (SimKeyboard, crate::simulator::Flash) {
+    let flash = crate::simulator::Flash::new();
+    let mut keyboard = macro_keyboard().build_with_flash(flash.clone()).await;
+    let packets = save_in_8_byte_packets(&mut keyboard, b"yo");
+    if resend {
         keyboard.echo(packets[1]);
     }
-    keyboard.run().await;
+    keyboard.delay(SAVE_QUIET_MS).run().await;
     (keyboard, flash)
 }
 
@@ -333,7 +350,7 @@ fn macro_save_from_vial_gui_writes_only_what_changed() {
             let first_save = flash.writes();
             assert_eq!(resent.writes(), first_save, "a resent packet writes nothing");
             // Slot 1 becomes `ya`.
-            keyboard.echo(macro_buffer(ViaCommand::DynamicKeymapMacroSetBuffer, 8, b"a"));
+            save_in_8_byte_packets(&mut keyboard, b"ya");
             keyboard.run().await;
             keyboard
                 .press(0, 0)
@@ -348,6 +365,7 @@ fn macro_save_from_vial_gui_writes_only_what_changed() {
                 .expect_keys([HidKeyCode::A])
                 .expect_keys([])
                 .expect_keys([])
+                .delay(SAVE_QUIET_MS)
                 .run()
                 .await;
             flash
@@ -376,10 +394,10 @@ fn a_save_writes_only_the_chunks_with_data() {
         keyboard.run().await;
         let mut writes = Vec::new();
         // Slot 1's `hi` becomes `ho`, then `yo`: a byte of the first chunk each time.
-        for (offset, byte) in [(8, b'o'), (7, b'y')] {
+        for slot1 in [b"ho", b"yo"] {
             let before = flash.writes();
-            keyboard.echo(macro_buffer(ViaCommand::DynamicKeymapMacroSetBuffer, offset, &[byte]));
-            keyboard.run().await;
+            save_macro_buffer(&mut keyboard, &vial_gui_save(slot1));
+            keyboard.delay(SAVE_QUIET_MS).run().await;
             writes.push(flash.writes() - before);
         }
         assert!(writes[0] > 0);
@@ -395,12 +413,18 @@ fn macro_reset_clears_the_macros() {
     test_block_on(async {
         let flash = crate::simulator::Flash::new();
         let mut keyboard = macro_keyboard().build_with_flash(flash.clone()).await;
+        let booted = flash.writes();
         keyboard.echo(via(ViaCommand::DynamicKeymapMacroReset));
-        keyboard.tap(0, 0, 10).expect_no_report(50).run().await;
+        keyboard
+            .tap(0, 0, 10)
+            .expect_no_report(50)
+            .delay(SAVE_QUIET_MS)
+            .run()
+            .await;
         let cleared = flash.writes();
-        assert!(cleared > 0, "the two macros are cleared");
+        assert!(cleared > booted, "the two macros are cleared");
         keyboard.echo(via(ViaCommand::DynamicKeymapMacroReset));
-        keyboard.run().await;
+        keyboard.delay(SAVE_QUIET_MS).run().await;
         assert_eq!(flash.writes(), cleared, "nothing left to clear");
     });
 }
