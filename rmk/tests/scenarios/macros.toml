@@ -307,6 +307,59 @@ steps = [
 ]
 expect = [["B"], [], ["A"], []]
 
+# A macro that triggered itself ran forever: every run queued the next one, and
+# the keyboard typed until it lost power. It now runs once.
+[[test]]
+name = "macro_triggering_itself_runs_once"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "tap", keycode = "A" },
+    { operation = "tap", keycode = "Macro(0)" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 10 } },
+  { delay = 600 },
+]
+expect = [["A"], []]
+
+# Two macros that trigger each other looped the same way. The chain stops where
+# it would come back to a macro already in it.
+[[test]]
+name = "macros_triggering_each_other_stop"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "tap", keycode = "A" },
+    { operation = "tap", keycode = "Macro(1)" },
+  ] },
+  { operations = [
+    { operation = "tap", keycode = "B" },
+    { operation = "tap", keycode = "Macro(0)" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 10 } },
+  { delay = 700 },
+]
+expect = [["A"], [], ["B"], []]
+
+# A chain of macros runs three macros deep below the key's macro; the fifth in
+# line is dropped.
+[[test]]
+name = "macro_chain_stops_past_the_nesting_limit"
+behavior.macro = { macros = [
+  { operations = [{ operation = "tap", keycode = "A" }, { operation = "tap", keycode = "Macro(1)" }] },
+  { operations = [{ operation = "tap", keycode = "B" }, { operation = "tap", keycode = "Macro(2)" }] },
+  { operations = [{ operation = "tap", keycode = "C" }, { operation = "tap", keycode = "Macro(3)" }] },
+  { operations = [{ operation = "tap", keycode = "D" }, { operation = "tap", keycode = "Macro(4)" }] },
+  { operations = [{ operation = "tap", keycode = "E" }] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 10 } },
+  { delay = 800 },
+]
+expect = [["A"], [], ["B"], [], ["C"], [], ["D"], []]
+
 # `pause_for_release` splits a macro: the ops before it run on the macro key's
 # press, the ops after it on its release.
 [[test]]

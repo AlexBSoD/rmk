@@ -85,7 +85,7 @@ The trigger is an ordinary action, `Action::TriggerMacro(n)`, so it works anywhe
 KeyAction::TapHold(Action::TriggerMacro(1), Action::LayerOn(1), u8::MAX)
 ```
 
-Macros run one at a time: a macro triggered while another is running waits its turn. A `Macro(n)` step works the same way, so macro `n` runs after the current macro, not in its place. Don't let a macro trigger itself, directly or through another macro: it repeats until the keyboard restarts.
+Macros run one at a time: a macro triggered while another is running waits its turn. A `Macro(n)` step works the same way, so macro `n` runs after the current macro, not in its place. A step that would trigger a macro already in the chain that led to it, the macro itself or one that triggered it, does nothing, so macros that trigger each other run once each. A chain also stops three macros below the one a key triggered.
 
 ## Editing macros from a host
 
