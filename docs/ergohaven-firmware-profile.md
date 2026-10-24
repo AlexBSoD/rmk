@@ -6,12 +6,19 @@ profiles share this software contract:
 - 16 layers
 - 32 combos, up to 4 keys each
 - 32 Morse / Tap Dance entries, up to 8 patterns each
-- 2048 bytes of macro storage
+- 2048 bytes of macro storage over Vial; 4096 over Rynk, whose encoding takes
+  up to twice the bytes, with a 4128-byte Rynk frame that holds the whole pool
 - 32 forks / Vial Key Override slots
 - 5 Bluetooth profiles
 - Bluetooth reconnect and pairing windows of 60 seconds
 - persistent layer names at QSID 200–215, up to 12 UTF-8 bytes each
 - firmware version 0.2.0 and manufacturer `Ergohaven`
+
+K:04 Series and K:03 speak Rynk with Ergohaven's commands (rmk feature
+`ergohaven_rynk`, `[host] rynk_enabled = true`); the other keyboards still
+speak Vial. Over Rynk the same QSIDs, layer names, board definition and host
+data are served, writes need no unlock, as over Vial, and keymap and macro
+writes reach flash after a quiet period or a host commit.
 
 Standard keyboard profiles expose the factory layer names `Base`,
 `Navigation`, `Symbols`, and `Adjust`. Layer 4 is `Mouse` only on keyboards

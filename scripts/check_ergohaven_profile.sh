@@ -131,8 +131,9 @@ non_k04_profiles=(
 )
 
 for file in "${live_matrix_cargo_manifests[@]}"; do
-    rg -Fq '"host_lock"' "$file" \
-        || fail "$file: Vial live matrix support requires host_lock"
+    # `ergohaven_rynk` brings host_lock through `rynk`.
+    rg -Fq '"host_lock"' "$file" || rg -Fq '"ergohaven_rynk"' "$file" \
+        || fail "$file: live matrix support requires host_lock"
 done
 
 for file in "${battery_reader_sources[@]}"; do
@@ -151,7 +152,16 @@ for file in "${profiles[@]}"; do
     expect_toml "$file" combo_max_num 32
     expect_toml "$file" fork_max_num 32
     expect_toml "$file" morse_max_num 32
-    expect_toml "$file" macro_space_size 2048
+    # A Rynk frame holds the whole macro pool, and Rynk's encoding takes up to
+    # twice Vial's bytes, so Rynk profiles double the pool to keep every macro.
+    if [[ "$(toml_value "$file" rynk_enabled)" == "true" ]]; then
+        expect_toml "$file" vial_enabled false
+        expect_toml "$file" macro_space_size 4096
+        expect_toml "$file" rynk_buffer_size 4128
+        expect_toml "$file" write_requires_unlock false
+    else
+        expect_toml "$file" macro_space_size 2048
+    fi
     expect_toml "$file" ble_profiles_num 5
     expect_toml "$file" ble_reconnect_timeout_seconds 60
     expect_toml "$file" ble_pairing_timeout_seconds 60

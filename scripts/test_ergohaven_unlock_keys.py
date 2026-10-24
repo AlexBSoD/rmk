@@ -56,8 +56,10 @@ class FactoryUnlockTests(unittest.TestCase):
             with self.subTest(profile=profile["output_name"], path=str(path.relative_to(ROOT))):
                 config = tomllib.loads(path.read_text())
                 expected = factory_df_positions(config)
-                self.assertTrue(config["host"]["vial_enabled"])
-                self.assertFalse(config["host"].get("vial_insecure", False))
+                host = config["host"]
+                # Exactly one configurator protocol; Vial is on unless turned off.
+                self.assertNotEqual(host.get("vial_enabled", True), host.get("rynk_enabled", False))
+                self.assertFalse(host.get("insecure", host.get("vial_insecure", False)))
                 self.assertEqual(config["host"]["unlock_keys"], expected)
                 self.assertNotEqual(expected[0], expected[1])
                 for row, col in expected:
