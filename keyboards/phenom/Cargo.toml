@@ -37,12 +37,11 @@ pmw_axes_600 = []
 [dependencies]
 rmk = { path = "../../rmk", default-features = false, features = [
     "defmt",
-    "host_lock",
+    "ergohaven_rynk",
     "rp2040",
     "split",
     "storage",
     "universal_symbols",
-    "vial",
     "watchdog",
 ] }
 

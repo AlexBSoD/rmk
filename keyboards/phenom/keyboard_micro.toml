@@ -8,7 +8,11 @@ manufacturer = "Ergohaven"
 chip = "rp2040"
 
 [host]
-vial_enabled = true
+# Rynk with Ergohaven's commands; Vial is off.
+vial_enabled = false
+rynk_enabled = true
+# Writes need no unlock, as over Vial.
+write_requires_unlock = false
 # Factory D + F, like every Ergohaven RMK profile.
 unlock_keys = [[2, 2], [2, 1]]
 
@@ -94,7 +98,9 @@ encoders = [["MouseWheelUp", "MouseWheelDown"], ["MouseWheelUp", "MouseWheelDown
 combo_max_num = 32
 fork_max_num = 32
 morse_max_num = 32
-macro_space_size = 2048
+# Rynk's encoding takes up to twice Vial's bytes, and a frame holds the whole pool.
+macro_space_size = 4096
+rynk_buffer_size = 4128
 
 [storage]
 # RP2040 default: the settings area starts at 1 MiB of the 2 MiB flash.
