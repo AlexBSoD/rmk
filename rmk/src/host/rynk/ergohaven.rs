@@ -3,8 +3,9 @@
 
 use heapless::Vec;
 use rmk_types::protocol::rynk::ergohaven::{
-    ERGOHAVEN_RYNK_REVISION, ErgohavenInfo, GetBoardDefinition, GetErgohavenInfo, GetLayoutOption, GetSetting,
-    GetSettingKeys, SetLayoutOption, SetSetting, SetSettingRequest, SettingKeysPage, SettingValue, caps,
+    BatteryHalves, ERGOHAVEN_RYNK_REVISION, ErgohavenInfo, GetBatteryHalves, GetBoardDefinition, GetErgohavenInfo,
+    GetLayoutOption, GetSetting, GetSettingKeys, HostDataUpdate, SetHostData, SetLayoutOption, SetSetting,
+    SetSettingRequest, SettingKeysPage, SettingValue, caps,
 };
 use rmk_types::protocol::rynk::{Cmd, FirmwareVersion, LayoutChunk, RYNK_BLE_CHUNK_SIZE, RynkError, RynkMessage};
 
@@ -14,8 +15,16 @@ use crate::host::settings::{self, SETTING_VALUE_LEN};
 
 /// What this build can do, as `GetErgohavenInfo` reports it.
 const CAPS: u32 = caps::LAYOUT_OPTIONS
+    | caps::HOST_TIME
+    | caps::HOST_MEDIA
+    | caps::HOST_KEYBOARD_LAYOUT
     | if cfg!(feature = "universal_symbols") {
         caps::UNIVERSAL_SYMBOLS | caps::RUSSIAN_LETTERS
+    } else {
+        0
+    }
+    | if cfg!(all(feature = "split", feature = "_ble")) {
+        caps::BATTERY_HALVES
     } else {
         0
     };
@@ -31,6 +40,8 @@ impl RynkService<'_> {
             Cmd::GetSettingKeys => serve::<GetSettingKeys, _>(self, msg).await,
             Cmd::GetSetting => serve::<GetSetting, _>(self, msg).await,
             Cmd::SetSetting => serve::<SetSetting, _>(self, msg).await,
+            Cmd::SetHostData => serve::<SetHostData, _>(self, msg).await,
+            Cmd::GetBatteryHalves => serve::<GetBatteryHalves, _>(self, msg).await,
             _ => return None,
         })
     }
@@ -123,6 +134,32 @@ impl Handle<SetSetting> for RynkService<'_> {
         } else {
             Err(RynkError::Invalid)
         }
+    }
+}
+
+impl Handle<SetHostData> for RynkService<'_> {
+    async fn handle(&self, update: HostDataUpdate) -> Result<(), RynkError> {
+        match update {
+            HostDataUpdate::Time { hour, minute } => crate::host_data::update_time(hour, minute),
+            HostDataUpdate::ClearTime => crate::host_data::clear_time(),
+            // The firmware has nothing to show it on, as over Vial.
+            HostDataUpdate::Volume(_) => {}
+            HostDataUpdate::KeyboardLayout(layout) => crate::host_data::update_layout(layout),
+            HostDataUpdate::MediaArtist(text) => {
+                crate::host_data::update_media_artist(crate::host_data::valid_text(&text))
+            }
+            HostDataUpdate::MediaTitle(text) => {
+                crate::host_data::update_media_title(crate::host_data::valid_text(&text))
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Handle<GetBatteryHalves> for RynkService<'_> {
+    async fn handle(&self, _: ()) -> Result<BatteryHalves, RynkError> {
+        let (mask, left, right) = self.ctx.battery_halves();
+        Ok(BatteryHalves { mask, left, right })
     }
 }
 
@@ -290,6 +327,49 @@ mod tests {
         assert_eq!(reply::<SettingValue>(&replies[1]).unwrap().0, [9]);
         // The board reads 200 but does not take it.
         assert_eq!(reply::<()>(&replies[2]), Err(RynkError::Invalid));
+    }
+
+    /// What the host tells the keyboard lands where the screen and Universal
+    /// Symbols read it; a media text cut inside a character keeps its valid start.
+    #[test]
+    fn host_data_reaches_the_shared_state() {
+        let media = |text: &[u8]| heapless::Vec::from_slice(text).unwrap();
+        let replies = exchange(
+            b"",
+            [
+                HostDataUpdate::Time { hour: 9, minute: 5 },
+                HostDataUpdate::KeyboardLayout(1),
+                HostDataUpdate::MediaArtist(media("Ария".as_bytes())),
+                // "Ж" is two bytes; the second is cut off.
+                HostDataUpdate::MediaTitle(media(&"Ж".as_bytes()[..1])),
+                HostDataUpdate::Volume(30),
+            ]
+            .iter()
+            .enumerate()
+            .map(|(seq, update)| req_with(Cmd::SetHostData.raw(), seq as u8 + 1, update)),
+        );
+        assert!(replies.iter().all(|r| reply::<()>(r) == Ok(())));
+        let host = crate::host_data::snapshot();
+        assert_eq!((host.hour, host.minute, host.layout), (Some(9), Some(5), Some(1)));
+        assert_eq!(host.media_artist, "Ария");
+        assert_eq!(host.media_title, "");
+
+        exchange(b"", [req_with(Cmd::SetHostData.raw(), 1, &HostDataUpdate::ClearTime)]);
+        let host = crate::host_data::snapshot();
+        assert_eq!((host.hour, host.minute), (None, None));
+    }
+
+    #[test]
+    fn battery_halves_answer_with_unknown_levels_before_a_measurement() {
+        let replies = exchange(b"", [req(Cmd::GetBatteryHalves.raw(), 1)]);
+        assert_eq!(
+            reply::<BatteryHalves>(&replies[0]),
+            Ok(BatteryHalves {
+                mask: 0,
+                left: 0xFF,
+                right: 0xFF
+            })
+        );
     }
 
     /// Ergohaven's Vial firmware kept an unlock until `Lock` or a reboot, so a

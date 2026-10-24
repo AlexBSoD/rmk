@@ -3,7 +3,6 @@ use embassy_time::Instant;
 use embedded_io_async::{Read, Write};
 use postcard::experimental::max_size::MaxSize;
 use rmk_types::action::{Action, KeyAction};
-use rmk_types::battery::BatteryStatus;
 use rmk_types::combo::Combo as ComboConfig;
 use rmk_types::constants::{COMBO_MAX_NUM, MORSE_MAX_NUM};
 use rmk_types::morse::{DOUBLE_TAP, HOLD, HOLD_AFTER_TAP, MorsePattern, TAP};
@@ -84,18 +83,7 @@ fn process_host_data_packet(data: &[u8; 32]) -> bool {
 
 fn host_data_text(data: &[u8; 32]) -> &str {
     let len = (data[1] as usize).min(30);
-    let bytes = &data[2..2 + len];
-    match core::str::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(err) => core::str::from_utf8(&bytes[..err.valid_up_to()]).unwrap_or(""),
-    }
-}
-
-fn battery_level_byte(status: rmk_types::battery::BatteryStatus) -> Option<u8> {
-    match status {
-        rmk_types::battery::BatteryStatus::Available { level: Some(level), .. } if level <= 100 => Some(level),
-        _ => None,
-    }
+    crate::host_data::valid_text(&data[2..2 + len])
 }
 
 fn init_native_key_action_response(report: &mut ViaReport, subcommand: u8) {
@@ -432,24 +420,6 @@ async fn process_combo_layer_set(report: &mut ViaReport, ctx: &KeyboardContext<'
     }
 }
 
-fn battery_halves_for_split(
-    central: BatteryStatus,
-    peripheral_0: BatteryStatus,
-    peripheral_1: BatteryStatus,
-    peripheral_count: usize,
-    central_is_left: bool,
-) -> (BatteryStatus, BatteryStatus) {
-    if peripheral_count == 1 {
-        if central_is_left {
-            (central, peripheral_0)
-        } else {
-            (peripheral_0, central)
-        }
-    } else {
-        (peripheral_0, peripheral_1)
-    }
-}
-
 pub struct VialService<'a> {
     ctx: KeyboardContext<'a>,
     vial_config: VialConfig<'static>,
@@ -583,32 +553,11 @@ impl<'a> VialService<'a> {
                 if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_BATTERY_HALVES
                 {
-                    #[cfg(all(feature = "split", feature = "_ble"))]
-                    crate::event::publish_event(crate::event::PeripheralBatteryRefreshEvent);
-
+                    let (mask, left, right) = self.ctx.battery_halves();
                     report.input_data[3] = ERGOHAVEN_BATTERY_HALVES_VERSION;
-                    report.input_data[4] = 0;
-                    report.input_data[5] = 0xFF;
-                    report.input_data[6] = 0xFF;
-
-                    #[cfg(all(feature = "split", feature = "_ble"))]
-                    {
-                        let (left, right) = battery_halves_for_split(
-                            self.ctx.battery_status(),
-                            self.ctx.peripheral_battery_status(0),
-                            self.ctx.peripheral_battery_status(1),
-                            crate::SPLIT_PERIPHERALS_NUM,
-                            crate::SPLIT_CENTRAL_IS_LEFT,
-                        );
-                        if let Some(level) = battery_level_byte(left) {
-                            report.input_data[4] |= 0x01;
-                            report.input_data[5] = level;
-                        }
-                        if let Some(level) = battery_level_byte(right) {
-                            report.input_data[4] |= 0x02;
-                            report.input_data[6] = level;
-                        }
-                    }
+                    report.input_data[4] = mask;
+                    report.input_data[5] = left;
+                    report.input_data[6] = right;
                 } else if report.output_data[1] == ERGOHAVEN_CUSTOM_NAMESPACE
                     && report.output_data[2] == ERGOHAVEN_CUSTOM_NATIVE_KEY_ACTION_CAPS
                 {
@@ -810,7 +759,6 @@ impl VialService<'_> {
 mod tests {
     use embassy_futures::block_on;
     use rmk_types::action::{Action, KeyAction};
-    use rmk_types::battery::ChargeState;
     use rmk_types::keycode::{HidKeyCode, KeyCode};
     use rmk_types::modifier::ModifierCombination;
 
@@ -1396,37 +1344,6 @@ mod tests {
             process(service, &mut report);
             assert_eq!(report.input_data[4], NATIVE_KEY_ACTION_STATUS_INVALID_PAYLOAD);
         });
-    }
-
-    fn battery(level: u8) -> BatteryStatus {
-        BatteryStatus::Available {
-            charge_state: ChargeState::Unknown,
-            level: Some(level),
-        }
-    }
-
-    #[test]
-    fn no_qube_split_uses_central_and_first_peripheral_batteries() {
-        assert_eq!(
-            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, true,),
-            (battery(80), battery(55))
-        );
-    }
-
-    #[test]
-    fn right_central_split_reports_physical_battery_order() {
-        assert_eq!(
-            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, false,),
-            (battery(55), battery(80))
-        );
-    }
-
-    #[test]
-    fn qube_split_uses_both_peripheral_batteries() {
-        assert_eq!(
-            battery_halves_for_split(battery(100), battery(80), battery(55), 2, true),
-            (battery(80), battery(55))
-        );
     }
 
     /// A `GetKeyboardValue(LayoutOptions)` (0x02 0x02) or
