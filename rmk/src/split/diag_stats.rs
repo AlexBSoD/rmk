@@ -66,8 +66,8 @@ pub(crate) struct DiagStats {
 }
 
 // A snapshot must fit one notification after the MTU exchange: the packet MTU
-// minus the L2CAP and ATT headers, with one byte for the SplitMessage tag.
-const _: () = core::assert!(DiagStats::POSTCARD_MAX_SIZE + 1 <= trouble_host::config::DEFAULT_PACKET_POOL_MTU - 7);
+// minus 7 bytes of L2CAP and ATT headers and 1 for the SplitMessage tag.
+const _: () = core::assert!(DiagStats::POSTCARD_MAX_SIZE <= trouble_host::config::DEFAULT_PACKET_POOL_MTU - 8);
 
 #[derive(Clone, Copy)]
 struct State {
