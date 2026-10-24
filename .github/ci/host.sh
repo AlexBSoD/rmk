@@ -7,6 +7,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 cd "$repo_root/rynk"
 
 export CARGO_TERM_COLOR=always
+# The repository-wide .cargo/config.toml targets nRF52840 firmware.
+export CARGO_BUILD_TARGET="${CARGO_BUILD_TARGET:-x86_64-unknown-linux-gnu}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$target_root/host}"
 
 log_section "Tests"

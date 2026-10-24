@@ -32,10 +32,9 @@ def release_profiles():
 
 
 def factory_df_positions(config):
-    matrix = config["layout"]
-    coordinates = [tuple(map(int, pair)) for pair in re.findall(r"\((\d+),(\d+),[^)]+\)", matrix["matrix_map"])]
-    keys = config["layer"][0]["keys"].split()
-    assert len(keys) == len(coordinates), "factory key tokens must match physical matrix_map"
+    coordinates = [tuple(map(int, pair)) for pair in re.findall(r"\((\d+),(\d+),[^)]+\)", config["layout"]["map"])]
+    keys = config["keymap"]["layer"][0]["keys"].split()
+    assert len(keys) == len(coordinates), "factory key tokens must match physical layout map"
     assert len(set(coordinates)) == len(coordinates), "duplicate matrix position"
     result = []
     for letter in ("D", "F"):
@@ -67,11 +66,11 @@ class FactoryUnlockTests(unittest.TestCase):
 
     def test_factory_home_row_mod_taps_are_recognized_without_changing_layers(self):
         fixture = {
-            "layout": {"matrix_map": "(1,2,L) (1,1,L)"},
-            "layer": [{"keys": "MT(D,LShift) MT(F,LCtrl)"}],
+            "layout": {"map": "(1,2,L) (1,1,L)"},
+            "keymap": {"layer": [{"keys": "MT(D,LShift) MT(F,LCtrl)"}]},
         }
         self.assertEqual(factory_df_positions(fixture), [[1, 2], [1, 1]])
-        self.assertEqual(fixture["layer"][0]["keys"], "MT(D,LShift) MT(F,LCtrl)")
+        self.assertEqual(fixture["keymap"]["layer"][0]["keys"], "MT(D,LShift) MT(F,LCtrl)")
 
 
 if __name__ == "__main__":

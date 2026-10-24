@@ -9,7 +9,8 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OWNERS = {
     'build.yml': ('firmware', ['validate-profile', 'build', 'build-qube', 'build-settings-reset']),
-    'ci.yml': ('tests', ['format', 'fetch-check', 'check', 'test', 'discover', 'build', 'bloat-report', 'build-esp']),
+    'ci.yml': ('tests', ['format', 'fetch-check', 'check', 'test', 'host', 'qemu-rynk', 'discover', 'build',
+                         'bloat-report', 'build-esp']),
 }
 
 
@@ -34,7 +35,7 @@ class WorkflowGraphTests(unittest.TestCase):
         # coverage edits must review/update these baselines, not drop this test.
         expected = {
             'build.yml': '96d2fbb6b05979c1565de5c994811aab10adf0cb0db8bb7179cedda29fc38d81',
-            'ci.yml': 'e799514a3d8296c6f28a8da50dafe82a5535b44f9b70dc0c43f6b14592fad343',
+            'ci.yml': 'ff57bcdcc2eb226a349fc7502c05d69354b75001bff79f71de4219f249d34de9',
         }
         for name, (_, owners) in OWNERS.items():
             jobs = load(name)['jobs']
