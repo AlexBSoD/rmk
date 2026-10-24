@@ -1664,12 +1664,16 @@ impl<'a> Keyboard<'a> {
             KeyboardAction::Bootloader => {
                 // When releasing the key, process the boot action
                 if !event.pressed {
+                    #[cfg(all(feature = "storage", any(feature = "vial", feature = "ergohaven_rynk")))]
+                    crate::storage::flush_staged_writes().await;
                     boot::jump_to_bootloader();
                 }
             }
             KeyboardAction::Reboot => {
                 // When releasing the key, process the boot action
                 if !event.pressed {
+                    #[cfg(all(feature = "storage", any(feature = "vial", feature = "ergohaven_rynk")))]
+                    crate::storage::flush_staged_writes().await;
                     boot::reboot_keyboard();
                 }
             }

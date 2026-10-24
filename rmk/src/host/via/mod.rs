@@ -605,6 +605,8 @@ impl<'a> VialService<'a> {
             }
             ViaCommand::BootloaderJump => {
                 warn!("Bootloader jumping");
+                #[cfg(feature = "storage")]
+                crate::storage::flush_staged_writes().await;
                 boot::jump_to_bootloader();
             }
             ViaCommand::DynamicKeymapMacroGetCount => {

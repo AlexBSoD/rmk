@@ -3,9 +3,9 @@
 
 use heapless::Vec;
 use rmk_types::protocol::rynk::ergohaven::{
-    BatteryHalves, ERGOHAVEN_RYNK_REVISION, ErgohavenInfo, GetBatteryHalves, GetBoardDefinition, GetErgohavenInfo,
-    GetLayoutOption, GetSetting, GetSettingKeys, HostDataUpdate, SetHostData, SetLayoutOption, SetSetting,
-    SetSettingRequest, SettingKeysPage, SettingValue, caps,
+    BatteryHalves, CommitWrites, ERGOHAVEN_RYNK_REVISION, ErgohavenInfo, GetBatteryHalves, GetBoardDefinition,
+    GetErgohavenInfo, GetLayoutOption, GetSetting, GetSettingKeys, GetWriteStatus, HostDataUpdate, SetHostData,
+    SetLayoutOption, SetSetting, SetSettingRequest, SettingKeysPage, SettingValue, WriteStatus, caps,
 };
 use rmk_types::protocol::rynk::{Cmd, FirmwareVersion, LayoutChunk, RYNK_BLE_CHUNK_SIZE, RynkError, RynkMessage};
 
@@ -15,6 +15,7 @@ use crate::host::settings::{self, SETTING_VALUE_LEN};
 
 /// What this build can do, as `GetErgohavenInfo` reports it.
 const CAPS: u32 = caps::LAYOUT_OPTIONS
+    | caps::STAGED_WRITES
     | caps::HOST_TIME
     | caps::HOST_MEDIA
     | caps::HOST_KEYBOARD_LAYOUT
@@ -42,6 +43,8 @@ impl RynkService<'_> {
             Cmd::SetSetting => serve::<SetSetting, _>(self, msg).await,
             Cmd::SetHostData => serve::<SetHostData, _>(self, msg).await,
             Cmd::GetBatteryHalves => serve::<GetBatteryHalves, _>(self, msg).await,
+            Cmd::CommitWrites => serve::<CommitWrites, _>(self, msg).await,
+            Cmd::GetWriteStatus => serve::<GetWriteStatus, _>(self, msg).await,
             _ => return None,
         })
     }
@@ -160,6 +163,33 @@ impl Handle<GetBatteryHalves> for RynkService<'_> {
     async fn handle(&self, _: ()) -> Result<BatteryHalves, RynkError> {
         let (mask, left, right) = self.ctx.battery_halves();
         Ok(BatteryHalves { mask, left, right })
+    }
+}
+
+/// The staged writes still waiting for flash.
+fn write_status() -> WriteStatus {
+    #[cfg(feature = "storage")]
+    let (keys, chunks, fault) = crate::storage::staged_write_status();
+    #[cfg(not(feature = "storage"))]
+    let (keys, chunks, fault) = (0, 0, false);
+    WriteStatus {
+        pending_keys: keys as u16,
+        pending_macro_chunks: chunks as u16,
+        fault,
+    }
+}
+
+impl Handle<CommitWrites> for RynkService<'_> {
+    async fn handle(&self, _: ()) -> Result<WriteStatus, RynkError> {
+        #[cfg(feature = "storage")]
+        crate::storage::commit_staged_writes();
+        Ok(write_status())
+    }
+}
+
+impl Handle<GetWriteStatus> for RynkService<'_> {
+    async fn handle(&self, _: ()) -> Result<WriteStatus, RynkError> {
+        Ok(write_status())
     }
 }
 
@@ -370,6 +400,164 @@ mod tests {
                 right: 0xFF
             })
         );
+    }
+
+    /// A key write answers before flash and waits in the stage; without a
+    /// storage task here nothing drains it.
+    #[cfg(feature = "storage")]
+    #[test]
+    fn a_key_write_answers_before_flash() {
+        use rmk_types::action::{Action, KeyAction};
+        use rmk_types::keycode::{HidKeyCode, KeyCode};
+        use rmk_types::protocol::rynk::{KeyPosition, SetKeyRequest};
+
+        let set = SetKeyRequest {
+            position: KeyPosition {
+                layer: 0,
+                row: 0,
+                col: 0,
+            },
+            action: KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::A))),
+        };
+        let replies = exchange(
+            b"",
+            [
+                req_with(Cmd::SetKeyAction.raw(), 1, &set),
+                req(Cmd::GetWriteStatus.raw(), 2),
+            ],
+        );
+        assert_eq!(reply::<()>(&replies[0]), Ok(()));
+        let status = reply::<WriteStatus>(&replies[1]).unwrap();
+        assert_eq!((status.pending_keys, status.fault), (1, false));
+    }
+
+    #[cfg(feature = "storage")]
+    mod staged {
+        use embassy_futures::select::{Either, select};
+        use embassy_time::{Duration, Timer};
+        use rmk_types::action::{Action, KeyAction};
+        use rmk_types::keyboard_macros::{Macro, MacroOp};
+        use rmk_types::keycode::{HidKeyCode, KeyCode};
+        use rmk_types::protocol::rynk::command::{SetKeyAction, SetMacro};
+        use rmk_types::protocol::rynk::{KeyPosition, SetKeyRequest, SetMacroRequest};
+
+        use super::super::super::handlers::Handle;
+        use super::*;
+        use crate::config::StorageConfig;
+        use crate::core_traits::Runnable;
+        use crate::storage::{Storage, async_flash_wrapper};
+
+        type Part = crate::test_support::InMemoryFlash<16_384, 4_096, 1>;
+
+        /// Run `body` against a Rynk service whose keymap lives in `part`, with
+        /// the storage task draining staged writes alongside.
+        fn with_storage(part: &Part, body: impl AsyncFnOnce(&RynkService)) {
+            crate::test_support::clear_flash_channel();
+            block_on(async {
+                let config = StorageConfig::default();
+                let positional = PositionalConfig::<1, 1>::default();
+                let mut storage = Box::pin(Storage::new(async_flash_wrapper(part.clone()), &config)).await;
+                let mut data = KeymapData::new([[[KeyAction::No]]]);
+                let mut behavior = BehaviorConfig::default();
+                let keymap = KeyMap::new_from_storage(&mut data, Some(&mut storage), &mut behavior, &positional).await;
+                let service = RynkService::new(&keymap, &RmkConfig::default());
+                if let Either::First(never) = select(storage.run(), body(&service)).await {
+                    never
+                }
+            });
+        }
+
+        async fn set_a(service: &RynkService<'_>) {
+            let set = SetKeyRequest {
+                position: KeyPosition {
+                    layer: 0,
+                    row: 0,
+                    col: 0,
+                },
+                action: KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::A))),
+            };
+            Handle::<SetKeyAction>::handle(service, set).await.unwrap();
+        }
+
+        async fn status(service: &RynkService<'_>) -> WriteStatus {
+            Handle::<GetWriteStatus>::handle(service, ()).await.unwrap()
+        }
+
+        /// A commit writes the stage now; the quiet period would hold it for 500 ms.
+        #[test]
+        fn commit_writes_the_stage_before_the_quiet_period_ends() {
+            let part = Part::new();
+            with_storage(&part, async |service| {
+                let before = part.writes();
+                set_a(service).await;
+                Timer::after(Duration::from_millis(100)).await;
+                assert_eq!(part.writes(), before, "written before the quiet period or a commit");
+                assert_eq!(status(service).await.pending_keys, 1);
+
+                Handle::<CommitWrites>::handle(service, ()).await.unwrap();
+                Timer::after(Duration::from_millis(50)).await;
+                assert!(part.writes() > before);
+                assert_eq!(
+                    status(service).await,
+                    WriteStatus {
+                        pending_keys: 0,
+                        pending_macro_chunks: 0,
+                        fault: false
+                    }
+                );
+            });
+        }
+
+        /// A failed write is reported until the next commit starts over.
+        #[test]
+        fn a_failed_write_is_reported_until_the_next_commit() {
+            let part = Part::new();
+            with_storage(&part, async |service| {
+                part.fail_writes(true);
+                set_a(service).await;
+                Handle::<CommitWrites>::handle(service, ()).await.unwrap();
+                Timer::after(Duration::from_millis(50)).await;
+                assert!(status(service).await.fault);
+
+                part.fail_writes(false);
+                set_a(service).await;
+                Handle::<CommitWrites>::handle(service, ()).await.unwrap();
+                Timer::after(Duration::from_millis(50)).await;
+                assert!(!status(service).await.fault);
+            });
+        }
+
+        /// A macro save waits in the stage too, chunk by chunk.
+        #[test]
+        fn a_macro_save_waits_for_a_commit() {
+            let part = Part::new();
+            with_storage(&part, async |service| {
+                let ops = [MacroOp::Tap(Action::Key(KeyCode::Hid(HidKeyCode::A)))];
+                let set = SetMacroRequest {
+                    index: 0,
+                    macro_ops: Macro::from_slice(&ops).unwrap(),
+                };
+                Handle::<SetMacro>::handle(service, set).await.unwrap();
+                assert!(status(service).await.pending_macro_chunks > 0);
+                Handle::<CommitWrites>::handle(service, ()).await.unwrap();
+                Timer::after(Duration::from_millis(50)).await;
+                assert_eq!(status(service).await.pending_macro_chunks, 0);
+            });
+        }
+
+        /// A reboot or a bootloader jump flushes first, so a key set just before
+        /// it is in flash.
+        #[test]
+        fn flush_returns_once_the_stage_is_in_flash() {
+            let part = Part::new();
+            with_storage(&part, async |service| {
+                let before = part.writes();
+                set_a(service).await;
+                crate::storage::flush_staged_writes().await;
+                assert!(part.writes() > before);
+                assert_eq!(status(service).await.pending_keys, 0);
+            });
+        }
     }
 
     /// Ergohaven's Vial firmware kept an unlock until `Lock` or a reboot, so a

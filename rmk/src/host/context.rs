@@ -15,7 +15,7 @@ use rmk_types::protocol::rynk::BehaviorConfig;
 use crate::event::KeyboardEventSource;
 use crate::keyboard::combo::Combo;
 use crate::keymap::KeyMap;
-#[cfg(all(feature = "storage", feature = "vial"))]
+#[cfg(all(feature = "storage", any(feature = "vial", feature = "ergohaven_rynk")))]
 use crate::storage::queue_keymap_flash_write;
 #[cfg(feature = "storage")]
 use crate::storage::{StorageItem, store};
@@ -54,24 +54,31 @@ impl<'a> KeyboardContext<'a> {
     }
 
     /// Write one key and persist it before returning, so a flash fault reaches the host.
+    /// Ergohaven stages it instead, as its Vial firmware did: a keymap upload writes
+    /// hundreds of keys, and `CommitWrites` tells the host when they land.
     pub async fn set_action(&self, layer: u8, row: u8, col: u8, action: KeyAction) -> Result<(), ()> {
-        self.keymap
-            .set_action_at(KeyboardEventSource::key_pos(col, row), layer as usize, action);
-        #[cfg(feature = "storage")]
-        store(StorageItem::Keymap {
-            layer,
-            row,
-            col,
-            action,
-        })
-        .await?;
-        Ok(())
+        #[cfg(feature = "ergohaven_rynk")]
+        return self.stage_action(layer, row, col, action).await;
+        #[cfg(not(feature = "ergohaven_rynk"))]
+        {
+            self.keymap
+                .set_action_at(KeyboardEventSource::key_pos(col, row), layer as usize, action);
+            #[cfg(feature = "storage")]
+            store(StorageItem::Keymap {
+                layer,
+                row,
+                col,
+                action,
+            })
+            .await?;
+            Ok(())
+        }
     }
 
     /// Vial's variant of [`set_action`](Self::set_action): persistence is staged per key
     /// position and drained by the storage task once the host goes quiet, so a bulk keymap
     /// upload never waits on flash. A flash fault is not reported back.
-    #[cfg(feature = "vial")]
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
     pub async fn stage_action(&self, layer: u8, row: u8, col: u8, action: KeyAction) -> Result<(), ()> {
         self.keymap
             .set_action_at(KeyboardEventSource::key_pos(col, row), layer as usize, action);

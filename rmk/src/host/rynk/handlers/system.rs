@@ -82,6 +82,8 @@ impl Handle<GetCapabilities> for RynkService<'_> {
 impl Handle<Reboot> for RynkService<'_> {
     async fn handle(&self, _: ()) -> Result<(), RynkError> {
         // Fire-and-forget: synchronous reset never returns on real hardware.
+        #[cfg(all(feature = "storage", feature = "ergohaven_rynk"))]
+        crate::storage::flush_staged_writes().await;
         crate::boot::reboot_keyboard();
         Ok(())
     }
@@ -90,6 +92,8 @@ impl Handle<Reboot> for RynkService<'_> {
 impl Handle<BootloaderJump> for RynkService<'_> {
     async fn handle(&self, _: ()) -> Result<(), RynkError> {
         // Fire-and-forget, same reasoning as `Reboot`.
+        #[cfg(all(feature = "storage", feature = "ergohaven_rynk"))]
+        crate::storage::flush_staged_writes().await;
         crate::boot::jump_to_bootloader();
         Ok(())
     }
