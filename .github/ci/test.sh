@@ -27,6 +27,17 @@ for feats in "${RMK_TEST_FEATURESETS[@]}"; do
         cargo +stable "${nx[@]}" --manifest-path rmk/Cargo.toml --no-default-features --features "$feats"
     fi
 done
+# The K:04 firmware bins set `test = false`, so build its dependency-free
+# modules as standalone test harnesses.
+k04_tests="$target_root/k04-tests"
+mkdir -p "$k04_tests"
+rustc +stable --edition 2021 --test keyboards/k04/src/battery_level.rs -o "$k04_tests/battery_level"
+"$k04_tests/battery_level"
+rustc +stable --edition 2021 --test keyboards/k04/src/trackball/motion_pacing.rs -o "$k04_tests/motion_pacing"
+"$k04_tests/motion_pacing"
+rustc +stable --edition 2021 --test --cfg 'feature="production_v22"' \
+    keyboards/k04/src/trackball/motion_pacing.rs -o "$k04_tests/motion_pacing_production"
+"$k04_tests/motion_pacing_production"
 
 # Doctests: nextest does not run them. rmk/ and rmk-macro/ have `doctest = false`,
 # so only rmk-types and rmk-config need a separate --doc pass.

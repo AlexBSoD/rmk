@@ -100,7 +100,7 @@ impl K04Battery {
             self.sample_raw().await.map(percent)
         };
         let level = self.level.observe(measured, charging);
-        let status = if charging || measured.is_some() {
+        let status = if charging || level.is_some() {
             BatteryStatus::Available { charge_state, level }
         } else {
             BatteryStatus::Unavailable
