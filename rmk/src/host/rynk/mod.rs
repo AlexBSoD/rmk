@@ -125,7 +125,7 @@ impl<'a> RynkService<'a> {
             Cmd::SetKeymapBulk => serve_bulk::<command::SetKeymapBulk, _>(self, msg).await,
 
             Cmd::GetMacro => serve::<command::GetMacro, _>(self, msg).await,
-            Cmd::SetMacro => serve::<command::SetMacro, _>(self, msg).await,
+            Cmd::SetMacro => serve_bulk::<command::SetMacro, _>(self, msg).await,
 
             Cmd::GetCombo => serve::<command::GetCombo, _>(self, msg).await,
             Cmd::SetCombo => serve::<command::SetCombo, _>(self, msg).await,
