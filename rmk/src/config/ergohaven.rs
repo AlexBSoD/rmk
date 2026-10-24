@@ -9,4 +9,6 @@ pub struct ErgohavenConfig<'a> {
     /// `RMK_FIRMWARE_VERSION` packed as `major << 16 | minor << 8 | patch`,
     /// like Vial's `firmware_version`.
     pub firmware_version: u32,
+    /// The board's own settings, `RMK_VIAL_DEVICE_SETTINGS_FN`.
+    pub device_settings: Option<super::VialDeviceSettings<'a>>,
 }

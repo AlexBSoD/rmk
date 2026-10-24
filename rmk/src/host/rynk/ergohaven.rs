@@ -3,13 +3,14 @@
 
 use heapless::Vec;
 use rmk_types::protocol::rynk::ergohaven::{
-    ERGOHAVEN_RYNK_REVISION, ErgohavenInfo, GetBoardDefinition, GetErgohavenInfo, GetLayoutOption, SetLayoutOption,
-    caps,
+    ERGOHAVEN_RYNK_REVISION, ErgohavenInfo, GetBoardDefinition, GetErgohavenInfo, GetLayoutOption, GetSetting,
+    GetSettingKeys, SetLayoutOption, SetSetting, SetSettingRequest, SettingKeysPage, SettingValue, caps,
 };
 use rmk_types::protocol::rynk::{Cmd, FirmwareVersion, LayoutChunk, RYNK_BLE_CHUNK_SIZE, RynkError, RynkMessage};
 
 use super::RynkService;
 use super::handlers::{Handle, serve};
+use crate::host::settings::{self, SETTING_VALUE_LEN};
 
 /// What this build can do, as `GetErgohavenInfo` reports it.
 const CAPS: u32 = caps::LAYOUT_OPTIONS
@@ -27,13 +28,16 @@ impl RynkService<'_> {
             Cmd::GetBoardDefinition => serve::<GetBoardDefinition, _>(self, msg).await,
             Cmd::GetLayoutOption => serve::<GetLayoutOption, _>(self, msg).await,
             Cmd::SetLayoutOption => serve::<SetLayoutOption, _>(self, msg).await,
+            Cmd::GetSettingKeys => serve::<GetSettingKeys, _>(self, msg).await,
+            Cmd::GetSetting => serve::<GetSetting, _>(self, msg).await,
+            Cmd::SetSetting => serve::<SetSetting, _>(self, msg).await,
             _ => return None,
         })
     }
 
     /// The Ergohaven commands that persist, gated like RMK's own setters.
     pub(super) fn ergohaven_writes(cmd: Cmd) -> bool {
-        matches!(cmd, Cmd::SetLayoutOption)
+        matches!(cmd, Cmd::SetLayoutOption | Cmd::SetSetting)
     }
 }
 
@@ -89,24 +93,94 @@ impl Handle<SetLayoutOption> for RynkService<'_> {
     }
 }
 
+impl Handle<GetSettingKeys> for RynkService<'_> {
+    async fn handle(&self, after: u16) -> Result<SettingKeysPage, RynkError> {
+        let keys = settings::keys_after(after, self.ergohaven.device_settings);
+        Ok(SettingKeysPage(
+            keys.take(rmk_types::protocol::rynk::ergohaven::SETTING_KEYS_PAGE_LEN)
+                .collect(),
+        ))
+    }
+}
+
+impl Handle<GetSetting> for RynkService<'_> {
+    async fn handle(&self, id: u16) -> Result<SettingValue, RynkError> {
+        let mut value = [0; SETTING_VALUE_LEN];
+        let len = settings::get(&self.ctx, self.ergohaven.device_settings, id, &mut value).ok_or(RynkError::Invalid)?;
+        Ok(SettingValue(
+            Vec::from_slice(&value[..len]).map_err(|_| RynkError::Internal)?,
+        ))
+    }
+}
+
+impl Handle<SetSetting> for RynkService<'_> {
+    async fn handle(&self, request: SetSettingRequest) -> Result<(), RynkError> {
+        // Zero-padded like a Vial report, which is what the board hooks parse.
+        let mut value = [0; SETTING_VALUE_LEN];
+        value[..request.value.0.len()].copy_from_slice(&request.value.0);
+        if settings::set(&self.ctx, self.ergohaven.device_settings, request.id, &value).await {
+            Ok(())
+        } else {
+            Err(RynkError::Invalid)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate alloc;
 
     use alloc::collections::VecDeque;
     use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicU8, Ordering};
 
     use rmk_types::action::KeyAction;
     use rmk_types::protocol::rynk::{LockStatus, MatrixState};
 
     use super::super::tests::{ChunkRead, VecWrite, decode_frames, req, req_with};
     use super::*;
-    use crate::config::{BehaviorConfig, ErgohavenConfig, LockConfig, PositionalConfig, RmkConfig};
+    use crate::config::{
+        BehaviorConfig, ErgohavenConfig, LockConfig, PositionalConfig, RmkConfig, VialDeviceSettings,
+        VialDeviceSettingsData,
+    };
     use crate::event::KeyboardEvent;
     use crate::keymap::{KeyMap, KeymapData};
     use crate::test_support::test_block_on as block_on;
 
     const UID: [u8; 8] = [0x80, 0x04, 1, 2, 3, 4, 5, 6];
+
+    /// A board with a one-byte setting 120 it accepts, a name at 200 it only
+    /// reads, and 300 it lists but cannot read now.
+    static BOARD_VALUE: AtomicU8 = AtomicU8::new(4);
+
+    fn board_get(key: u16, out: &mut [u8]) -> Option<usize> {
+        match key {
+            120 => {
+                out[0] = BOARD_VALUE.load(Ordering::Relaxed);
+                Some(1)
+            }
+            200 => {
+                out[..5].copy_from_slice(b"Base\0");
+                Some(5)
+            }
+            _ => None,
+        }
+    }
+
+    fn board_set(key: u16, value: &[u8]) -> bool {
+        key == 120 && {
+            BOARD_VALUE.store(value[0], Ordering::Relaxed);
+            true
+        }
+    }
+
+    const BOARD: VialDeviceSettings<'static> = VialDeviceSettings {
+        setting_keys: &[120, 200, 300],
+        get_setting: board_get,
+        set_setting: board_set,
+        serialize: VialDeviceSettingsData::empty,
+        deserialize: |_| {},
+    };
 
     /// Serve `requests` on one session of a service configured with `definition`
     /// and return each reply's payload.
@@ -120,6 +194,7 @@ mod tests {
                 keyboard_uid: &UID,
                 board_definition: definition,
                 firmware_version: 0x0002_0301,
+                device_settings: Some(BOARD),
             },
             ..Default::default()
         };
@@ -154,6 +229,67 @@ mod tests {
         assert_ne!(info.caps & caps::LAYOUT_OPTIONS, 0);
         // FNV-1a("abc"), the published test vector.
         assert_eq!(info.definition_hash, 0x1a47_e90b);
+    }
+
+    fn reply<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, RynkError> {
+        postcard::from_bytes::<Result<T, RynkError>>(payload).unwrap()
+    }
+
+    /// The board's settings follow RMK's, as Vial lists them, and the cursor
+    /// pages past both.
+    #[test]
+    fn setting_keys_page_by_cursor_and_skip_what_the_board_cannot_read() {
+        let replies = exchange(
+            b"",
+            [0u16, 0x1B, 200]
+                .iter()
+                .enumerate()
+                .map(|(seq, after)| req_with(Cmd::GetSettingKeys.raw(), seq as u8 + 1, after)),
+        );
+        let page = |i: usize| reply::<SettingKeysPage>(&replies[i]).unwrap().0.to_vec();
+        assert_eq!(
+            page(0),
+            [0x02, 0x06, 0x07, 0x12, 0x13, 0x16, 0x17, 0x19, 0x1A, 0x1B, 120, 200]
+        );
+        assert_eq!(page(1), [120, 200]);
+        assert!(page(2).is_empty());
+    }
+
+    #[test]
+    fn settings_read_in_vial_bytes() {
+        let replies = exchange(
+            b"",
+            [2u16, 120, 200, 999]
+                .iter()
+                .enumerate()
+                .map(|(seq, id)| req_with(Cmd::GetSetting.raw(), seq as u8 + 1, id)),
+        );
+        // The combo timeout's default, little-endian.
+        let combo = reply::<SettingValue>(&replies[0]).unwrap().0;
+        assert_eq!(combo.len(), 2);
+        assert_eq!(reply::<SettingValue>(&replies[1]).unwrap().0, [4]);
+        assert_eq!(reply::<SettingValue>(&replies[2]).unwrap().0, *b"Base\0");
+        assert_eq!(reply::<SettingValue>(&replies[3]), Err(RynkError::Invalid));
+    }
+
+    #[test]
+    fn a_board_setting_is_set_or_turned_down() {
+        let set = |id: u16, value: &[u8]| SetSettingRequest {
+            id,
+            value: SettingValue(heapless::Vec::from_slice(value).unwrap()),
+        };
+        let replies = exchange(
+            b"",
+            [
+                req_with(Cmd::SetSetting.raw(), 1, &set(120, &[9])),
+                req_with(Cmd::GetSetting.raw(), 2, &120u16),
+                req_with(Cmd::SetSetting.raw(), 3, &set(200, b"Fn")),
+            ],
+        );
+        assert_eq!(reply::<()>(&replies[0]), Ok(()));
+        assert_eq!(reply::<SettingValue>(&replies[1]).unwrap().0, [9]);
+        // The board reads 200 but does not take it.
+        assert_eq!(reply::<()>(&replies[2]), Err(RynkError::Invalid));
     }
 
     /// Ergohaven's Vial firmware kept an unlock until `Lock` or a reboot, so a

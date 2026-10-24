@@ -178,7 +178,7 @@ pub async fn initialize_keymap_and_storage<
         storage_config,
         behavior_config,
         positional_config,
-        #[cfg(feature = "vial")]
+        #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
         None,
     )
     .await
@@ -199,15 +199,16 @@ pub async fn initialize_keymap_and_storage_with_vial<
     storage_config: &config::StorageConfig,
     behavior_config: &'a mut config::BehaviorConfig,
     positional_config: &'a PositionalConfig<ROW, COL>,
-    #[cfg(feature = "vial")] vial_config: Option<&config::VialConfig<'static>>,
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))] device_settings: Option<
+        config::VialDeviceSettings<'static>,
+    >,
 ) -> (KeyMap<'a>, Storage<F>) {
     // `mut` is only taken by the host build's keymap restore below.
     #[cfg_attr(not(feature = "host"), allow(unused_mut))]
     let mut storage = Storage::new(flash, storage_config).await;
 
-    #[cfg(feature = "vial")]
-    if let Some(vial_config) = vial_config
-        && let Some(device_settings) = vial_config.device_settings
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+    if let Some(device_settings) = device_settings
         && let Ok(Some(data)) = storage.read_device_settings().await
     {
         (device_settings.deserialize)(&data.data[..data.len as usize]);

@@ -91,6 +91,16 @@ fn unlock_keys_tokens(host: &Host) -> proc_macro2::TokenStream {
     quote! { &[#(#keys_expr),*] }
 }
 
+/// The board's settings hook named by `RMK_VIAL_DEVICE_SETTINGS_FN`, as
+/// `Some(hook())`, or `None`.
+fn device_settings_tokens() -> proc_macro2::TokenStream {
+    std::env::var("RMK_VIAL_DEVICE_SETTINGS_FN")
+        .ok()
+        .and_then(|path| syn::parse_str::<syn::Path>(&path).ok())
+        .map(|path| quote! { Some(#path()) })
+        .unwrap_or_else(|| quote! { None })
+}
+
 /// `RMK_FIRMWARE_VERSION` packed as `major << 16 | minor << 8 | patch`.
 fn configured_firmware_version() -> u32 {
     std::env::var("RMK_FIRMWARE_VERSION")
@@ -112,11 +122,7 @@ pub(crate) fn expand_vial_config(host: &Host) -> proc_macro2::TokenStream {
     let firmware_version = configured_firmware_version();
     let unlock_keys = unlock_keys_tokens(host);
     let insecure = host.insecure;
-    let device_settings = std::env::var("RMK_VIAL_DEVICE_SETTINGS_FN")
-        .ok()
-        .and_then(|path| syn::parse_str::<syn::Path>(&path).ok())
-        .map(|path| quote! { Some(#path()) })
-        .unwrap_or_else(|| quote! { None });
+    let device_settings = device_settings_tokens();
     quote! {
         include!(concat!(env!("OUT_DIR"), "/config_generated.rs"));
         const VIAL_CONFIG: ::rmk::config::VialConfig = ::rmk::config::VialConfig {
@@ -137,12 +143,14 @@ pub(crate) fn expand_ergohaven_config(ergohaven: bool) -> proc_macro2::TokenStre
         return quote! {};
     }
     let firmware_version = configured_firmware_version();
+    let device_settings = device_settings_tokens();
     quote! {
         include!(concat!(env!("OUT_DIR"), "/config_generated.rs"));
         const ERGOHAVEN_CONFIG: ::rmk::config::ErgohavenConfig = ::rmk::config::ErgohavenConfig {
             keyboard_uid: &VIAL_KEYBOARD_ID,
             board_definition: &VIAL_KEYBOARD_DEF,
             firmware_version: #firmware_version,
+            device_settings: #device_settings,
         };
     }
 }
