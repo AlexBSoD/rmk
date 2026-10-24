@@ -4,12 +4,11 @@
 //! The K:04 `layer_led.rs` drives its LED with nRF PWM and mostly shows BLE,
 //! battery and split pairing state, none of which a wired Phenom has.
 
-use embassy_rp::dma;
 use embassy_rp::interrupt::typelevel::{Binding, DMA_IRQ_0, PIO0_IRQ_0};
 use embassy_rp::peripherals::{DMA_CH0, PIN_25, PIO0};
 use embassy_rp::pio::{self, Pio};
 use embassy_rp::pio_programs::ws2812::{Grb, PioWs2812, PioWs2812Program};
-use embassy_rp::Peri;
+use embassy_rp::{dma, Peri};
 use embassy_time::{Duration, Instant};
 use rmk::event::{ConnectionStatusChangeEvent, LayerChangeEvent, PeripheralSettingsEvent};
 use rmk::macros::processor;
