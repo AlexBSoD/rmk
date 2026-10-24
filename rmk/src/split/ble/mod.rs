@@ -63,3 +63,22 @@ impl AsGatt for GattSplitMessage {
         &self.buf[..self.len]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::KeyboardEvent;
+
+    #[test]
+    fn split_encoder_returns_only_the_serialized_prefix() {
+        let message = SplitMessage::Key(KeyboardEvent::key(2, 3, true));
+
+        let encoded = GattSplitMessage::try_from(&message).unwrap();
+
+        assert!(encoded.as_gatt().len() < GattSplitMessage::MAX_SIZE);
+        match postcard::from_bytes::<SplitMessage>(encoded.as_gatt()).unwrap() {
+            SplitMessage::Key(event) => assert_eq!(event, KeyboardEvent::key(2, 3, true)),
+            _ => panic!("decoded the wrong split-message variant"),
+        }
+    }
+}

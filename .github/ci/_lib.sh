@@ -72,6 +72,8 @@ RMK_TEST_FEATURESETS=(
     "rynk,_ble,split,async_matrix,storage"
     "dongle,_ble,storage,custom_message"
     "dongle,vial,_ble,storage,custom_message"
+    # Ergohaven's BLE split boards
+    "split,vial,storage,_ble"
 )
 
 # Examples auto-discovery skiplist. Reasons:

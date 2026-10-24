@@ -333,4 +333,24 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    // The run mode moved to #[processor], so a board still written as
+    // `#[register_processor(deadline)]` must fail to build and say where it went.
+    #[test]
+    fn registration_mode_arguments_are_rejected() {
+        for mode in ["event", "poll", "deadline", "unknown"] {
+            let mode = syn::Ident::new(mode, proc_macro2::Span::call_site());
+            let item: syn::ItemFn = syn::parse_quote! {
+                #[register_processor(#mode)]
+                fn layer_led() -> LayerLed { LayerLed::new() }
+            };
+            let (_, executor) = expand_custom_processor(&item, &item.attrs[0]).unwrap();
+            let executor = executor.to_string();
+            assert!(
+                executor.contains("compile_error")
+                    && executor.contains("set `poll_interval` or `deadline` on #[processor]"),
+                "{mode}: {executor}"
+            );
+        }
+    }
 }

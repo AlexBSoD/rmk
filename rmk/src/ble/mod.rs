@@ -3965,4 +3965,32 @@ mod tests {
             assert!(woke.get());
         });
     }
+
+    #[test]
+    fn cached_battery_level_is_seeded_into_gatt_server() {
+        use rmk_types::battery::{BatteryStatus, ChargeState};
+
+        use crate::input_device::battery::publish_battery_status;
+
+        let server = super::Server::new_default("test").unwrap();
+        let level = server.battery_service.level;
+
+        publish_battery_status(BatteryStatus::Available {
+            charge_state: ChargeState::Discharging,
+            level: Some(87),
+        });
+        server.refresh_battery_level(level.handle);
+        assert_eq!(server.get(&level).unwrap(), 87);
+
+        publish_battery_status(BatteryStatus::Unavailable);
+        server.refresh_battery_level(level.handle);
+        assert_eq!(server.get(&level).unwrap(), 87);
+
+        publish_battery_status(BatteryStatus::Available {
+            charge_state: ChargeState::Discharging,
+            level: Some(0),
+        });
+        server.refresh_battery_level(level.handle);
+        assert_eq!(server.get(&level).unwrap(), 0);
+    }
 }
