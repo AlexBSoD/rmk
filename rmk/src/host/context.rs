@@ -313,6 +313,36 @@ impl<'a> KeyboardContext<'a> {
         crate::split::driver::current_peripheral_battery_status(id).unwrap_or(BatteryStatus::Unavailable)
     }
 
+    /// The halves' battery levels as Ergohaven hosts read them: a mask whose
+    /// bit 0 marks the left level known and bit 1 the right, then each level
+    /// in percent, 0xFF when unknown. Asks the halves to measure again, so a
+    /// host polling it sees fresh levels.
+    pub fn battery_halves(&self) -> (u8, u8, u8) {
+        #[cfg(all(feature = "split", feature = "_ble"))]
+        {
+            crate::event::publish_event(crate::event::PeripheralBatteryRefreshEvent);
+            let (left, right) = battery_halves_for_split(
+                self.battery_status(),
+                self.peripheral_battery_status(0),
+                self.peripheral_battery_status(1),
+                crate::SPLIT_PERIPHERALS_NUM,
+                crate::SPLIT_CENTRAL_IS_LEFT,
+            );
+            let level = |status| match status {
+                BatteryStatus::Available { level: Some(level), .. } if level <= 100 => Some(level),
+                _ => None,
+            };
+            let (left, right) = (level(left), level(right));
+            (
+                left.is_some() as u8 | (right.is_some() as u8) << 1,
+                left.unwrap_or(0xFF),
+                right.unwrap_or(0xFF),
+            )
+        }
+        #[cfg(not(all(feature = "split", feature = "_ble")))]
+        (0, 0xFF, 0xFF)
+    }
+
     pub fn active_layer(&self) -> u8 {
         self.keymap.active_layer()
     }
@@ -359,5 +389,64 @@ impl<'a> KeyboardContext<'a> {
     #[cfg(feature = "host_lock")]
     pub fn read_matrix_state(&self, target: &mut [u8]) {
         self.keymap.read_matrix_state(target);
+    }
+}
+
+/// Which battery is which half: with one peripheral the central is the other
+/// half, with two (a dongle) the peripherals are the halves.
+#[cfg(all(feature = "split", feature = "_ble"))]
+fn battery_halves_for_split(
+    central: BatteryStatus,
+    peripheral_0: BatteryStatus,
+    peripheral_1: BatteryStatus,
+    peripheral_count: usize,
+    central_is_left: bool,
+) -> (BatteryStatus, BatteryStatus) {
+    if peripheral_count == 1 {
+        if central_is_left {
+            (central, peripheral_0)
+        } else {
+            (peripheral_0, central)
+        }
+    } else {
+        (peripheral_0, peripheral_1)
+    }
+}
+
+#[cfg(all(test, feature = "split", feature = "_ble"))]
+mod tests {
+    use rmk_types::battery::{BatteryStatus, ChargeState};
+
+    use super::battery_halves_for_split;
+
+    fn battery(level: u8) -> BatteryStatus {
+        BatteryStatus::Available {
+            charge_state: ChargeState::Unknown,
+            level: Some(level),
+        }
+    }
+
+    #[test]
+    fn no_qube_split_uses_central_and_first_peripheral_batteries() {
+        assert_eq!(
+            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, true),
+            (battery(80), battery(55))
+        );
+    }
+
+    #[test]
+    fn right_central_split_reports_physical_battery_order() {
+        assert_eq!(
+            battery_halves_for_split(battery(80), battery(55), BatteryStatus::Unavailable, 1, false),
+            (battery(55), battery(80))
+        );
+    }
+
+    #[test]
+    fn qube_split_uses_both_peripheral_batteries() {
+        assert_eq!(
+            battery_halves_for_split(battery(100), battery(80), battery(55), 2, true),
+            (battery(80), battery(55))
+        );
     }
 }

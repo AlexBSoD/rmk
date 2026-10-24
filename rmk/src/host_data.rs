@@ -43,6 +43,15 @@ pub fn clear_time() {
     HOST_MINUTE.store(UNKNOWN, Ordering::Relaxed);
 }
 
+/// The valid UTF-8 prefix of `bytes`. Hosts cut media text at a byte limit,
+/// which can split a character.
+pub(crate) fn valid_text(bytes: &[u8]) -> &str {
+    match core::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => core::str::from_utf8(&bytes[..err.valid_up_to()]).unwrap_or(""),
+    }
+}
+
 pub fn update_media_artist(value: &str) {
     update_media_text(&HOST_MEDIA_ARTIST, value);
 }
