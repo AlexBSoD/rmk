@@ -16,8 +16,8 @@ nx=(nextest run --config-file "$nextest_cfg" --profile ci)
 log_section "Running tests"
 cargo +stable "${nx[@]}" --manifest-path rmk-config/Cargo.toml
 cargo +stable "${nx[@]}" --manifest-path rmk-types/Cargo.toml
-# Exercise the rynk protocol module (gated behind `rynk`).
-cargo +stable "${nx[@]}" --manifest-path rmk-types/Cargo.toml --features host
+# Exercise the rynk protocol module (gated behind `rynk`) and the Ergohaven commands.
+cargo +stable "${nx[@]}" --manifest-path rmk-types/Cargo.toml --features host,ergohaven
 cargo +stable "${nx[@]}" --manifest-path rmk-types/Cargo.toml --features steno
 cargo +stable "${nx[@]}" --manifest-path rmk-macro/Cargo.toml --features _simulator
 for feats in "${RMK_TEST_FEATURESETS[@]}"; do
@@ -48,5 +48,5 @@ rustc +stable --edition 2021 --test --cfg 'feature="production_v22"' \
 # so only rmk-types and rmk-config need a separate --doc pass.
 log_section "Running doctests"
 cargo +stable test --manifest-path rmk-types/Cargo.toml --doc
-cargo +stable test --manifest-path rmk-types/Cargo.toml --features host --doc
+cargo +stable test --manifest-path rmk-types/Cargo.toml --features host,ergohaven --doc
 cargo +stable test --manifest-path rmk-config/Cargo.toml --doc

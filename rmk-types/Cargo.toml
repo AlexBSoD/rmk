@@ -16,6 +16,8 @@ defmt = ["dep:defmt", "postcard/defmt", "heapless/defmt"]
 _codegen = []
 # Enable RMK's Rynk protocol
 rynk = ["dep:cobs"]
+# Ergohaven's commands on top of Rynk
+ergohaven = ["rynk"]
 # Enable custom message and emit CUSTOM_MESSAGE_MAX_SIZE.
 custom_message = []
 # Host tool

@@ -54,6 +54,8 @@
 //! The `snapshots/*.snap` golden files (`tests.rs`) fail on any accidental drift.
 
 pub mod command;
+#[cfg(feature = "ergohaven")]
+pub mod ergohaven;
 
 mod deframer;
 mod error;

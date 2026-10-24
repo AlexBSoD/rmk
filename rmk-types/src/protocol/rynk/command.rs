@@ -120,7 +120,7 @@ pub struct TopicMeta {
 }
 
 /// Compile-time guard: Check whether the command value is unique.
-const fn assert_unique(cmds: &[u16]) {
+pub(super) const fn assert_unique(cmds: &[u16]) {
     let mut i = 0;
     while i < cmds.len() {
         let mut j = i + 1;
@@ -187,6 +187,10 @@ macro_rules! endpoints {
         ];
     };
 }
+
+// The Ergohaven extension builds its own table with it.
+#[cfg(feature = "ergohaven")]
+pub(super) use endpoints;
 
 /// Macro for defining the topic table. Topics have no marker types: the
 /// generated [`TopicEvent`] union is the whole consumer side.
