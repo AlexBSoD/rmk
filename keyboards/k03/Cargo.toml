@@ -18,8 +18,7 @@ embedded-storage = "0.3"
 rmk = { path = "../../rmk", default-features = false, features = [
     "usb_log",
     "storage",
-    "vial",
-    "host_lock",
+    "ergohaven_rynk",
     "universal_symbols",
     "nrf52840_ble",
     "split",

@@ -8,9 +8,12 @@ manufacturer = "Ergohaven"
 chip = "nrf52840"
 
 [host]
-# Enable Vial support
-vial_enabled = true
-# Vial unlock positions for the full K:04 matrix.
+# Rynk with Ergohaven's commands; Vial is off.
+vial_enabled = false
+rynk_enabled = true
+# Writes need no unlock, as over Vial.
+write_requires_unlock = false
+# Unlock positions for the full K:04 matrix.
 unlock_keys = [[2, 2], [2, 1]]
 
 [layout]
@@ -178,7 +181,9 @@ split_central_sleep_timeout_seconds = 120
 combo_max_num = 32
 fork_max_num = 32
 morse_max_num = 32
-macro_space_size = 2048
+# Rynk's encoding takes up to twice Vial's bytes, and a frame holds the whole pool.
+macro_space_size = 4096
+rynk_buffer_size = 4128
 ble_profiles_num = 5
 
 [storage]

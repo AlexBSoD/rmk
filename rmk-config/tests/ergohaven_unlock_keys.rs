@@ -32,7 +32,10 @@ fn all_production_profiles_resolve_factory_df_unlock_positions() {
         let config = KeyboardTomlConfig::new_from_toml_path(root.join(path));
         let host = config.host();
         let keymap = config.keymap().unwrap_or_else(|e| panic!("{path}: {e}"));
-        assert!(host.vial_enabled, "{path}: Vial must be enabled");
+        assert!(
+            host.vial_enabled != host.rynk_enabled,
+            "{path}: exactly one of Vial and Rynk must be enabled"
+        );
         assert!(!host.insecure, "{path}: physical unlock must be required");
         assert_eq!(host.unlock_keys, expected, "{path}: unlock coordinates");
         let actions = expected.map(|[row, col]| keymap.keymap[0][row as usize][col as usize].clone());
