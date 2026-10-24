@@ -382,15 +382,17 @@ steps = [
 expect = [["LShift"], ["LShift", "LCtrl"], ["LShift", "LCtrl", "A"], ["A"], []]
 
 # A User key reports nothing itself but still consumes an armed OSM. With
-# quick_release the modifier is dropped as the User key goes down.
+# quick_release the modifier is dropped as the User key goes down. The A after
+# it is the proof: the one-shot timeout alone would also end in `[]`.
 [[test]]
 name = "osm_consumed_by_user_key_quick_release"
 behavior.one_shot_modifiers = { activate_on_keypress = true, quick_release = true }
 steps = [
   { tap = { pos = [0, 0], duration = 10 } },
   { tap = { pos = [0, 13], duration = 10 } },  # User0
+  { tap = { pos = [0, 2], duration = 10 } },
 ]
-expect = [["LShift"], []]
+expect = [["LShift"], [], ["A"], []]
 
 # Without quick_release the OSM chains through the User key and is dropped on
 # its release.
@@ -400,8 +402,9 @@ behavior.one_shot_modifiers = { activate_on_keypress = true }
 steps = [
   { tap = { pos = [0, 0], duration = 10 } },
   { tap = { pos = [0, 13], duration = 10 } },  # User0
+  { tap = { pos = [0, 2], duration = 10 } },
 ]
-expect = [["LShift"], []]
+expect = [["LShift"], [], ["A"], []]
 
 # Dropping the OSM on a User key keeps a key that is still held.
 [[test]]

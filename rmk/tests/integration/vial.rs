@@ -425,6 +425,47 @@ fn the_longest_macro_vial_can_save_is_kept() {
     });
 }
 
+/// Layer actions saved in Vial's two-byte key ops switch layers when played:
+/// macro 0 presses `MO(1)`, macro 1 releases it, macro 2 taps `TG(1)` and
+/// macro 3 taps `TO(1)`. A tap of B at (0,4) after each macro types C while
+/// layer 1 is on.
+#[test]
+fn saved_macro_layer_actions_switch_layers() {
+    test_block_on(async {
+        let t = rmk::a!(Transparent);
+        let mut keyboard = SimKeyboard::builder([
+            [[macros!(0), macros!(1), macros!(2), macros!(3), k!(B)]],
+            [[t, t, t, t, k!(C)]],
+        ])
+        .build()
+        .await;
+        save_macro_buffer(
+            &mut keyboard,
+            &[
+                0x01, 0x06, 0x21, 0x52, 0x00, // press MO(1) = 0x5221
+                0x01, 0x07, 0x21, 0x52, 0x00, // release MO(1)
+                0x01, 0x05, 0x61, 0x52, 0x00, // tap TG(1) = 0x5261
+                0x01, 0x05, 0x01, 0x52, 0x00, // tap TO(1) = 0x5201
+            ],
+        );
+        let steps = [
+            (0, HidKeyCode::C),
+            (1, HidKeyCode::B),
+            (2, HidKeyCode::C),
+            (2, HidKeyCode::B),
+            (3, HidKeyCode::C),
+        ];
+        for (macro_col, typed) in steps {
+            keyboard
+                .tap(0, macro_col, 10)
+                .tap(0, 4, 10)
+                .expect_keys([typed])
+                .expect_keys([]);
+        }
+        keyboard.run().await;
+    });
+}
+
 #[cfg(feature = "storage")]
 #[test]
 fn behavior_write_survives_restart() {

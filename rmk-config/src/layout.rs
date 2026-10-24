@@ -1343,3 +1343,77 @@ map = """
         assert!(approx(key(full, 0, 1).rect.x - key(mini, 0, 1).rect.x, 1.0));
     }
 }
+
+#[cfg(test)]
+mod ergohaven_hand_topology_tests {
+    use super::{MapToken, parse_map};
+    use crate::KeyboardTomlConfig;
+
+    #[derive(Clone, Copy)]
+    enum Thumbs {
+        LastMatrixRows,
+        ColumnFive,
+    }
+
+    #[test]
+    fn factory_profiles_mark_fingers_and_exempt_thumbs() {
+        // Each entry is a shipped `[layout].map`, not an encoder-rotation event.
+        let profiles = [
+            ("k04/keyboard.toml", 60, Thumbs::LastMatrixRows),
+            ("k04/keyboard_mini.toml", 48, Thumbs::LastMatrixRows),
+            ("k04/keyboard_micro.toml", 38, Thumbs::LastMatrixRows),
+            ("k03/keyboard.toml", 60, Thumbs::LastMatrixRows),
+            ("imperial44/keyboard.toml", 44, Thumbs::LastMatrixRows),
+            ("op36/keyboard.toml", 36, Thumbs::ColumnFive),
+            ("velvet/keyboard.toml", 46, Thumbs::LastMatrixRows),
+            ("k04/keyboard_qube.toml", 60, Thumbs::LastMatrixRows),
+            ("k04/keyboard_qube_mini.toml", 48, Thumbs::LastMatrixRows),
+            ("k04/keyboard_qube_micro.toml", 38, Thumbs::LastMatrixRows),
+            ("classic_qube/keyboard.toml", 36, Thumbs::ColumnFive),
+            ("classic_qube/keyboard_k03.toml", 60, Thumbs::LastMatrixRows),
+            ("classic_qube/keyboard_imperial44.toml", 44, Thumbs::LastMatrixRows),
+            ("classic_qube/keyboard_velvet.toml", 46, Thumbs::LastMatrixRows),
+        ];
+
+        for (file, expected_keys, thumbs) in profiles {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../keyboards")
+                .join(file);
+            let config = KeyboardTomlConfig::new_from_toml_path_with_event_defaults(&path);
+            // The per-key hands codegen turns into `PositionalConfig`.
+            let key_info = config.keymap().expect(file).key_info;
+            let layout = config.layout.as_ref().expect(file);
+            let map = layout.map.as_deref().expect(file);
+            let positions: Vec<_> = parse_map(map, layout.rows, layout.cols)
+                .expect(file)
+                .into_iter()
+                .filter_map(|token| match token {
+                    MapToken::Key { row, col, hand, .. } => Some((row, col, hand)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(positions.len(), expected_keys, "{file}");
+            let mut counts = [0usize; 3];
+            for (row, col, parsed_hand) in positions {
+                let bilateral = match thumbs {
+                    Thumbs::LastMatrixRows => row == layout.rows / 2 - 1 || row == layout.rows - 1,
+                    Thumbs::ColumnFive => col == 5,
+                };
+                let (expected, index) = if bilateral {
+                    ('*', 2)
+                } else if row < layout.rows / 2 {
+                    ('L', 0)
+                } else {
+                    ('R', 1)
+                };
+                assert_eq!(parsed_hand, expected, "{file} ({row},{col})");
+                assert_eq!(
+                    key_info[row as usize][col as usize].hand, expected,
+                    "{file} ({row},{col})"
+                );
+                counts[index] += 1;
+            }
+            assert!(counts.iter().all(|count| *count > 0), "{file}: {counts:?}");
+        }
+    }
+}

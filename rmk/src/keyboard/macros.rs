@@ -457,6 +457,24 @@ pub(crate) mod codec {
         }
 
         #[test]
+        fn layer_actions_round_trip_as_two_byte_keycodes() {
+            let cases = [
+                (Action::LayerOn(3), [0x23, 0x52]),
+                (Action::LayerToggleOnly(2), [0x02, 0x52]),
+                (Action::LayerToggle(4), [0x64, 0x52]),
+                (Action::DefaultLayer(1), [0x41, 0x52]),
+                (Action::PersistentDefaultLayer(5), [0xE5, 0x52]),
+                // 0x5200: the zero low byte is escaped.
+                (Action::LayerToggleOnly(0), [0x52, 0xFF]),
+            ];
+            for (action, [lo, hi]) in cases {
+                let rendered = bytes(&[MacroOp::Tap(action)]);
+                assert_eq!(rendered, [0x01, 0x05, lo, hi], "{action:?}");
+                assert_eq!(ops(&rendered), [MacroOp::Tap(action)]);
+            }
+        }
+
+        #[test]
         fn delays_split_at_the_encoding_limit_and_round_trip() {
             for ms in [0, 1, 254, 255, 65024, 65025, u16::MAX] {
                 let decoded = ops(&bytes(&[MacroOp::Delay(ms)]));

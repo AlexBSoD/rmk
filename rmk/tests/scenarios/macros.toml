@@ -156,6 +156,70 @@ steps = [
 ]
 expect = [["LShift"], [], ["A"], []]
 
+# A `down` holds its key through a delay: W typed during the delay joins A, and
+# A goes up only at the `up`.
+[[test]]
+name = "macro_down_holds_its_key_through_a_delay"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "down", keycode = "A" },
+    { operation = "delay", duration = "350ms" },
+    { operation = "up", keycode = "A" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 10 } },
+  { delay = 100 },
+  { tap = { pos = [1, 3], duration = 10 } },
+]
+expect = [["A"], ["A", "W"], ["A"], []]
+
+# A mouse key held by a macro keeps repeating through the macro's delay: the
+# first repeat 100ms after the `down`, then one every 20ms, speeding up, until
+# the `up` 350ms in. Regression: playback slept through the delay, so the
+# cursor moved once and then stopped until the `up`.
+[[test]]
+name = "macro_delay_keeps_mouse_movement_repeating"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "down", keycode = "MouseRight" },
+    { operation = "delay", duration = "350ms" },
+    { operation = "up", keycode = "MouseRight" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 10 } },
+]
+expect = [
+  { mouse = { x = 5 } },
+  # The 13 repeats at +100ms, +120ms, ... +340ms
+  { mouse = { x = 5 } }, { mouse = { x = 6 } }, { mouse = { x = 6 } }, { mouse = { x = 6 } },
+  { mouse = { x = 7 } }, { mouse = { x = 7 } }, { mouse = { x = 7 } },
+  { mouse = { x = 8 } }, { mouse = { x = 8 } }, { mouse = { x = 8 } },
+  { mouse = { x = 9 } }, { mouse = { x = 9 } }, { mouse = { x = 9 } },
+  { mouse = {} },
+]
+
+# The same for a wheel key, which repeats every 80ms.
+[[test]]
+name = "macro_delay_keeps_mouse_wheel_repeating"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "down", keycode = "MouseWheelUp" },
+    { operation = "delay", duration = "350ms" },
+    { operation = "up", keycode = "MouseWheelUp" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 10 } },
+]
+expect = [
+  { mouse = { wheel = -1 } },
+  # The 4 repeats at +100ms, +180ms, +260ms and +340ms
+  { mouse = { wheel = -1 } }, { mouse = { wheel = -1 } }, { mouse = { wheel = -1 } }, { mouse = { wheel = -1 } },
+  { mouse = {} },
+]
+
 # Macros run one at a time: a trigger while one runs waits for it to end.
 [[test]]
 name = "macro_trigger_while_running_is_queued"
@@ -312,6 +376,114 @@ steps = [
   { tap = { pos = [0, 6], duration = 100 } },
 ]
 expect = [{ consumer = ["AudioVolUp"] }, { consumer = [] }, { system = ["SystemSleep"] }, { system = [] }]
+
+# A `down` holds a consumer or system key on its own page until the `up`, so
+# both are down at once here.
+[[test]]
+name = "macro_holds_consumer_and_system_keys_until_up"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "down", keycode = "AudioVolUp" },
+    { operation = "down", keycode = "SystemSleep" },
+    { operation = "up", keycode = "AudioVolUp" },
+    { operation = "up", keycode = "SystemSleep" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 100 } },
+]
+expect = [{ consumer = ["AudioVolUp"] }, { system = ["SystemSleep"] }, { consumer = [] }, { system = [] }]
+
+# A mouse button clicks on the mouse page: `tap` and `down` press it, `tap`
+# and `up` release it.
+[[test]]
+name = "macro_routes_mouse_button_presses_and_releases"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "tap", keycode = "MouseBtn1" },
+    { operation = "down", keycode = "MouseBtn1" },
+    { operation = "up", keycode = "MouseBtn1" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 100 } },
+]
+expect = [{ mouse = { buttons = 1 } }, { mouse = {} }, { mouse = { buttons = 1 } }, { mouse = {} }]
+
+[[test]]
+name = "macro_clicks_every_mouse_button"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "tap", keycode = "MouseBtn1" },
+    { operation = "tap", keycode = "MouseBtn2" },
+    { operation = "tap", keycode = "MouseBtn3" },
+    { operation = "tap", keycode = "MouseBtn4" },
+    { operation = "tap", keycode = "MouseBtn5" },
+    { operation = "tap", keycode = "MouseBtn6" },
+    { operation = "tap", keycode = "MouseBtn7" },
+    { operation = "tap", keycode = "MouseBtn8" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 100 } },
+]
+expect = [
+  { mouse = { buttons = 1 } }, { mouse = {} },
+  { mouse = { buttons = 2 } }, { mouse = {} },
+  { mouse = { buttons = 4 } }, { mouse = {} },
+  { mouse = { buttons = 8 } }, { mouse = {} },
+  { mouse = { buttons = 16 } }, { mouse = {} },
+  { mouse = { buttons = 32 } }, { mouse = {} },
+  { mouse = { buttons = 64 } }, { mouse = {} },
+  { mouse = { buttons = 128 } }, { mouse = {} },
+]
+
+# A tapped movement key moves 5 and a tapped wheel key scrolls 1, each on its
+# own axis.
+[[test]]
+name = "macro_moves_and_scrolls_in_every_direction"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "tap", keycode = "MouseUp" },
+    { operation = "tap", keycode = "MouseDown" },
+    { operation = "tap", keycode = "MouseLeft" },
+    { operation = "tap", keycode = "MouseRight" },
+    { operation = "tap", keycode = "MouseWheelUp" },
+    { operation = "tap", keycode = "MouseWheelDown" },
+    { operation = "tap", keycode = "MouseWheelLeft" },
+    { operation = "tap", keycode = "MouseWheelRight" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 100 } },
+]
+expect = [
+  { mouse = { y = -5 } }, { mouse = {} },
+  { mouse = { y = 5 } }, { mouse = {} },
+  { mouse = { x = -5 } }, { mouse = {} },
+  { mouse = { x = 5 } }, { mouse = {} },
+  { mouse = { wheel = -1 } }, { mouse = {} },
+  { mouse = { wheel = 1 } }, { mouse = {} },
+  { mouse = { pan = -1 } }, { mouse = {} },
+  { mouse = { pan = 1 } }, { mouse = {} },
+]
+
+# `MouseAccel0` held by the macro slows its movement to a quarter of 5, rounded
+# up, until the `up`; the accel key sends no report of its own.
+[[test]]
+name = "macro_mouse_accel_scales_movement_until_up"
+behavior.macro = { macros = [
+  { operations = [
+    { operation = "down", keycode = "MouseAccel0" },
+    { operation = "tap", keycode = "MouseRight" },
+    { operation = "up", keycode = "MouseAccel0" },
+    { operation = "tap", keycode = "MouseRight" },
+  ] },
+] }
+steps = [
+  { tap = { pos = [0, 6], duration = 100 } },
+]
+expect = [{ mouse = { x = 2 } }, { mouse = {} }, { mouse = { x = 5 } }, { mouse = {} }]
 
 # A one-key combo with no output swallows its macro key; the other macro still runs.
 [[test]]

@@ -2060,4 +2060,13 @@ mod tests {
             wake.reset();
         }
     }
+
+    #[test]
+    fn split_scan_leaves_radio_time_for_established_links() {
+        let config = scan_config(SPLIT_CENTRAL_SCAN_WINDOW);
+
+        assert!(!config.active);
+        assert_eq!(config.interval, Duration::from_millis(100));
+        assert_eq!(config.window, Duration::from_millis(30));
+    }
 }
