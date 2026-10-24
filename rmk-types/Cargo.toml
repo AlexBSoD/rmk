@@ -18,6 +18,8 @@ _codegen = []
 rynk = ["dep:cobs"]
 # Ergohaven's commands on top of Rynk
 ergohaven = ["rynk"]
+# Personal Qube commands next to Ergohaven's: no release carries them
+qube_side = ["ergohaven"]
 # Enable custom message and emit CUSTOM_MESSAGE_MAX_SIZE.
 custom_message = []
 # Host tool

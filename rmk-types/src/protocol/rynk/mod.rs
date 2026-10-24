@@ -56,6 +56,8 @@
 pub mod command;
 #[cfg(feature = "ergohaven")]
 pub mod ergohaven;
+#[cfg(feature = "qube_side")]
+pub mod side;
 
 mod deframer;
 mod error;
