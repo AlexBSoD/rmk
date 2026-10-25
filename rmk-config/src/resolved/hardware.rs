@@ -116,7 +116,7 @@ impl crate::KeyboardTomlConfig {
         let communication = self.get_communication_config()?;
         let board = self.get_board_config()?;
         board.validate_pointing_ids()?;
-        let storage_toml = self.get_storage_config();
+        let storage_toml = self.storage.unwrap_or_default();
         let storage = if storage_toml.enabled {
             Some(Storage {
                 start_addr: storage_toml.start_addr.unwrap_or(0),
