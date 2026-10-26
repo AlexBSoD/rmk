@@ -2255,7 +2255,8 @@ async fn serve_keyboard_connection<
                 profiles,
                 &session_ready,
                 host_power_config.is_some(),
-            ).await;
+            )
+            .await;
             error!("[gatt_events_task] end: {:?}", e);
             BleKeyboardExit::Disconnected
         },
