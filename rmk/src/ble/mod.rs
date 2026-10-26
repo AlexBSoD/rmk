@@ -5,7 +5,7 @@ use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::Error as HciError;
 #[cfg(feature = "split")]
 use embassy_futures::join::join;
-use embassy_futures::join::join3;
+use embassy_futures::join::{join3, join4};
 use embassy_futures::select::{Either, Either4, select, select4};
 #[cfg(feature = "split")]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -35,7 +35,7 @@ use crate::ble::host::{HOST_WRITE_BUFFER_SIZE, HostGattHandler, HostWriteOutcome
 use crate::ble::led::BleLedReader;
 #[cfg(feature = "passkey_entry")]
 use crate::ble::passkey::{PasskeyInputState, next_gatt_event};
-use crate::ble::profile::{BOND_SLOTS, ProfileInfo, ProfileManager, UPDATED_CCCD_TABLE, UPDATED_PROFILE};
+use crate::ble::profile::{BOND_SLOTS, ProfileInfo, ProfileManager};
 use crate::ble::sleep::{
     InputActivityWaiter, report_activity, request_local_sleep, request_sleep, reset_host_power_input,
     take_host_power_input, wait_for_host_power_input,
@@ -516,7 +516,6 @@ async fn run_ble_keyboard<
     let mut peripheral = stack.peripheral();
     let runner = stack.runner();
 
-    let profile_manager = &mut profile_manager;
     let use_2m_phy = crate::BLE_USE_2M_PHY && !cfg!(feature = "use_1m_phy");
 
     let connection_loop = async {
@@ -539,7 +538,8 @@ async fn run_ble_keyboard<
                 continue;
             }
 
-            let active_bond_info = profile_manager.active_bond_info();
+            let profile = crate::state::current_profile();
+            let active_bond_info = profile_manager.bond_info(profile);
             let active_peer = active_bond_info.as_ref().map(|info| info.info.identity.addr);
             // The dongle slot advertises directed to the bonded dongle or as a
             // seeking broadcast, and keeps its link at 2M; the normal profiles
@@ -591,7 +591,7 @@ async fn run_ble_keyboard<
             match select(advertising, profile_manager.update_profile()).await {
                 Either::First(Ok(conn)) => {
                     // Check the bond info after the connection is just created.
-                    if let Some(bond) = &active_bond_info
+                    if let Some(bond) = profile_manager.bond_info(profile)
                         && !bond.info.identity.match_identity(&conn.raw().peer_identity())
                     {
                         warn!("[ble] connected peer doesn't match the active profile, disconnecting");
@@ -628,7 +628,8 @@ async fn run_ble_keyboard<
                             server,
                             &conn,
                             stack,
-                            active_bond_info,
+                            profile,
+                            &profile_manager,
                             config,
                             session_power_config,
                             host_link_policy,
@@ -807,10 +808,11 @@ async fn run_ble_keyboard<
     // The sleep manager lives here because this is the single always-present
     // BLE task: split or not, connected or not, it keeps running, so the
     // sleep state can never get stuck.
-    join3(
+    join4(
         ble_task(runner, &event_handler),
         connection_loop,
         sleep::run_sleep_manager(),
+        profile_manager.run(),
     )
     .await;
     unreachable!("BleTransport sub-tasks must run forever")
@@ -849,10 +851,12 @@ pub(crate) async fn ble_task<C: Controller, P: PacketPool, E: EventHandler>(mut 
 ///
 /// This function will handle the GATT events and process them.
 /// This is how we interact with read and write requests.
-async fn gatt_events_task<C: Controller>(
+async fn gatt_events_task<C: Controller + ControllerCmdAsync<LeSetPhy>>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     stack: &Stack<'_, C, DefaultPacketPool>,
+    profile: u8,
+    profiles: &ProfileManager<'_, '_, C, DefaultPacketPool, BOND_SLOTS>,
     session_ready: &Signal<crate::RawMutex, ()>,
     local_hid_suspend: bool,
 ) -> Result<(), Error> {
@@ -891,19 +895,17 @@ async fn gatt_events_task<C: Controller>(
                 #[cfg(feature = "passkey_entry")]
                 passkey_state.clear();
                 info!("[gatt] pairing complete: {:?}", security_level);
-                let profile = crate::state::current_profile();
                 if let Some(bond_info) = bond {
                     let cccd_table = server
                         .get_client_att_table(conn.raw())
                         .and_then(|t| heapless::Vec::from_slice(t.raw()).ok())
                         .unwrap_or_default();
-                    let profile_info = ProfileInfo {
+                    profiles.set_bond(ProfileInfo {
                         slot_num: profile,
                         info: bond_info,
                         removed: false,
                         cccd_table,
-                    };
-                    UPDATED_PROFILE.signal(profile_info);
+                    });
                 }
             }
             GattConnectionEvent::PairingFailed(err) => {
@@ -1042,11 +1044,6 @@ async fn gatt_events_task<C: Controller>(
                 } else {
                     gatt_event.accept()
                 };
-                match result {
-                    Ok(reply) => reply.send().await,
-                    Err(e) => warn!("[gatt] error sending response: {:?}", e),
-                }
-
                 // Update CCCD table after processing the event
                 if cccd_updated {
                     // When macOS wakes up from sleep mode, it won't send EXIT SUSPEND command
@@ -1056,8 +1053,12 @@ async fn gatt_events_task<C: Controller>(
                     if let Some(table) = server.get_client_att_table(conn.raw())
                         && let Ok(bytes) = heapless::Vec::from_slice(table.raw())
                     {
-                        UPDATED_CCCD_TABLE.signal(bytes);
+                        profiles.update_profile_cccd_table(profile, bytes);
                     }
+                }
+                match result {
+                    Ok(reply) => reply.send().await,
+                    Err(e) => warn!("[gatt] error sending response: {:?}", e),
                 }
             }
             GattConnectionEvent::PhyUpdated { tx_phy, rx_phy } => {
@@ -2206,7 +2207,8 @@ async fn serve_keyboard_connection<
     server: &'b Server<'_>,
     conn: &GattConnection<'a, 'b, DefaultPacketPool>,
     stack: &Stack<'_, C, DefaultPacketPool>,
-    active_bond_info: Option<crate::ble::profile::ProfileInfo>,
+    profile: u8,
+    profiles: &ProfileManager<'_, '_, C, DefaultPacketPool, BOND_SLOTS>,
     config: &BleBatteryConfig,
     host_power_config: Option<BleHostPowerConfig>,
     host_link_policy: HostLinkStartupPolicy,
@@ -2226,7 +2228,7 @@ async fn serve_keyboard_connection<
 
     // CCCD lookup uses cached bond info to avoid a cancellable flash read while
     // this future is racing other arms of an outer `select`.
-    if let Some(bond_info) = active_bond_info
+    if let Some(bond_info) = profiles.bond_info(profile)
         && bond_info.info.identity.match_identity(&conn.raw().peer_identity())
     {
         info!("Loading CCCD table: {:?}", bond_info.cccd_table);
@@ -2245,7 +2247,16 @@ async fn serve_keyboard_connection<
 
     let gatt_task = run_until_physical_disconnect(
         async {
-            let e = gatt_events_task(server, conn, stack, &session_ready, host_power_config.is_some()).await;
+            let e = gatt_events_task(
+                server,
+                conn,
+                stack,
+                profile,
+                profiles,
+                &session_ready,
+                host_power_config.is_some(),
+            )
+            .await;
             error!("[gatt_events_task] end: {:?}", e);
             BleKeyboardExit::Disconnected
         },
