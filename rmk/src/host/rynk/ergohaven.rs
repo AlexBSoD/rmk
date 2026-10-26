@@ -4,8 +4,9 @@
 use heapless::Vec;
 use rmk_types::protocol::rynk::ergohaven::{
     BatteryHalves, CommitWrites, ERGOHAVEN_RYNK_REVISION, ErgohavenInfo, GetBatteryHalves, GetBoardDefinition,
-    GetErgohavenInfo, GetLayoutOption, GetSetting, GetSettingKeys, GetWriteStatus, HostDataUpdate, SetHostData,
-    SetLayoutOption, SetSetting, SetSettingRequest, SettingKeysPage, SettingValue, WriteStatus, caps,
+    GetErgohavenInfo, GetLayoutOption, GetSetting, GetSettingKeys, GetWriteStatus, HOST_DATA_TEXT_MAX_LEN,
+    HostDataUpdate, SetHostData, SetLayoutOption, SetSetting, SetSettingRequest, SettingKeysPage, SettingValue,
+    WriteStatus, caps,
 };
 use rmk_types::protocol::rynk::{Cmd, FirmwareVersion, LayoutChunk, RYNK_BLE_CHUNK_SIZE, RynkError, RynkMessage};
 
@@ -139,6 +140,9 @@ impl Handle<SetSetting> for RynkService<'_> {
         }
     }
 }
+
+// A media text the host may send fits whole where the screen reads it.
+const _: () = core::assert!(crate::host_data::HOST_TEXT_LEN >= HOST_DATA_TEXT_MAX_LEN);
 
 impl Handle<SetHostData> for RynkService<'_> {
     async fn handle(&self, update: HostDataUpdate) -> Result<(), RynkError> {
@@ -387,6 +391,17 @@ mod tests {
         exchange(b"", [req_with(Cmd::SetHostData.raw(), 1, &HostDataUpdate::ClearTime)]);
         let host = crate::host_data::snapshot();
         assert_eq!((host.hour, host.minute), (None, None));
+    }
+
+    // A 30-byte limit cut a Cyrillic title to 15 characters, too short for the
+    // Qube header to scroll.
+    #[test]
+    fn a_cyrillic_title_at_the_limit_arrives_whole() {
+        let title = "Ж".repeat(HOST_DATA_TEXT_MAX_LEN / 2);
+        let update = HostDataUpdate::MediaTitle(heapless::Vec::from_slice(title.as_bytes()).unwrap());
+        let replies = exchange(b"", [req_with(Cmd::SetHostData.raw(), 1, &update)]);
+        assert_eq!(reply::<()>(&replies[0]), Ok(()));
+        assert_eq!(crate::host_data::snapshot().media_title, title.as_str());
     }
 
     #[test]

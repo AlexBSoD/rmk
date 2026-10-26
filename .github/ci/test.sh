@@ -43,6 +43,8 @@ rustc +stable --edition 2021 --test keyboards/k04/src/trackball/motion_pacing.rs
 rustc +stable --edition 2021 --test --cfg 'feature="production_v22"' \
     keyboards/k04/src/trackball/motion_pacing.rs -o "$k04_tests/motion_pacing_production"
 "$k04_tests/motion_pacing_production"
+rustc +stable --edition 2021 --test keyboards/k04/src/media_label.rs -o "$k04_tests/media_label"
+"$k04_tests/media_label"
 
 # Doctests: nextest does not run them. rmk/ and rmk-macro/ have `doctest = false`,
 # so only rmk-types and rmk-config need a separate --doc pass.

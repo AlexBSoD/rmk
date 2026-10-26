@@ -66,6 +66,8 @@ const SAFE_X: i32 = 18;
 const SAFE_W: u32 = SCREEN_W as u32 - (SAFE_X as u32 * 2);
 const MEDIA_VISIBLE_CHARS: usize = 26;
 const MEDIA_GAP_CHARS: usize = 3;
+// The longest artist and title with the separator between them.
+const MEDIA_LABEL_LEN: usize = 2 * rmk::host_data::HOST_TEXT_LEN + 3;
 const PANEL_RADIUS: u32 = 14;
 const CHIP_RADIUS: u32 = 7;
 const BAR_RADIUS: u32 = 5;
@@ -840,7 +842,7 @@ pub struct QubeStatusRenderer {
 
 impl QubeStatusRenderer {
     fn media_needs_marquee(&self) -> bool {
-        let mut media: heapless::String<72> = heapless::String::new();
+        let mut media: heapless::String<MEDIA_LABEL_LEN> = heapless::String::new();
         push_media_label(&mut media, &self.host_data);
         media.len() > MEDIA_VISIBLE_CHARS
     }
@@ -1145,7 +1147,7 @@ fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
     fallback_style: MonoTextStyle<'_, Rgb565>,
 ) {
     let top = TextStyleBuilder::new().baseline(Baseline::Top).build();
-    let mut media: heapless::String<72> = heapless::String::new();
+    let mut media: heapless::String<MEDIA_LABEL_LEN> = heapless::String::new();
     push_media_label(&mut media, host_data);
 
     if media.is_empty() {
@@ -1171,7 +1173,7 @@ fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
         .draw(display);
 }
 
-fn push_media_label(buffer: &mut heapless::String<72>, host_data: &rmk::host_data::HostData) {
+fn push_media_label(buffer: &mut heapless::String<MEDIA_LABEL_LEN>, host_data: &rmk::host_data::HostData) {
     if !host_data.media_artist.is_empty() {
         push_ascii_text(buffer, &host_data.media_artist);
     }

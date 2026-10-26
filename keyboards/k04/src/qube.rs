@@ -9,6 +9,7 @@ mod board;
 #[path = "../../common/default_layer_names.rs"]
 mod default_layer_names;
 mod layer_names;
+mod media_label;
 mod module_settings;
 mod qube_display;
 

@@ -364,7 +364,7 @@ pub(super) mod tests {
 
     /// A COBS request frame carrying `payload`, as a host sends it.
     pub(super) fn req_with<T: serde::Serialize>(cmd_raw: u16, seq: u8, payload: &T) -> Vec<u8> {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; RYNK_BUFFER_SIZE];
         let n = encode_frame(
             &mut buf,
             RynkHeader {

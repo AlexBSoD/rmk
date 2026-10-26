@@ -6,7 +6,8 @@ use embassy_sync::blocking_mutex::Mutex;
 use crate::RawMutex;
 
 const UNKNOWN: u8 = u8::MAX;
-const HOST_TEXT_LEN: usize = 32;
+/// Bytes kept of each media text, enough for the longest one Rynk carries.
+pub const HOST_TEXT_LEN: usize = 64;
 
 static HOST_HOUR: AtomicU8 = AtomicU8::new(UNKNOWN);
 static HOST_MINUTE: AtomicU8 = AtomicU8::new(UNKNOWN);

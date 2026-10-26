@@ -46,6 +46,8 @@ use rmk_types::battery::BatteryStatus;
 use static_cell::StaticCell;
 use u8g2_fonts::{fonts, U8g2TextStyle};
 
+use crate::media_label::{marquee, media_label, media_scrolls, MEDIA_VISIBLE_CHARS};
+
 // --- Panel geometry ---------------------------------------------------------
 
 pub const PANEL_NATIVE_W: usize = 240;
@@ -64,8 +66,10 @@ const BACKLIGHT_ACTIVE_HIGH: bool = true;
 const UI_X_OFFSET: i32 = 5;
 const SAFE_X: i32 = 18;
 const SAFE_W: u32 = SCREEN_W as u32 - (SAFE_X as u32 * 2);
-const MEDIA_VISIBLE_CHARS: usize = 26;
-const MEDIA_GAP_CHARS: usize = 3;
+// The longest artist and title with the separator between them.
+const MEDIA_LABEL_LEN: usize = 2 * rmk::host_data::HOST_TEXT_LEN + 3;
+// A visible character takes up to four bytes.
+const MEDIA_VISIBLE_LEN: usize = MEDIA_VISIBLE_CHARS * 4;
 const PANEL_RADIUS: u32 = 14;
 const CHIP_RADIUS: u32 = 7;
 const BAR_RADIUS: u32 = 5;
@@ -764,9 +768,7 @@ pub struct QubeStatusRenderer {
 
 impl QubeStatusRenderer {
     fn media_needs_marquee(&self) -> bool {
-        let mut media: heapless::String<72> = heapless::String::new();
-        push_media_label(&mut media, &self.host_data);
-        media.chars().count() > MEDIA_VISIBLE_CHARS
+        media_scrolls(&self.host_data.media_artist, &self.host_data.media_title)
     }
 }
 
@@ -1035,8 +1037,10 @@ fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
     fallback_style: MonoTextStyle<'_, Rgb565>,
 ) {
     let top = TextStyleBuilder::new().baseline(Baseline::Top).build();
-    let mut media: heapless::String<72> = heapless::String::new();
-    push_media_label(&mut media, host_data);
+    let mut media: heapless::String<MEDIA_LABEL_LEN> = heapless::String::new();
+    for ch in media_label(&host_data.media_artist, &host_data.media_title) {
+        let _ = media.push(ch);
+    }
 
     if media.is_empty() {
         if !host_time_available(host_data) {
@@ -1045,53 +1049,17 @@ fn draw_media_or_fallback<D: DrawTarget<Color = Rgb565>>(
         return;
     }
 
-    let mut visible: heapless::String<64> = heapless::String::new();
+    let mut visible: heapless::String<MEDIA_VISIBLE_LEN> = heapless::String::new();
     if media.chars().count() <= MEDIA_VISIBLE_CHARS {
         let _ = visible.push_str(&media);
     } else {
         let elapsed = Instant::now().duration_since(Instant::from_ticks(0)).as_millis() as usize;
-        let offset = (elapsed / 300) % (media.chars().count() + MEDIA_GAP_CHARS);
-        push_marquee_slice(&mut visible, &media, offset);
+        for ch in marquee(&media, elapsed / 300) {
+            let _ = visible.push(ch);
+        }
     }
 
     let _ = Text::with_text_style(&visible, Point::new(SAFE_X + 22, 22), media_style, top).draw(display);
-}
-
-fn push_media_label(buffer: &mut heapless::String<72>, host_data: &rmk::host_data::HostData) {
-    if !host_data.media_artist.is_empty() {
-        push_display_text(buffer, &host_data.media_artist);
-    }
-    if !host_data.media_title.is_empty() {
-        if !buffer.is_empty() {
-            let _ = buffer.push_str(" - ");
-        }
-        push_display_text(buffer, &host_data.media_title);
-    }
-}
-
-fn push_display_text<const N: usize>(buffer: &mut heapless::String<N>, value: &str) {
-    for ch in value.chars() {
-        if ch.is_control() {
-            continue;
-        }
-        if buffer.push(ch).is_err() {
-            break;
-        }
-    }
-}
-
-fn push_marquee_slice(buffer: &mut heapless::String<64>, text: &str, offset: usize) {
-    let text_len = text.chars().count();
-    let cycle_len = text_len + MEDIA_GAP_CHARS;
-    for i in 0..MEDIA_VISIBLE_CHARS {
-        let idx = (offset + i) % cycle_len;
-        let ch = if idx < text_len {
-            text.chars().nth(idx).unwrap_or(' ')
-        } else {
-            ' '
-        };
-        let _ = buffer.push(ch);
-    }
 }
 
 fn host_time_available(host_data: &rmk::host_data::HostData) -> bool {

@@ -22,12 +22,12 @@ use super::{FirmwareVersion, LayoutChunk};
 
 /// The Rynk wire this build speaks, upstream and Ergohaven commands together.
 /// Bump it whenever [`ERGOHAVEN_RYNK_WIRE_HASH`] changes.
-pub const ERGOHAVEN_RYNK_REVISION: u16 = 1;
+pub const ERGOHAVEN_RYNK_REVISION: u16 = 2;
 
 /// FNV-1a over the wire snapshots (`snapshots/wire_values.snap`,
 /// `snapshots/wire_frames.snap`, `snapshots/ergohaven.snap`) at
 /// [`ERGOHAVEN_RYNK_REVISION`].
-pub const ERGOHAVEN_RYNK_WIRE_HASH: u32 = 0x86ba_7813;
+pub const ERGOHAVEN_RYNK_WIRE_HASH: u32 = 0x2c6f_b985;
 
 /// [`ErgohavenInfo::caps`] bits: what the firmware can do. Whether a board has
 /// something to do it with (a screen, layout options) is in its definition.
@@ -102,8 +102,8 @@ impl MaxSize for SettingKeysPage {
     const POSTCARD_MAX_SIZE: usize = crate::heapless_vec_max_size::<u16, SETTING_KEYS_PAGE_LEN>();
 }
 
-/// Longest media text `SetHostData` carries.
-pub const HOST_DATA_TEXT_MAX_LEN: usize = 30;
+/// Longest media text `SetHostData` carries, in bytes: 32 Cyrillic characters.
+pub const HOST_DATA_TEXT_MAX_LEN: usize = 64;
 
 /// What the host tells the keyboard. Variants are only appended: postcard
 /// numbers them in order.
@@ -270,6 +270,7 @@ mod tests {
             bytes: heapless::Vec::from_slice(&[0xFD, 0x37, 0x7A]).unwrap(),
         };
         let artist = HostDataUpdate::MediaArtist(text("Ария".as_bytes()));
+        let longest_title = HostDataUpdate::MediaTitle(text("Ж".repeat(HOST_DATA_TEXT_MAX_LEN / 2).as_bytes()));
         let halves = BatteryHalves {
             mask: 3,
             left: 80,
@@ -300,6 +301,7 @@ mod tests {
                 "HostDataUpdate::MediaTitle",
                 encode(&HostDataUpdate::MediaTitle(text(b"Song")))
             ),
+            ("HostDataUpdate::MediaTitle, longest", encode(&longest_title)),
             ("BatteryHalves", encode(&halves)),
             ("WriteStatus", encode(&status)),
             ("GetErgohavenInfo request", frame(Cmd::GetErgohavenInfo, &())),
