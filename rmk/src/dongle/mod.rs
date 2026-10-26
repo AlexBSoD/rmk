@@ -170,21 +170,21 @@ where
             .build();
         let stack = &stack;
         let scan = ScanHandler::new();
-        let mut profiles = ProfileManager::new(stack);
-        profiles.load_bonded_devices().await;
-        profiles.update_stack_bonds();
+        let mut profile_manager = ProfileManager::new(stack);
+        profile_manager.load_bonded_devices().await;
+        profile_manager.update_stack_bonds();
         let mut central = DongleCentral {
             stack,
             scan: &scan,
             router: self.router,
-            profiles: &profiles,
+            profiles: &profile_manager,
             state: Cell::new(DongleState::default()),
         };
 
         join3(
             crate::ble::ble_task(stack.runner(), &scan),
             central.run(),
-            profiles.run(),
+            profile_manager.run(),
         )
         .await;
         unreachable!("Dongle sub-tasks must run forever")

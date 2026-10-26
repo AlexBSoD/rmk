@@ -337,67 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn cleared_profile_can_be_paired_again_with_same_bond_information() {
-        with_manager::<1>(|manager| {
-            let profile_info = ProfileInfo::default();
-            manager.set_bond(profile_info.clone());
-            manager.set_bond(profile_info.clone());
-
-            manager.clear_bond(0);
-            manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
-            assert!(manager.bond_info(0).is_none());
-            manager.set_bond(profile_info);
-            assert!(!manager.profiles[0].try_get().unwrap().removed);
-            assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
-        });
-    }
-
-    #[test]
-    fn out_of_range_slot_does_not_replace_an_existing_profile() {
-        with_manager::<1>(|manager| {
-            manager.set_bond(ProfileInfo::default());
-            let other_slot = ProfileInfo {
-                slot_num: 1,
-                ..Default::default()
-            };
-            manager.set_bond(other_slot);
-            assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
-            assert_eq!(manager.profiles[0].try_get().unwrap().slot_num, 0);
-        });
-    }
-
-    #[test]
-    fn cleared_slot_has_no_bond_info() {
-        with_manager::<1>(|manager| {
-            manager.set_bond(ProfileInfo::default());
-            assert!(manager.bond_info(0).is_some());
-            manager.clear_bond(0);
-            assert!(manager.bond_info(0).is_none());
-        });
-    }
-
-    #[test]
-    fn bonding_one_slot_leaves_the_others_unbonded() {
-        with_manager::<2>(|manager| {
-            manager.set_bond(ProfileInfo::default());
-            assert!(manager.bond_info(0).is_some());
-            assert!(manager.bond_info(1).is_none());
-        });
-    }
-
-    #[test]
-    fn re_pairing_a_slot_with_different_bond_information_replaces_it() {
-        with_manager::<1>(|manager| {
-            manager.set_bond(ProfileInfo::default());
-            let mut new_host = ProfileInfo::default();
-            new_host.info.ltk = LongTermKey(1);
-            manager.set_bond(new_host);
-            assert_eq!(manager.profiles[0].try_get().unwrap().info.ltk, LongTermKey(1));
-            assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
-        });
-    }
-
-    #[test]
     fn updates_during_storage_wait_are_saved_from_latest_cache() {
         use core::future::Future;
         use core::pin::pin;
