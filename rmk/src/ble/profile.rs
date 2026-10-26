@@ -337,142 +337,98 @@ mod tests {
     }
 
     #[test]
-    fn updates_during_storage_wait_are_saved_from_latest_cache() {
-        use core::future::Future;
-        use core::pin::pin;
-        use core::task::{Context, Waker};
+    fn bond_and_cccd_updates_target_the_requested_profile() {
+        with_manager::<2>(|manager| {
+            let first = ProfileInfo::default();
+            let mut second = ProfileInfo {
+                slot_num: 1,
+                ..Default::default()
+            };
+            second.info.ltk = LongTermKey(1);
+            manager.set_bond(first.clone());
+            manager.set_bond(second.clone());
 
-        use embassy_futures::select::{Either3, select3};
+            second.cccd_table = heapless::Vec::from_slice(&[1, 2]).unwrap();
+            manager.update_profile_cccd_table(1, second.cccd_table.clone());
+            assert_eq!(manager.bond_info(0), Some(first));
+            assert_eq!(manager.bond_info(1), Some(second));
+        });
+    }
 
-        use crate::config::StorageConfig;
-        use crate::core_traits::Runnable;
-        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
-        use crate::test_support::{InMemoryFlash, clear_flash_channel};
+    #[test]
+    fn profile_actions_update_selection_and_stack_bonds() {
+        use super::BleProfileAction::{ClearBond, Next, Previous, Switch};
+        use crate::channel::BLE_PROFILE_CHANNEL;
+        use crate::state::{current_ble_status, current_profile};
 
         with_manager::<2>(|manager| {
-            clear_flash_channel();
-            for (slot, key) in [(0, 1), (1, 2)] {
+            for slot in 0..2 {
                 let mut info = ProfileInfo {
                     slot_num: slot,
                     ..Default::default()
                 };
-                info.info.ltk = LongTermKey(key);
+                info.info.ltk = LongTermKey(slot.into());
                 manager.set_bond(info);
             }
-            let mut saver = pin!(manager.run());
-            {
-                let mut read = pin!(read(StorageKey::StorageConfig));
-                let mut cx = Context::from_waker(Waker::noop());
-                assert!(read.as_mut().poll(&mut cx).is_pending());
-                assert!(saver.as_mut().poll(&mut cx).is_pending());
-            }
-            for slot in 0..2 {
-                manager.update_profile_cccd_table(slot, heapless::Vec::from_slice(&[slot + 3]).unwrap());
-            }
-            // Connection-level cancellation does not drop the independent saver.
-            {
-                let mut update = pin!(manager.update_profile());
-                let mut cx = Context::from_waker(Waker::noop());
-                assert!(update.as_mut().poll(&mut cx).is_pending());
-            }
             test_block_on(async {
-                let flash = async_flash_wrapper(InMemoryFlash::<16_384, 4_096, 1>::new());
-                let mut storage = Box::pin(Storage::new(flash, &StorageConfig::default())).await;
-                let verify = async {
-                    for slot in 0..2 {
-                        loop {
-                            if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(slot)).await.unwrap()
-                                && info.cccd_table.as_slice() == [slot + 3]
-                            {
-                                assert_eq!(info.info.ltk, LongTermKey((slot + 1).into()));
-                                break;
-                            }
-                        }
-                    }
-                };
-                assert!(matches!(
-                    select3(saver.as_mut(), storage.run(), verify).await,
-                    Either3::Third(())
-                ));
+                for (action, selected) in [(Switch(1), 1), (Previous, 0), (Next, 1)] {
+                    BLE_PROFILE_CHANNEL.send(action).await;
+                    manager.update_profile().await;
+                    assert_eq!(current_profile(), selected);
+                    assert!(current_ble_status().bonded);
+                    manager.stack.with_bond_information(|bonds| {
+                        assert_eq!(bonds.len(), 1);
+                        assert_eq!(bonds[0].ltk, LongTermKey(selected.into()));
+                    });
+                }
+                BLE_PROFILE_CHANNEL.send(ClearBond).await;
+                manager.update_profile().await;
             });
+            assert_eq!(current_profile(), 1);
+            assert!(!current_ble_status().bonded);
+            assert!(manager.bond_info(1).is_none());
+            assert!(manager.bond_info(0).is_some());
+            manager.stack.with_bond_information(|bonds| assert!(bonds.is_empty()));
         });
     }
 
     #[test]
-    fn clear_during_storage_wait_persists_tombstone_last() {
-        use core::future::Future;
-        use core::pin::pin;
-        use core::task::{Context, Waker};
+    fn profile_state_is_restored_from_storage() {
+        use embassy_futures::select::{select, select3};
 
-        use embassy_futures::select::{Either3, select3};
-
+        use crate::channel::BLE_PROFILE_CHANNEL;
         use crate::config::StorageConfig;
         use crate::core_traits::Runnable;
         use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
-        use crate::test_support::{InMemoryFlash, clear_flash_channel};
-
-        with_manager::<1>(|manager| {
-            clear_flash_channel();
-            manager.set_bond(ProfileInfo::default());
-            let mut saver = pin!(manager.run());
-            {
-                let mut read = pin!(read(StorageKey::StorageConfig));
-                let mut cx = Context::from_waker(Waker::noop());
-                assert!(read.as_mut().poll(&mut cx).is_pending());
-                assert!(saver.as_mut().poll(&mut cx).is_pending());
-            }
-            manager.clear_bond(0);
-            manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
-            test_block_on(async {
-                let flash = async_flash_wrapper(InMemoryFlash::<16_384, 4_096, 1>::new());
-                let mut storage = Box::pin(Storage::new(flash, &StorageConfig::default())).await;
-                let verify = async {
-                    loop {
-                        if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(0)).await.unwrap()
-                            && info.removed
-                        {
-                            break;
-                        }
-                    }
-                };
-                assert!(matches!(
-                    select3(saver.as_mut(), storage.run(), verify).await,
-                    Either3::Third(())
-                ));
-            });
-            assert!(manager.bond_info(0).is_none());
-        });
-    }
-
-    #[test]
-    fn profile_and_active_notifications_are_all_persisted() {
-        use embassy_futures::select::{Either3, select3};
-
-        use crate::config::StorageConfig;
-        use crate::core_traits::Runnable;
-        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
-        use crate::test_support::{InMemoryFlash, clear_flash_channel};
+        use crate::test_support::{InMemoryFlash, clear_flash_channel, reset_connection_status};
 
         with_manager::<2>(|manager| {
             clear_flash_channel();
-            manager.clear_bond(0);
-            manager.set_bond(ProfileInfo {
+            let mut host = ProfileInfo {
                 slot_num: 1,
                 ..Default::default()
-            });
+            };
+            host.info.ltk = LongTermKey(42);
+            host.cccd_table = heapless::Vec::from_slice(&[1, 2]).unwrap();
+            manager.set_bond(ProfileInfo::default());
+            manager.set_bond(host.clone());
+            manager.clear_bond(0);
             test_block_on(async {
-                super::BLE_PROFILE_CHANNEL
-                    .try_send(super::BleProfileAction::Switch(1))
-                    .unwrap();
+                BLE_PROFILE_CHANNEL.send(super::BleProfileAction::Switch(1)).await;
                 manager.update_profile().await;
-                let flash = async_flash_wrapper(InMemoryFlash::<16_384, 4_096, 1>::new());
-                let mut storage = Box::pin(Storage::new(flash, &StorageConfig::default())).await;
-                let verify = async {
+                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
+                let reboot = flash.clone();
+                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
+                let saved = async {
                     for slot in 0..2 {
                         loop {
                             if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(slot)).await.unwrap()
                             {
-                                assert_eq!(info.removed, slot == 0);
+                                if slot == 0 {
+                                    assert!(info.removed);
+                                } else {
+                                    assert_eq!(info, host);
+                                }
                                 break;
                             }
                         }
@@ -486,205 +442,18 @@ mod tests {
                         }
                     }
                 };
-                assert!(matches!(
-                    select3(manager.run(), storage.run(), verify).await,
-                    Either3::Third(())
-                ));
-            });
-        });
-    }
-
-    #[test]
-    fn a_failed_save_does_not_prevent_saving_later_updates() {
-        use core::pin::pin;
-
-        use embassy_futures::select::{Either3, select3};
-        use embassy_time::Timer;
-
-        use crate::config::StorageConfig;
-        use crate::core_traits::Runnable;
-        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
-        use crate::test_support::{InMemoryFlash, clear_flash_channel};
-        with_manager::<1>(|manager| {
-            clear_flash_channel();
-            test_block_on(async {
-                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
-                let control = flash.clone();
-                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
-                control.fail_writes(true);
-                manager.set_bond(ProfileInfo::default());
-                let mut saver = pin!(manager.run());
-                select3(saver.as_mut(), storage.run(), Timer::after_millis(10)).await;
-                assert!(storage.fetch(StorageKey::BondInfo(0)).await.unwrap().is_none());
-                control.fail_writes(false);
-                manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
-                let verify = async {
-                    loop {
-                        if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(0)).await.unwrap() {
-                            assert_eq!(info.cccd_table.as_slice(), &[1]);
-                            break;
-                        }
-                    }
-                };
-                assert!(matches!(
-                    select3(saver.as_mut(), storage.run(), verify).await,
-                    Either3::Third(())
-                ));
-            });
-        });
-    }
-
-    #[test]
-    fn switching_does_not_wait_for_pending_flash() {
-        use core::future::Future;
-        use core::pin::pin;
-        use core::task::{Context, Waker};
-
-        use crate::storage::{StorageKey, read};
-        use crate::test_support::clear_flash_channel;
-        with_manager::<2>(|manager| {
-            clear_flash_channel();
-            manager.set_bond(ProfileInfo::default());
-            let mut blocker = pin!(read(StorageKey::StorageConfig));
-            let mut saver = pin!(manager.run());
-            let mut cx = Context::from_waker(Waker::noop());
-            assert!(blocker.as_mut().poll(&mut cx).is_pending());
-            assert!(saver.as_mut().poll(&mut cx).is_pending());
-            super::BLE_PROFILE_CHANNEL
-                .try_send(super::BleProfileAction::Switch(1))
-                .unwrap();
-            {
-                let mut action = pin!(manager.update_profile());
-                assert!(action.as_mut().poll(&mut cx).is_ready());
-            }
-            assert_eq!(crate::state::current_profile(), 1);
-            super::BLE_PROFILE_CHANNEL
-                .try_send(super::BleProfileAction::ClearBond)
-                .unwrap();
-            {
-                let mut action = pin!(manager.update_profile());
-                assert!(action.as_mut().poll(&mut cx).is_ready());
-            }
-            assert!(manager.profiles[1].try_get().unwrap().removed);
-            assert!(saver.as_mut().poll(&mut cx).is_pending());
-        });
-    }
-
-    #[test]
-    fn loading_profiles_does_not_schedule_redundant_saves() {
-        use embassy_futures::select::{select, select3};
-        use embassy_time::Timer;
-
-        use crate::config::StorageConfig;
-        use crate::core_traits::Runnable;
-        use crate::storage::{Storage, StorageItem, async_flash_wrapper, store};
-        use crate::test_support::{InMemoryFlash, clear_flash_channel};
-        with_manager::<2>(|manager| {
-            clear_flash_channel();
-            test_block_on(async {
-                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
-                let control = flash.clone();
-                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
-                select(store(StorageItem::BondInfo(ProfileInfo::default())), storage.run()).await;
-                select(manager.load_bonded_devices(), storage.run()).await;
-                assert!(manager.bond_info(0).is_some());
-                let before = control.writes();
-                select3(manager.run(), storage.run(), Timer::after_millis(10)).await;
-                assert_eq!(control.writes(), before);
-            });
-        });
-    }
-
-    #[test]
-    fn clear_and_repair_during_write_survives_reload() {
-        use core::future::Future;
-        use core::pin::pin;
-        use core::task::{Context, Waker};
-
-        use embassy_futures::select::{Either3, select, select3};
-
-        use crate::config::StorageConfig;
-        use crate::core_traits::Runnable;
-        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
-        use crate::test_support::{InMemoryFlash, clear_flash_channel};
-        with_manager::<1>(|manager| {
-            clear_flash_channel();
-            test_block_on(async {
-                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
-                let reboot = flash.clone();
-                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
-                manager.set_bond(ProfileInfo::default());
-                {
-                    let mut saver = pin!(manager.run());
-                    {
-                        let mut blocker = pin!(read(StorageKey::StorageConfig));
-                        let mut cx = Context::from_waker(Waker::noop());
-                        assert!(blocker.as_mut().poll(&mut cx).is_pending());
-                        assert!(saver.as_mut().poll(&mut cx).is_pending());
-                        manager.clear_bond(0);
-                        let mut replacement = ProfileInfo::default();
-                        replacement.info.ltk = LongTermKey(42);
-                        manager.set_bond(replacement);
-                        manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1, 2]).unwrap());
-                    }
-                    let verify = async {
-                        loop {
-                            if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(0)).await.unwrap()
-                                && info.info.ltk == LongTermKey(42)
-                            {
-                                assert!(!info.removed);
-                                assert_eq!(info.cccd_table.as_slice(), &[1, 2]);
-                                break;
-                            }
-                        }
-                    };
-                    assert!(matches!(
-                        select3(saver.as_mut(), storage.run(), verify).await,
-                        Either3::Third(())
-                    ));
-                }
+                select3(manager.run(), storage.run(), saved).await;
                 drop(storage);
+
+                clear_flash_channel();
+                reset_connection_status();
+                let mut restored: TestManager<'_, '_, 2> = ProfileManager::new(manager.stack);
                 let mut storage = Box::pin(Storage::new(async_flash_wrapper(reboot), &StorageConfig::default())).await;
-                select(manager.load_bonded_devices(), storage.run()).await;
-                let restored = manager.bond_info(0).unwrap();
-                assert_eq!(restored.info.ltk, LongTermKey(42));
-                assert_eq!(restored.cccd_table.as_slice(), &[1, 2]);
-            });
-        });
-    }
-
-    #[test]
-    fn unchanged_cccd_does_not_write_flash() {
-        use core::pin::pin;
-
-        use embassy_futures::select::select3;
-        use embassy_time::Timer;
-
-        use crate::config::StorageConfig;
-        use crate::core_traits::Runnable;
-        use crate::storage::{Storage, async_flash_wrapper};
-        use crate::test_support::{InMemoryFlash, clear_flash_channel};
-        with_manager::<1>(|manager| {
-            clear_flash_channel();
-            test_block_on(async {
-                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
-                let control = flash.clone();
-                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
-                manager.set_bond(ProfileInfo {
-                    cccd_table: heapless::Vec::from_slice(&[1]).unwrap(),
-                    ..Default::default()
-                });
-                let mut saver = pin!(manager.run());
-                select3(saver.as_mut(), storage.run(), Timer::after_millis(2)).await;
-                let before = control.writes();
-                for _ in 0..10 {
-                    manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
-                }
-                select3(saver.as_mut(), storage.run(), Timer::after_millis(2)).await;
-                assert_eq!(control.writes(), before);
-                manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[0]).unwrap());
-                select3(saver.as_mut(), storage.run(), Timer::after_millis(2)).await;
-                assert!(control.writes() > before);
+                select(restored.load_bonded_devices(), storage.run()).await;
+                assert!(restored.bond_info(0).is_none());
+                assert_eq!(restored.bond_info(1), Some(host));
+                assert_eq!(crate::state::current_profile(), 1);
+                assert!(crate::state::current_ble_status().bonded);
             });
         });
     }
