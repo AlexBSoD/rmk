@@ -1,12 +1,12 @@
 //! Personal Qube commands (`rmk_types::protocol::rynk::side`): the host-agent
 //! window and the halves' diagnostics. No release carries them.
 
-#[cfg(all(feature = "split", feature = "_ble"))]
-use rmk_types::protocol::rynk::side::{PointingStats, PowerDiag, SleepStats};
 use rmk_types::protocol::rynk::side::{
     AgentSummary, GetHalvesDiag, GetSideInfo, HalfDiag, HalvesDiag, SIDE_REVISION, SetAgents, SetUsage, SideInfo,
     UsageSummary, caps,
 };
+#[cfg(all(feature = "split", feature = "_ble"))]
+use rmk_types::protocol::rynk::side::{PointingStats, PowerDiag, SleepStats};
 use rmk_types::protocol::rynk::{Cmd, RynkError, RynkMessage};
 
 use super::RynkService;

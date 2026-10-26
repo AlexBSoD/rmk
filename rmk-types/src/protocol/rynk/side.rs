@@ -6,11 +6,11 @@
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(test, not(feature = "host")))]
+use super::RynkError;
 #[cfg(test)]
 use super::command::EndpointMeta;
 use super::command::{Cmd, Endpoint, assert_unique, endpoints};
-#[cfg(any(test, not(feature = "host")))]
-use super::RynkError;
 
 /// The wire of this table. Bump it whenever `snapshots/side.snap` changes.
 pub const SIDE_REVISION: u16 = 1;
@@ -188,7 +188,10 @@ mod tests {
             pointing: halves().left.pointing,
             power: Some(power()),
         };
-        assert_max_size_bound(&round_trip(&HalvesDiag { left: full, right: full }));
+        assert_max_size_bound(&round_trip(&HalvesDiag {
+            left: full,
+            right: full,
+        }));
         assert_max_size_bound(&round_trip(&UsageSummary {
             five_hour: Some(100),
             seven_day: None,
