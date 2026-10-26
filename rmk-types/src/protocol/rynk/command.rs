@@ -204,15 +204,15 @@ macro_rules! topics {
             $( core::assert!(Cmd::from_raw($cmd).is_topic(), "topic CMD value outside the topic range"); )*
             assert_unique(&[$($cmd),*]);
         };
-        /// Largest payload across the whole topic table — feeds the firmware
-        /// buffer assertion below. Absent on `host` builds, which are alloc
-        /// and need no bound.
-        #[cfg(not(feature = "host"))]
+        /// Largest payload across the whole topic table — sizes the firmware's
+        /// topic frame and feeds the buffer assertion below. Every topic
+        /// payload is bounded, so `host` builds keep it too: the rynk tests
+        /// link rmk against them.
         #[allow(unused_doc_comments)]
-        const MAX_TOPIC_PAYLOAD: usize = {
+        pub const MAX_TOPIC_PAYLOAD: usize = {
             let mut m = 0;
             $( $(#[$meta])* {
-                let p = <$payload as MaxSize>::POSTCARD_MAX_SIZE;
+                let p = <$payload as postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE;
                 if p > m { m = p; }
             } )*
             m

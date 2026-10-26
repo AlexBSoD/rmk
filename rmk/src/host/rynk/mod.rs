@@ -9,6 +9,8 @@ mod ergohaven;
 mod handlers;
 mod topics;
 
+use core::pin::pin;
+
 use embassy_futures::select::{Either, select};
 use embedded_io_async::{Read, Write};
 use postcard::experimental::max_size::MaxSize;
@@ -26,6 +28,9 @@ use crate::keymap::KeyMap;
 
 /// Unlock attempts live long enough for BLE WebHID round trips.
 const RYNK_UNLOCK_WINDOW: embassy_time::Duration = embassy_time::Duration::from_millis(500);
+/// A topic frame, encoded apart from the request buffer so that requests can
+/// keep arriving while it is written.
+const TOPIC_FRAME_SIZE: usize = max_wire_size(RYNK_HEADER_SIZE + command::MAX_TOPIC_PAYLOAD);
 
 /// Transport-agnostic Rynk service.
 pub struct RynkService<'a> {
@@ -250,14 +255,31 @@ impl<'a> RynkService<'a> {
                         if !handshaked {
                             continue;
                         }
-                        // The buffer is empty here, so encoding the topic is safe.
-                        match event.encode(&mut buf) {
-                            Ok(n) => {
-                                if tx.write_all(&buf[..n]).await.is_err() {
+                        let mut frame = [0u8; TOPIC_FRAME_SIZE];
+                        let len = match event.encode(&mut frame) {
+                            Ok(len) => len,
+                            Err(e) => {
+                                warn!("Rynk topic encode failed: {:?}", e);
+                                continue;
+                            }
+                        };
+                        // A host that sends a request before it reads polls IN only once
+                        // the request is through, so keep taking the request in while
+                        // the topic waits; it is served after the topic.
+                        let mut write = pin!(tx.write_all(&frame[..len]));
+                        loop {
+                            let tail = df.tail(&mut buf);
+                            if tail.is_empty() {
+                                if write.as_mut().await.is_err() {
                                     return;
                                 }
+                                break;
                             }
-                            Err(e) => warn!("Rynk topic encode failed: {:?}", e),
+                            match select(write.as_mut(), rx.read(tail)).await {
+                                Either::First(Ok(())) => break,
+                                Either::First(Err(_)) | Either::Second(Ok(0) | Err(_)) => return,
+                                Either::Second(Ok(n)) => df.commit(n),
+                            }
                         }
                     }
                 }
@@ -598,6 +620,126 @@ pub(super) mod tests {
         assert_eq!(resp.len(), 2, "the split frame completes and is served");
         assert_eq!(resp[0].1, 0);
         assert_eq!(resp[1].1, 1);
+    }
+
+    /// The host of a client that sends a request and only then reads: it polls
+    /// IN once the request is through, so until then the firmware's writes wait.
+    struct SendThenReadHost {
+        handshake: Vec<u8>,
+        request: core::cell::RefCell<VecDeque<Vec<u8>>>,
+        sent_handshake: core::cell::Cell<bool>,
+        topic_published: core::cell::Cell<bool>,
+        captured: core::cell::RefCell<Vec<u8>>,
+    }
+
+    impl SendThenReadHost {
+        fn sending(&self) -> bool {
+            self.topic_published.get() && !self.request.borrow().is_empty()
+        }
+    }
+
+    struct HostOut<'h>(&'h SendThenReadHost);
+    struct HostIn<'h>(&'h SendThenReadHost);
+
+    impl ErrorType for HostOut<'_> {
+        type Error = ErrorKind;
+    }
+
+    impl ErrorType for HostIn<'_> {
+        type Error = ErrorKind;
+    }
+
+    impl Read for HostOut<'_> {
+        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            let host = self.0;
+            if !host.sent_handshake.replace(true) {
+                buf[..host.handshake.len()].copy_from_slice(&host.handshake);
+                return Ok(host.handshake.len());
+            }
+            if !host.topic_published.replace(true) {
+                // A layer change lands just as the host starts its next request.
+                crate::event::publish_event(crate::event::LayerChangeEvent(1));
+                return core::future::pending().await;
+            }
+            let chunk = host.request.borrow_mut().pop_front();
+            if let Some(chunk) = chunk {
+                buf[..chunk.len()].copy_from_slice(&chunk);
+                return Ok(chunk.len());
+            }
+            // Close the link once the topic and the reply are both out.
+            core::future::poll_fn(|_| {
+                if decode_frames(&host.captured.borrow()).len() >= 3 {
+                    core::task::Poll::Ready(Ok(0))
+                } else {
+                    core::task::Poll::Pending
+                }
+            })
+            .await
+        }
+    }
+
+    impl Write for HostIn<'_> {
+        async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            let host = self.0;
+            core::future::poll_fn(|_| {
+                if host.sending() {
+                    core::task::Poll::Pending
+                } else {
+                    core::task::Poll::Ready(())
+                }
+            })
+            .await;
+            host.captured.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// A topic that comes up while a send-then-read host is mid-request waits
+    /// for that host's IN poll, which comes only after the request is in. The
+    /// session reads on while the topic waits, so neither side stalls.
+    #[test]
+    fn run_session_reads_a_request_while_a_topic_waits_for_the_host() {
+        let mut behavior = BehaviorConfig::default();
+        let positional: PositionalConfig<1, 1> = PositionalConfig::default();
+        let mut data: KeymapData<1, 1, 1, 0> = KeymapData::new([[[KeyAction::No]]]);
+        let keymap = block_on(KeyMap::new(&mut data, &mut behavior, &positional));
+        let config = RmkConfig::default();
+        let service = RynkService::new(&keymap, &config);
+
+        // The request trickles in a byte per packet, as a long frame would.
+        let request = req(Cmd::GetVersion.raw(), 1).into_iter().map(|b| vec![b]).collect();
+        let host = SendThenReadHost {
+            handshake: req(Cmd::GetCapabilities.raw(), 0),
+            request: core::cell::RefCell::new(request),
+            sent_handshake: core::cell::Cell::new(false),
+            topic_published: core::cell::Cell::new(false),
+            captured: core::cell::RefCell::new(Vec::new()),
+        };
+        let (mut rx, mut tx) = (HostOut(&host), HostIn(&host));
+
+        let served = block_on(embassy_time::with_timeout(
+            embassy_time::Duration::from_secs(2),
+            service.run_session(&mut rx, &mut tx),
+        ));
+        assert!(served.is_ok(), "the session stalled on the topic write");
+
+        let frames = decode_frames(&host.captured.borrow());
+        assert_eq!(frames.len(), 3);
+        assert_eq!((frames[0].0, frames[0].1), (Cmd::GetCapabilities.raw(), 0));
+        assert_eq!(
+            (frames[1].0, frames[1].1),
+            (Cmd::LayerChange.raw(), 0),
+            "the topic goes out first"
+        );
+        assert_eq!(
+            (frames[2].0, frames[2].1),
+            (Cmd::GetVersion.raw(), 1),
+            "the request read meanwhile is answered"
+        );
     }
 
     /// A bulk page shrinks to the reply window left beside a parked tail
