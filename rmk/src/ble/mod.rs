@@ -275,8 +275,6 @@ async fn run_ble_keyboard<
     let mut peripheral = stack.peripheral();
     let runner = stack.runner();
 
-    let profile_manager = &profile_manager;
-
     let connection_loop = async {
         // Deadline at which the current advertising session stops; `None` until
         // the first advertise below sets it.
@@ -344,7 +342,7 @@ async fn run_ble_keyboard<
                             &conn,
                             stack,
                             profile,
-                            profile_manager,
+                            &profile_manager,
                             config,
                             #[cfg(feature = "host")]
                             host_service,
