@@ -57,6 +57,7 @@ async fn main(_spawner: Spawner) {
         pid: 0x4643,
         manufacturer: "Haobo",
         product_name: "RMK Keyboard Peripheral",
+        ..DeviceConfig::default()
     };
 
     let mut dfu_led = DfuLedProcessor::new(Output::new(p.PIN_25, Level::Low), false);
