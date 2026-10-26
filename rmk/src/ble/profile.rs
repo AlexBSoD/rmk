@@ -4,6 +4,7 @@
 use bt_hci::{cmd::le::LeSetPhy, controller::ControllerCmdAsync};
 use embassy_futures::select::{Either, select, select_array};
 use embassy_sync::signal::Signal;
+use embassy_sync::watch::Watch;
 use trouble_host::prelude::*;
 use trouble_host::{BondInformation, LongTermKey};
 
@@ -13,9 +14,6 @@ use crate::channel::BLE_PROFILE_CHANNEL;
 use crate::state::{current_profile, set_ble_bonded, set_ble_profile};
 #[cfg(feature = "storage")]
 use crate::storage::{StorageItem, StorageKey, StorageValue, read, store};
-
-pub(crate) static UPDATED_PROFILES: [Signal<crate::RawMutex, ProfileInfo>; BOND_SLOTS] =
-    [const { Signal::new() }; BOND_SLOTS];
 
 /// The dedicated dongle bond slot: the slot number after the normal profiles,
 /// so pairing a dongle never touches a host bond. Selected only via the
@@ -28,7 +26,7 @@ pub(crate) const DONGLE_PROFILE: u8 = NUM_BLE_PROFILE as u8;
 pub(crate) const BOND_SLOTS: usize = NUM_BLE_PROFILE + cfg!(feature = "dongle") as usize;
 
 /// BLE profile info
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ProfileInfo {
     pub(crate) slot_num: u8,
@@ -80,13 +78,6 @@ impl Default for ProfileInfo {
     }
 }
 
-/// Live bonding information for a profile slot, skipping cleared entries.
-fn bond_info_of(bonded_devices: &[ProfileInfo], slot_num: u8) -> Option<&ProfileInfo> {
-    bonded_devices
-        .iter()
-        .find(|info| !info.removed && info.slot_num == slot_num)
-}
-
 /// BLE profile switch action
 #[derive(Debug)]
 pub(crate) enum BleProfileAction {
@@ -120,10 +111,8 @@ pub(crate) struct ProfileManager<
 > where
     's: 'b,
 {
-    /// List of bonded devices
-    bonded_devices: heapless::Vec<ProfileInfo, SLOTS>,
-    /// Retained when the connection loop cancels a flash write.
-    pending_save: Option<ProfileInfo>,
+    profiles: [Watch<crate::RawMutex, ProfileInfo, 1>; SLOTS],
+    updated_active_profile: Signal<crate::RawMutex, ()>,
     /// BLE stack
     stack: &'b Stack<'s, C, P>,
 }
@@ -137,8 +126,8 @@ where
     /// Create a new profile manager
     pub(crate) fn new(stack: &'b Stack<'s, C, P>) -> Self {
         Self {
-            bonded_devices: heapless::Vec::new(),
-            pending_save: None,
+            profiles: [const { Watch::new() }; SLOTS],
+            updated_active_profile: Signal::new(),
             stack,
         }
     }
@@ -146,16 +135,12 @@ where
     /// Load stored bonding information
     #[cfg(feature = "storage")]
     pub(crate) async fn load_bonded_devices(&mut self) {
-        self.bonded_devices.clear();
-        for slot_num in 0..SLOTS {
-            if let Ok(Some(StorageValue::BondInfo(info))) = read(StorageKey::BondInfo(slot_num as u8)).await
-                && !info.removed
-                && let Err(e) = self.bonded_devices.push(info)
-            {
-                error!("Failed to add bond info: {:?}", e);
-            }
+        for (slot, state) in self.profiles.iter_mut().enumerate() {
+            *state = match read(StorageKey::BondInfo(slot as u8)).await {
+                Ok(Some(StorageValue::BondInfo(info))) if !info.removed => Watch::new_with(info),
+                _ => Watch::new(),
+            };
         }
-        debug!("Loaded {} bond info", self.bonded_devices.len());
 
         let profile =
             if let Ok(Some(StorageValue::ActiveBleProfile(profile))) = read(StorageKey::ActiveBleProfile).await {
@@ -165,17 +150,12 @@ where
                 debug!("Loaded default active profile",);
                 0
             };
-        set_ble_profile(profile, self.is_bonded(profile));
+        set_ble_profile(profile, self.bond_info(profile).is_some());
     }
 
-    fn is_bonded(&self, slot_num: u8) -> bool {
-        bond_info_of(&self.bonded_devices, slot_num).is_some()
-    }
-
-    /// Cached bond info for `profile`, cloned to free the caller from borrow
-    /// conflicts with concurrent `update_profile()`.
+    /// Read the live bond stored in `profile`.
     pub(crate) fn bond_info(&self, profile: u8) -> Option<ProfileInfo> {
-        bond_info_of(&self.bonded_devices, profile).cloned()
+        self.profiles.get(profile as usize)?.try_get_and(|info| !info.removed)
     }
 
     /// Check if the `identity` is the bonded dongle's identity.
@@ -184,16 +164,13 @@ where
     /// the connected dongle(in the DONGLE_PROFILE) should be excluded.
     #[cfg(feature = "dongle")]
     pub(crate) fn is_bonded_dongle(&self, identity: &Identity) -> bool {
-        self.bonded_devices.iter().any(|bond_info| {
-            !bond_info.removed
-                && bond_info.slot_num == DONGLE_PROFILE
-                && bond_info.info.identity.match_identity(identity)
-        })
+        self.bond_info(DONGLE_PROFILE)
+            .is_some_and(|info| info.info.identity.match_identity(identity))
     }
 
     /// Update bonding information in the stack according to the current active profile
     ///
-    /// Also republishes `BleStatus::bonded`. Every change to `bonded_devices` that can
+    /// Also republishes `BleStatus::bonded`. Every change to `profiles` that can
     /// alter bond presence is followed by this call, so the flag is derived here once
     /// instead of at each mutation site.
     pub(crate) fn update_stack_bonds(&self) {
@@ -221,125 +198,106 @@ where
         }
     }
 
-    /// Add/update bonding information
-    pub(crate) async fn add_profile_info(&mut self, profile_info: ProfileInfo) {
-        let bond_changed = if let Some(info) = self
-            .bonded_devices
-            .iter_mut()
-            .find(|info| info.slot_num == profile_info.slot_num)
-        {
-            let bond_changed = info.removed || info.info != profile_info.info;
-            if !bond_changed && info.cccd_table == profile_info.cccd_table {
-                debug!("Skip saving unchanged profile");
-                return;
-            }
-            *info = profile_info.clone();
-            bond_changed
-        } else if self.bonded_devices.push(profile_info.clone()).is_err() {
-            // Nothing entered the cache, so skip the flash write too: persisting a
-            // bond the cache rejected would leave flash holding an entry RAM lacks.
-            error!(
-                "Failed to add bond info for profile {}: cache is full",
-                profile_info.slot_num
-            );
+    /// Add/update bonding information.
+    pub(crate) fn add_profile_info(&self, info: ProfileInfo) {
+        let Some(state) = self.profiles.get(info.slot_num as usize) else {
             return;
-        } else {
-            true
         };
-
+        let old = state.try_get();
+        if old.as_ref() == Some(&info) {
+            return;
+        }
+        let bond_changed = old.as_ref().is_none_or(|old| old.removed || old.info != info.info);
+        state.sender().send(info);
         if bond_changed {
             self.update_stack_bonds();
         }
-        self.pending_save = Some(profile_info);
-        self.save_pending().await;
     }
 
-    async fn save_pending(&mut self) {
-        let Some(info) = self.pending_save.clone() else {
-            return;
-        };
-
-        // Keep the snapshot until store returns, so cancellation can retry.
-        if store(StorageItem::BondInfo(info)).await.is_err() {
-            error!("Failed to save BLE profile");
+    pub(crate) fn update_profile_cccd_table(&self, slot: u8, table: heapless::Vec<u8, CCCD_TABLE_SIZE>) {
+        if let Some(state) = self.profiles.get(slot as usize) {
+            state.sender().send_if_modified(|info| {
+                if let Some(info) = info
+                    && !info.removed
+                    && info.cccd_table != table
+                {
+                    info.cccd_table = table.clone();
+                    return true;
+                }
+                false
+            });
         }
-        self.pending_save = None;
     }
 
-    /// Clear bonding information of the specified slot
-    pub(crate) async fn clear_bond(&mut self, slot_num: u8) {
-        info!("Clearing bonding information on profile: {}", slot_num);
-
-        if let Some(signal) = UPDATED_PROFILES.get(slot_num as usize) {
-            signal.reset();
-        }
-
-        // Update bonding information in memory
-        for bond_info in self.bonded_devices.iter_mut() {
-            if bond_info.slot_num == slot_num {
-                bond_info.removed = true;
-            }
-        }
-
-        // Update the active bonding information in the stack
-        self.update_stack_bonds();
-
-        // Mark the profile removed, instead of deleting it from storage
-        self.pending_save = Some(ProfileInfo {
-            slot_num,
-            removed: true,
-            ..Default::default()
-        });
-        self.save_pending().await;
-    }
-
-    /// Save snapshots and switch profiles; return a slot to clear after the connection stops.
-    pub(crate) async fn update_profile(&mut self) -> Option<u8> {
+    /// One persistence receiver per slot, retained across connection changes.
+    pub(crate) async fn save_profiles(&self) -> ! {
+        let mut receivers = self
+            .profiles
+            .each_ref()
+            .map(|state| state.receiver().expect("one profile saver"));
         loop {
-            self.save_pending().await;
-            match select(
-                BLE_PROFILE_CHANNEL.receive(),
-                select_array(UPDATED_PROFILES.each_ref().map(|signal| signal.wait())),
+            let item = match select(
+                select_array(receivers.each_mut().map(|receiver| receiver.changed())),
+                self.updated_active_profile.wait(),
             )
             .await
             {
-                Either::First(action) => {
-                    let current = current_profile();
-                    let profile = match action {
-                        BleProfileAction::Switch(profile) if profile == current => continue,
-                        BleProfileAction::Switch(profile) => profile,
-                        BleProfileAction::Previous => {
-                            if current == 0 {
-                                NUM_BLE_PROFILE as u8 - 1
-                            } else {
-                                current - 1
-                            }
-                        }
-                        BleProfileAction::Next => {
-                            // Cycling stays within the host profiles. The dongle slot sits past
-                            // the last one, so wrap there too instead of landing on profile 1.
-                            let next = current + 1;
-                            if next >= NUM_BLE_PROFILE as u8 { 0 } else { next }
-                        }
-                        BleProfileAction::ClearBond => return Some(current),
-                        BleProfileAction::ClearSlot(slot) => return Some(slot),
-                    };
-                    if profile != current {
-                        set_ble_profile(profile, self.is_bonded(profile));
-                        self.update_stack_bonds();
-                        #[cfg(feature = "storage")]
-                        if store(StorageItem::ActiveBleProfile(profile)).await.is_err() {
-                            error!("Failed to save active profile");
-                        }
-                        info!("Switched to BLE profile: {}", profile);
-                    }
-                    info!("Update profile done");
-                    return None;
-                }
-                Either::Second((profile_info, _)) => {
-                    self.add_profile_info(profile_info).await;
-                }
+                Either::First((info, _)) => StorageItem::BondInfo(info),
+                Either::Second(()) => StorageItem::ActiveBleProfile(current_profile()),
+            };
+            if store(item).await.is_err() {
+                error!("Failed to save BLE profile");
             }
+        }
+    }
+
+    /// Clear bonding information of the specified slot.
+    pub(crate) fn clear_bond(&self, slot: u8) {
+        if let Some(state) = self.profiles.get(slot as usize) {
+            state.sender().send(ProfileInfo {
+                slot_num: slot,
+                removed: true,
+                ..Default::default()
+            });
+            self.update_stack_bonds();
+        }
+    }
+
+    /// Apply one profile action, then let the connection loop restart.
+    pub(crate) async fn update_profile(&self) {
+        loop {
+            let action = BLE_PROFILE_CHANNEL.receive().await;
+            let current = current_profile();
+            let profile = match action {
+                BleProfileAction::Switch(profile) if profile == current => continue,
+                BleProfileAction::Switch(profile) => profile,
+                BleProfileAction::Previous => {
+                    if current == 0 {
+                        NUM_BLE_PROFILE as u8 - 1
+                    } else {
+                        current - 1
+                    }
+                }
+                BleProfileAction::Next => {
+                    let next = current + 1;
+                    if next >= NUM_BLE_PROFILE as u8 { 0 } else { next }
+                }
+                BleProfileAction::ClearBond => {
+                    self.clear_bond(current);
+                    return;
+                }
+                BleProfileAction::ClearSlot(slot) => {
+                    self.clear_bond(slot);
+                    return;
+                }
+            };
+            if profile != current {
+                set_ble_profile(profile, self.bond_info(profile).is_some());
+                self.update_stack_bonds();
+                self.updated_active_profile.signal(());
+                info!("Switched to BLE profile: {}", profile);
+            }
+            return;
         }
     }
 }
@@ -348,12 +306,9 @@ where
 mod tests {
     use bt_hci::controller::ExternalController;
     use bt_hci::transport::{PacketToController, PacketToHost, Transport};
-    use embassy_futures::select::select;
 
-    use super::{
-        DefaultPacketPool, HostResources, LongTermKey, ProfileInfo, ProfileManager, UPDATED_PROFILES, bond_info_of,
-    };
-    use crate::test_support::{drain_flash_channel, test_block_on};
+    use super::{DefaultPacketPool, HostResources, LongTermKey, ProfileInfo, ProfileManager};
+    use crate::test_support::test_block_on;
 
     struct TestTransport;
 
@@ -381,73 +336,69 @@ mod tests {
         test(&mut manager);
     }
 
-    fn add_profile<const SLOTS: usize>(manager: &mut TestManager<'_, '_, SLOTS>, info: ProfileInfo) {
-        test_block_on(select(manager.add_profile_info(info), drain_flash_channel()));
-    }
-
     #[test]
     fn cleared_profile_can_be_paired_again_with_same_bond_information() {
         with_manager::<1>(|manager| {
             let profile_info = ProfileInfo::default();
-            add_profile(manager, profile_info.clone());
-            test_block_on(manager.add_profile_info(profile_info.clone()));
+            manager.add_profile_info(profile_info.clone());
+            manager.add_profile_info(profile_info.clone());
 
-            UPDATED_PROFILES[0].signal(profile_info.clone());
-            test_block_on(select(manager.clear_bond(0), drain_flash_channel()));
-            assert!(!UPDATED_PROFILES[0].signaled());
-            add_profile(manager, profile_info);
-            assert!(!manager.bonded_devices[0].removed);
-            assert_eq!(manager.bonded_devices.len(), 1);
+            manager.clear_bond(0);
+            manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
+            assert!(manager.bond_info(0).is_none());
+            manager.add_profile_info(profile_info);
+            assert!(!manager.profiles[0].try_get().unwrap().removed);
+            assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
         });
     }
 
     #[test]
-    fn full_cache_rejects_new_profile_without_saving_or_evicting() {
+    fn out_of_range_slot_does_not_replace_an_existing_profile() {
         with_manager::<1>(|manager| {
-            add_profile(manager, ProfileInfo::default());
+            manager.add_profile_info(ProfileInfo::default());
             let other_slot = ProfileInfo {
                 slot_num: 1,
                 ..Default::default()
             };
-            test_block_on(manager.add_profile_info(other_slot));
-            assert_eq!(manager.bonded_devices.len(), 1);
-            assert_eq!(manager.bonded_devices[0].slot_num, 0);
+            manager.add_profile_info(other_slot);
+            assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
+            assert_eq!(manager.profiles[0].try_get().unwrap().slot_num, 0);
         });
     }
 
     #[test]
     fn cleared_slot_has_no_bond_info() {
-        let mut bonded_devices = heapless::Vec::<ProfileInfo, 1>::new();
-        bonded_devices.push(ProfileInfo::default()).unwrap();
-        assert!(bond_info_of(&bonded_devices, 0).is_some());
-
-        bonded_devices[0].removed = true;
-        assert!(bond_info_of(&bonded_devices, 0).is_none());
+        with_manager::<1>(|manager| {
+            manager.add_profile_info(ProfileInfo::default());
+            assert!(manager.bond_info(0).is_some());
+            manager.clear_bond(0);
+            assert!(manager.bond_info(0).is_none());
+        });
     }
 
     #[test]
     fn bonding_one_slot_leaves_the_others_unbonded() {
-        let mut bonded_devices = heapless::Vec::<ProfileInfo, 2>::new();
-        bonded_devices.push(ProfileInfo::default()).unwrap();
-
-        assert!(bond_info_of(&bonded_devices, 0).is_some());
-        assert!(bond_info_of(&bonded_devices, 1).is_none());
+        with_manager::<2>(|manager| {
+            manager.add_profile_info(ProfileInfo::default());
+            assert!(manager.bond_info(0).is_some());
+            assert!(manager.bond_info(1).is_none());
+        });
     }
 
     #[test]
     fn re_pairing_a_slot_with_different_bond_information_replaces_it() {
         with_manager::<1>(|manager| {
-            add_profile(manager, ProfileInfo::default());
+            manager.add_profile_info(ProfileInfo::default());
             let mut new_host = ProfileInfo::default();
             new_host.info.ltk = LongTermKey(1);
-            add_profile(manager, new_host);
-            assert_eq!(manager.bonded_devices[0].info.ltk, LongTermKey(1));
-            assert_eq!(manager.bonded_devices.len(), 1);
+            manager.add_profile_info(new_host);
+            assert_eq!(manager.profiles[0].try_get().unwrap().info.ltk, LongTermKey(1));
+            assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
         });
     }
 
     #[test]
-    fn latest_profile_snapshots_survive_cancelled_save() {
+    fn updates_during_storage_wait_are_saved_from_latest_cache() {
         use core::future::Future;
         use core::pin::pin;
         use core::task::{Context, Waker};
@@ -461,92 +412,341 @@ mod tests {
 
         with_manager::<2>(|manager| {
             clear_flash_channel();
-            assert_eq!(crate::state::current_profile(), 0);
-            let mut existing = ProfileInfo {
-                slot_num: 1,
-                ..Default::default()
-            };
-            existing.info.ltk = LongTermKey(1);
-            add_profile(manager, existing);
-            for (profile, value) in [(1, 1), (0, 2)] {
+            for (slot, key) in [(0, 1), (1, 2)] {
                 let mut info = ProfileInfo {
-                    slot_num: profile,
+                    slot_num: slot,
                     ..Default::default()
                 };
-                info.info.ltk = LongTermKey(value as u128);
-                UPDATED_PROFILES[profile as usize].signal(info.clone());
-                info.cccd_table = heapless::Vec::from_slice(&[value]).unwrap();
-                UPDATED_PROFILES[profile as usize].signal(info);
+                info.info.ltk = LongTermKey(key);
+                manager.add_profile_info(info);
             }
-
+            let mut saver = pin!(manager.save_profiles());
             {
                 let mut read = pin!(read(StorageKey::StorageConfig));
                 let mut cx = Context::from_waker(Waker::noop());
                 assert!(read.as_mut().poll(&mut cx).is_pending());
+                assert!(saver.as_mut().poll(&mut cx).is_pending());
+            }
+            for slot in 0..2 {
+                manager.update_profile_cccd_table(slot, heapless::Vec::from_slice(&[slot + 3]).unwrap());
+            }
+            // Connection-level cancellation does not drop the independent saver.
+            {
                 let mut update = pin!(manager.update_profile());
+                let mut cx = Context::from_waker(Waker::noop());
                 assert!(update.as_mut().poll(&mut cx).is_pending());
             }
-            let mut latest = manager.bond_info(1).unwrap();
-            latest.cccd_table = heapless::Vec::from_slice(&[3]).unwrap();
-            UPDATED_PROFILES[1].signal(latest);
+            test_block_on(async {
+                let flash = async_flash_wrapper(InMemoryFlash::<16_384, 4_096, 1>::new());
+                let mut storage = Box::pin(Storage::new(flash, &StorageConfig::default())).await;
+                let verify = async {
+                    for slot in 0..2 {
+                        loop {
+                            if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(slot)).await.unwrap()
+                                && info.cccd_table.as_slice() == [slot + 3]
+                            {
+                                assert_eq!(info.info.ltk, LongTermKey((slot + 1).into()));
+                                break;
+                            }
+                        }
+                    }
+                };
+                assert!(matches!(
+                    select3(saver.as_mut(), storage.run(), verify).await,
+                    Either3::Third(())
+                ));
+            });
+        });
+    }
 
+    #[test]
+    fn clear_during_storage_wait_persists_tombstone_last() {
+        use core::future::Future;
+        use core::pin::pin;
+        use core::task::{Context, Waker};
+
+        use embassy_futures::select::{Either3, select3};
+
+        use crate::config::StorageConfig;
+        use crate::core_traits::Runnable;
+        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
+        use crate::test_support::{InMemoryFlash, clear_flash_channel};
+
+        with_manager::<1>(|manager| {
+            clear_flash_channel();
+            manager.add_profile_info(ProfileInfo::default());
+            let mut saver = pin!(manager.save_profiles());
+            {
+                let mut read = pin!(read(StorageKey::StorageConfig));
+                let mut cx = Context::from_waker(Waker::noop());
+                assert!(read.as_mut().poll(&mut cx).is_pending());
+                assert!(saver.as_mut().poll(&mut cx).is_pending());
+            }
+            manager.clear_bond(0);
+            manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
             test_block_on(async {
                 let flash = async_flash_wrapper(InMemoryFlash::<16_384, 4_096, 1>::new());
                 let mut storage = Box::pin(Storage::new(flash, &StorageConfig::default())).await;
                 let verify = async {
                     loop {
-                        if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(1)).await.unwrap() {
-                            assert_eq!(info.info.ltk, LongTermKey(1));
-                            assert_eq!(info.cccd_table.as_slice(), &[3]);
+                        if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(0)).await.unwrap()
+                            && info.removed
+                        {
                             break;
                         }
                     }
-                    let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(0)).await.unwrap() else {
-                        panic!("the cancelled save must be resumed");
-                    };
-                    assert_eq!(info.info.ltk, LongTermKey(2));
-                    assert_eq!(info.cccd_table.as_slice(), &[2]);
                 };
                 assert!(matches!(
-                    select3(manager.update_profile(), storage.run(), verify).await,
+                    select3(saver.as_mut(), storage.run(), verify).await,
                     Either3::Third(())
                 ));
             });
-
-            assert_eq!(crate::state::current_profile(), 0);
-            assert_eq!(manager.bond_info(0).unwrap().cccd_table.as_slice(), &[2]);
-            assert_eq!(manager.bond_info(1).unwrap().cccd_table.as_slice(), &[3]);
+            assert!(manager.bond_info(0).is_none());
         });
     }
 
     #[test]
-    fn failed_save_is_dropped_instead_of_retried() {
+    fn profile_and_active_notifications_are_all_persisted() {
+        use embassy_futures::select::{Either3, select3};
+
+        use crate::config::StorageConfig;
+        use crate::core_traits::Runnable;
+        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
+        use crate::test_support::{InMemoryFlash, clear_flash_channel};
+
+        with_manager::<2>(|manager| {
+            clear_flash_channel();
+            manager.clear_bond(0);
+            manager.add_profile_info(ProfileInfo {
+                slot_num: 1,
+                ..Default::default()
+            });
+            test_block_on(async {
+                super::BLE_PROFILE_CHANNEL
+                    .try_send(super::BleProfileAction::Switch(1))
+                    .unwrap();
+                manager.update_profile().await;
+                let flash = async_flash_wrapper(InMemoryFlash::<16_384, 4_096, 1>::new());
+                let mut storage = Box::pin(Storage::new(flash, &StorageConfig::default())).await;
+                let verify = async {
+                    for slot in 0..2 {
+                        loop {
+                            if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(slot)).await.unwrap()
+                            {
+                                assert_eq!(info.removed, slot == 0);
+                                break;
+                            }
+                        }
+                    }
+                    loop {
+                        if let Some(StorageValue::ActiveBleProfile(active)) =
+                            read(StorageKey::ActiveBleProfile).await.unwrap()
+                        {
+                            assert_eq!(active, 1);
+                            break;
+                        }
+                    }
+                };
+                assert!(matches!(
+                    select3(manager.save_profiles(), storage.run(), verify).await,
+                    Either3::Third(())
+                ));
+            });
+        });
+    }
+
+    #[test]
+    fn a_failed_save_does_not_prevent_saving_later_updates() {
+        use core::pin::pin;
+
         use embassy_futures::select::{Either3, select3};
         use embassy_time::Timer;
 
         use crate::config::StorageConfig;
         use crate::core_traits::Runnable;
-        use crate::storage::{Storage, async_flash_wrapper};
+        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
         use crate::test_support::{InMemoryFlash, clear_flash_channel};
-
         with_manager::<1>(|manager| {
             clear_flash_channel();
             test_block_on(async {
                 let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
                 let control = flash.clone();
                 let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
-                // The schema write above landed; reject only the bond write below.
                 control.fail_writes(true);
-                let save = manager.add_profile_info(ProfileInfo::default());
-                assert!(
-                    matches!(
-                        select3(save, storage.run(), Timer::after_millis(1_000)).await,
-                        Either3::First(())
-                    ),
-                    "a rejected flash write must not keep save_pending retrying"
-                );
+                manager.add_profile_info(ProfileInfo::default());
+                let mut saver = pin!(manager.save_profiles());
+                select3(saver.as_mut(), storage.run(), Timer::after_millis(10)).await;
+                assert!(storage.fetch(StorageKey::BondInfo(0)).await.unwrap().is_none());
+                control.fail_writes(false);
+                manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
+                let verify = async {
+                    loop {
+                        if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(0)).await.unwrap() {
+                            assert_eq!(info.cccd_table.as_slice(), &[1]);
+                            break;
+                        }
+                    }
+                };
+                assert!(matches!(
+                    select3(saver.as_mut(), storage.run(), verify).await,
+                    Either3::Third(())
+                ));
             });
-            assert!(manager.pending_save.is_none());
+        });
+    }
+
+    #[test]
+    fn switching_does_not_wait_for_pending_flash() {
+        use core::future::Future;
+        use core::pin::pin;
+        use core::task::{Context, Waker};
+
+        use crate::storage::{StorageKey, read};
+        use crate::test_support::clear_flash_channel;
+        with_manager::<2>(|manager| {
+            clear_flash_channel();
+            manager.add_profile_info(ProfileInfo::default());
+            let mut blocker = pin!(read(StorageKey::StorageConfig));
+            let mut saver = pin!(manager.save_profiles());
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(blocker.as_mut().poll(&mut cx).is_pending());
+            assert!(saver.as_mut().poll(&mut cx).is_pending());
+            super::BLE_PROFILE_CHANNEL
+                .try_send(super::BleProfileAction::Switch(1))
+                .unwrap();
+            {
+                let mut action = pin!(manager.update_profile());
+                assert!(action.as_mut().poll(&mut cx).is_ready());
+            }
+            assert_eq!(crate::state::current_profile(), 1);
+            super::BLE_PROFILE_CHANNEL
+                .try_send(super::BleProfileAction::ClearBond)
+                .unwrap();
+            {
+                let mut action = pin!(manager.update_profile());
+                assert!(action.as_mut().poll(&mut cx).is_ready());
+            }
+            assert!(manager.profiles[1].try_get().unwrap().removed);
+            assert!(saver.as_mut().poll(&mut cx).is_pending());
+        });
+    }
+
+    #[test]
+    fn loading_profiles_does_not_schedule_redundant_saves() {
+        use embassy_futures::select::{select, select3};
+        use embassy_time::Timer;
+
+        use crate::config::StorageConfig;
+        use crate::core_traits::Runnable;
+        use crate::storage::{Storage, StorageItem, async_flash_wrapper, store};
+        use crate::test_support::{InMemoryFlash, clear_flash_channel};
+        with_manager::<2>(|manager| {
+            clear_flash_channel();
+            test_block_on(async {
+                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
+                let control = flash.clone();
+                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
+                select(store(StorageItem::BondInfo(ProfileInfo::default())), storage.run()).await;
+                select(manager.load_bonded_devices(), storage.run()).await;
+                assert!(manager.bond_info(0).is_some());
+                let before = control.writes();
+                select3(manager.save_profiles(), storage.run(), Timer::after_millis(10)).await;
+                assert_eq!(control.writes(), before);
+            });
+        });
+    }
+
+    #[test]
+    fn clear_and_repair_during_write_survives_reload() {
+        use core::future::Future;
+        use core::pin::pin;
+        use core::task::{Context, Waker};
+
+        use embassy_futures::select::{Either3, select, select3};
+
+        use crate::config::StorageConfig;
+        use crate::core_traits::Runnable;
+        use crate::storage::{Storage, StorageKey, StorageValue, async_flash_wrapper, read};
+        use crate::test_support::{InMemoryFlash, clear_flash_channel};
+        with_manager::<1>(|manager| {
+            clear_flash_channel();
+            test_block_on(async {
+                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
+                let reboot = flash.clone();
+                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
+                manager.add_profile_info(ProfileInfo::default());
+                {
+                    let mut saver = pin!(manager.save_profiles());
+                    {
+                        let mut blocker = pin!(read(StorageKey::StorageConfig));
+                        let mut cx = Context::from_waker(Waker::noop());
+                        assert!(blocker.as_mut().poll(&mut cx).is_pending());
+                        assert!(saver.as_mut().poll(&mut cx).is_pending());
+                        manager.clear_bond(0);
+                        let mut replacement = ProfileInfo::default();
+                        replacement.info.ltk = LongTermKey(42);
+                        manager.add_profile_info(replacement);
+                        manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1, 2]).unwrap());
+                    }
+                    let verify = async {
+                        loop {
+                            if let Some(StorageValue::BondInfo(info)) = read(StorageKey::BondInfo(0)).await.unwrap()
+                                && info.info.ltk == LongTermKey(42)
+                            {
+                                assert!(!info.removed);
+                                assert_eq!(info.cccd_table.as_slice(), &[1, 2]);
+                                break;
+                            }
+                        }
+                    };
+                    assert!(matches!(
+                        select3(saver.as_mut(), storage.run(), verify).await,
+                        Either3::Third(())
+                    ));
+                }
+                drop(storage);
+                let mut storage = Box::pin(Storage::new(async_flash_wrapper(reboot), &StorageConfig::default())).await;
+                select(manager.load_bonded_devices(), storage.run()).await;
+                let restored = manager.bond_info(0).unwrap();
+                assert_eq!(restored.info.ltk, LongTermKey(42));
+                assert_eq!(restored.cccd_table.as_slice(), &[1, 2]);
+            });
+        });
+    }
+
+    #[test]
+    fn unchanged_cccd_does_not_write_flash() {
+        use core::pin::pin;
+
+        use embassy_futures::select::select3;
+        use embassy_time::Timer;
+
+        use crate::config::StorageConfig;
+        use crate::core_traits::Runnable;
+        use crate::storage::{Storage, async_flash_wrapper};
+        use crate::test_support::{InMemoryFlash, clear_flash_channel};
+        with_manager::<1>(|manager| {
+            clear_flash_channel();
+            test_block_on(async {
+                let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
+                let control = flash.clone();
+                let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
+                manager.add_profile_info(ProfileInfo {
+                    cccd_table: heapless::Vec::from_slice(&[1]).unwrap(),
+                    ..Default::default()
+                });
+                let mut saver = pin!(manager.save_profiles());
+                select3(saver.as_mut(), storage.run(), Timer::after_millis(2)).await;
+                let before = control.writes();
+                for _ in 0..10 {
+                    manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
+                }
+                select3(saver.as_mut(), storage.run(), Timer::after_millis(2)).await;
+                assert_eq!(control.writes(), before);
+                manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[0]).unwrap());
+                select3(saver.as_mut(), storage.run(), Timer::after_millis(2)).await;
+                assert!(control.writes() > before);
+            });
         });
     }
 }
