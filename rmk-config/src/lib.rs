@@ -18,13 +18,11 @@ pub mod resolved;
 pub mod usb_interrupt_map;
 pub(crate) mod behavior;
 pub(crate) mod board;
-pub(crate) mod display;
 pub(crate) mod host;
 pub(crate) mod keycode_alias;
 pub(crate) mod keymap;
 pub mod layout;
 pub use layout::{STOCK_WIDTHS, layout_blob_from_toml, layout_info_from_toml};
-pub(crate) mod storage;
 
 /// Bytes in one persisted macro chunk, shared by configuration and firmware.
 pub const MACRO_CHUNK_SIZE: usize = 32;
