@@ -534,10 +534,11 @@ pub(crate) fn expand_keymap_and_storage(
     };
 
     if hardware.storage.is_some() {
+        // The parameter exists only in Vial builds.
         let vial_config = if host.vial_enabled {
             quote! { Some(&rmk_config.vial_config), }
         } else {
-            quote! { None, }
+            quote! {}
         };
 
         quote! {
