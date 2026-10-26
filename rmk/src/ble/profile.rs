@@ -254,21 +254,16 @@ where
         self.save_pending().await;
     }
 
-    /// Persist the latest snapshot.
-    ///
-    /// Called before every wait, so a write cancelled by a profile switch or a
-    /// new connection is resumed by the next call. A storage error is not
-    /// retried: repeating the same write cannot make it succeed, and retrying
-    /// would keep this future from ever handling the next profile action.
     async fn save_pending(&mut self) {
         let Some(info) = self.pending_save.clone() else {
             return;
         };
-        let result = store(StorageItem::BondInfo(info)).await;
-        self.pending_save = None;
-        if result.is_err() {
+
+        // Keep the snapshot until store returns, so cancellation can retry.
+        if store(StorageItem::BondInfo(info)).await.is_err() {
             error!("Failed to save BLE profile");
         }
+        self.pending_save = None;
     }
 
     /// Clear bonding information of the specified slot
