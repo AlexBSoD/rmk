@@ -3818,11 +3818,16 @@ mod tests {
         prepare_hid_write_recovery();
 
         assert_eq!(current_ble_status().state, BleState::Sleeping);
-        assert_eq!(BLE_REPORT_CHANNEL.len(), 1);
-        assert!(matches!(
-            BLE_REPORT_CHANNEL.try_receive().map(QueuedReport::into_report),
-            Ok(Report::KeyboardReport(report)) if report.modifier == 0 && report.keycodes == [0; 6]
-        ));
+        // The stale press is gone; every report type is released instead.
+        let next = || BLE_REPORT_CHANNEL.try_receive().map(QueuedReport::into_report);
+        assert!(matches!(next(), Ok(Report::KeyboardReport(report))
+            if report.modifier == 0 && report.keycodes == [0; 6]));
+        assert!(matches!(next(), Ok(Report::MouseReport(report)) if report == MouseReport::default()));
+        assert!(matches!(next(), Ok(Report::MediaKeyboardReport(report)) if report.usage_id == 0));
+        assert!(matches!(next(), Ok(Report::SystemControlReport(report)) if report.usage_id == 0));
+        #[cfg(feature = "steno")]
+        assert!(matches!(next(), Ok(Report::StenoReport(report)) if report.keys == [0; 8]));
+        assert!(BLE_REPORT_CHANNEL.is_empty());
 
         set_ble_state(BleState::Inactive);
         BLE_REPORT_CHANNEL.clear();
