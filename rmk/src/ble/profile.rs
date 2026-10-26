@@ -198,8 +198,8 @@ where
         }
     }
 
-    /// Add/update bonding information.
-    pub(crate) fn add_profile_info(&self, info: ProfileInfo) {
+    /// Set a slot's bond and initial CCCD state.
+    pub(crate) fn set_bond(&self, info: ProfileInfo) {
         let Some(state) = self.profiles.get(info.slot_num as usize) else {
             return;
         };
@@ -230,7 +230,7 @@ where
     }
 
     /// One persistence receiver per slot, retained across connection changes.
-    pub(crate) async fn save_profiles(&self) -> ! {
+    pub(crate) async fn run(&self) -> ! {
         let mut receivers = self
             .profiles
             .each_ref()
@@ -340,13 +340,13 @@ mod tests {
     fn cleared_profile_can_be_paired_again_with_same_bond_information() {
         with_manager::<1>(|manager| {
             let profile_info = ProfileInfo::default();
-            manager.add_profile_info(profile_info.clone());
-            manager.add_profile_info(profile_info.clone());
+            manager.set_bond(profile_info.clone());
+            manager.set_bond(profile_info.clone());
 
             manager.clear_bond(0);
             manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1]).unwrap());
             assert!(manager.bond_info(0).is_none());
-            manager.add_profile_info(profile_info);
+            manager.set_bond(profile_info);
             assert!(!manager.profiles[0].try_get().unwrap().removed);
             assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
         });
@@ -355,12 +355,12 @@ mod tests {
     #[test]
     fn out_of_range_slot_does_not_replace_an_existing_profile() {
         with_manager::<1>(|manager| {
-            manager.add_profile_info(ProfileInfo::default());
+            manager.set_bond(ProfileInfo::default());
             let other_slot = ProfileInfo {
                 slot_num: 1,
                 ..Default::default()
             };
-            manager.add_profile_info(other_slot);
+            manager.set_bond(other_slot);
             assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
             assert_eq!(manager.profiles[0].try_get().unwrap().slot_num, 0);
         });
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn cleared_slot_has_no_bond_info() {
         with_manager::<1>(|manager| {
-            manager.add_profile_info(ProfileInfo::default());
+            manager.set_bond(ProfileInfo::default());
             assert!(manager.bond_info(0).is_some());
             manager.clear_bond(0);
             assert!(manager.bond_info(0).is_none());
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn bonding_one_slot_leaves_the_others_unbonded() {
         with_manager::<2>(|manager| {
-            manager.add_profile_info(ProfileInfo::default());
+            manager.set_bond(ProfileInfo::default());
             assert!(manager.bond_info(0).is_some());
             assert!(manager.bond_info(1).is_none());
         });
@@ -388,10 +388,10 @@ mod tests {
     #[test]
     fn re_pairing_a_slot_with_different_bond_information_replaces_it() {
         with_manager::<1>(|manager| {
-            manager.add_profile_info(ProfileInfo::default());
+            manager.set_bond(ProfileInfo::default());
             let mut new_host = ProfileInfo::default();
             new_host.info.ltk = LongTermKey(1);
-            manager.add_profile_info(new_host);
+            manager.set_bond(new_host);
             assert_eq!(manager.profiles[0].try_get().unwrap().info.ltk, LongTermKey(1));
             assert_eq!(manager.profiles.iter().filter(|p| p.try_get().is_some()).count(), 1);
         });
@@ -418,9 +418,9 @@ mod tests {
                     ..Default::default()
                 };
                 info.info.ltk = LongTermKey(key);
-                manager.add_profile_info(info);
+                manager.set_bond(info);
             }
-            let mut saver = pin!(manager.save_profiles());
+            let mut saver = pin!(manager.run());
             {
                 let mut read = pin!(read(StorageKey::StorageConfig));
                 let mut cx = Context::from_waker(Waker::noop());
@@ -474,8 +474,8 @@ mod tests {
 
         with_manager::<1>(|manager| {
             clear_flash_channel();
-            manager.add_profile_info(ProfileInfo::default());
-            let mut saver = pin!(manager.save_profiles());
+            manager.set_bond(ProfileInfo::default());
+            let mut saver = pin!(manager.run());
             {
                 let mut read = pin!(read(StorageKey::StorageConfig));
                 let mut cx = Context::from_waker(Waker::noop());
@@ -517,7 +517,7 @@ mod tests {
         with_manager::<2>(|manager| {
             clear_flash_channel();
             manager.clear_bond(0);
-            manager.add_profile_info(ProfileInfo {
+            manager.set_bond(ProfileInfo {
                 slot_num: 1,
                 ..Default::default()
             });
@@ -548,7 +548,7 @@ mod tests {
                     }
                 };
                 assert!(matches!(
-                    select3(manager.save_profiles(), storage.run(), verify).await,
+                    select3(manager.run(), storage.run(), verify).await,
                     Either3::Third(())
                 ));
             });
@@ -573,8 +573,8 @@ mod tests {
                 let control = flash.clone();
                 let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
                 control.fail_writes(true);
-                manager.add_profile_info(ProfileInfo::default());
-                let mut saver = pin!(manager.save_profiles());
+                manager.set_bond(ProfileInfo::default());
+                let mut saver = pin!(manager.run());
                 select3(saver.as_mut(), storage.run(), Timer::after_millis(10)).await;
                 assert!(storage.fetch(StorageKey::BondInfo(0)).await.unwrap().is_none());
                 control.fail_writes(false);
@@ -605,9 +605,9 @@ mod tests {
         use crate::test_support::clear_flash_channel;
         with_manager::<2>(|manager| {
             clear_flash_channel();
-            manager.add_profile_info(ProfileInfo::default());
+            manager.set_bond(ProfileInfo::default());
             let mut blocker = pin!(read(StorageKey::StorageConfig));
-            let mut saver = pin!(manager.save_profiles());
+            let mut saver = pin!(manager.run());
             let mut cx = Context::from_waker(Waker::noop());
             assert!(blocker.as_mut().poll(&mut cx).is_pending());
             assert!(saver.as_mut().poll(&mut cx).is_pending());
@@ -650,7 +650,7 @@ mod tests {
                 select(manager.load_bonded_devices(), storage.run()).await;
                 assert!(manager.bond_info(0).is_some());
                 let before = control.writes();
-                select3(manager.save_profiles(), storage.run(), Timer::after_millis(10)).await;
+                select3(manager.run(), storage.run(), Timer::after_millis(10)).await;
                 assert_eq!(control.writes(), before);
             });
         });
@@ -674,9 +674,9 @@ mod tests {
                 let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
                 let reboot = flash.clone();
                 let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
-                manager.add_profile_info(ProfileInfo::default());
+                manager.set_bond(ProfileInfo::default());
                 {
-                    let mut saver = pin!(manager.save_profiles());
+                    let mut saver = pin!(manager.run());
                     {
                         let mut blocker = pin!(read(StorageKey::StorageConfig));
                         let mut cx = Context::from_waker(Waker::noop());
@@ -685,7 +685,7 @@ mod tests {
                         manager.clear_bond(0);
                         let mut replacement = ProfileInfo::default();
                         replacement.info.ltk = LongTermKey(42);
-                        manager.add_profile_info(replacement);
+                        manager.set_bond(replacement);
                         manager.update_profile_cccd_table(0, heapless::Vec::from_slice(&[1, 2]).unwrap());
                     }
                     let verify = async {
@@ -731,11 +731,11 @@ mod tests {
                 let flash = InMemoryFlash::<16_384, 4_096, 1>::new();
                 let control = flash.clone();
                 let mut storage = Box::pin(Storage::new(async_flash_wrapper(flash), &StorageConfig::default())).await;
-                manager.add_profile_info(ProfileInfo {
+                manager.set_bond(ProfileInfo {
                     cccd_table: heapless::Vec::from_slice(&[1]).unwrap(),
                     ..Default::default()
                 });
-                let mut saver = pin!(manager.save_profiles());
+                let mut saver = pin!(manager.run());
                 select3(saver.as_mut(), storage.run(), Timer::after_millis(2)).await;
                 let before = control.writes();
                 for _ in 0..10 {

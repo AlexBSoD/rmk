@@ -184,7 +184,7 @@ where
         join3(
             crate::ble::ble_task(stack.runner(), &scan),
             central.run(),
-            profiles.save_profiles(),
+            profiles.run(),
         )
         .await;
         unreachable!("Dongle sub-tasks must run forever")
@@ -391,7 +391,7 @@ where
                 // Save the new bond — also when the bonded keyboard cleared its side
                 // and re-paired, otherwise we keep an old key nothing accepts anymore.
                 Ok(ConnectionEvent::PairingComplete { bond: Some(bond), .. }) => {
-                    self.profiles.add_profile_info(ProfileInfo {
+                    self.profiles.set_bond(ProfileInfo {
                         slot_num: BOND_SLOT,
                         removed: false,
                         info: bond,

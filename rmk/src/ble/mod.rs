@@ -403,7 +403,7 @@ async fn run_ble_keyboard<
         ble_task(runner, &event_handler),
         connection_loop,
         sleep::run_sleep_manager(),
-        profile_manager.save_profiles(),
+        profile_manager.run(),
     )
     .await;
     unreachable!("BleTransport sub-tasks must run forever")
@@ -488,7 +488,7 @@ async fn gatt_events_task<C: Controller + ControllerCmdAsync<LeSetPhy>>(
                         .get_client_att_table(conn.raw())
                         .and_then(|t| heapless::Vec::from_slice(t.raw()).ok())
                         .unwrap_or_default();
-                    profiles.add_profile_info(ProfileInfo {
+                    profiles.set_bond(ProfileInfo {
                         slot_num: profile,
                         info: bond_info,
                         removed: false,
