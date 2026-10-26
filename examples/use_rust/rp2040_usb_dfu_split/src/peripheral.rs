@@ -57,6 +57,7 @@ async fn main(_spawner: Spawner) {
         pid: 0x4643,
         manufacturer: "Haobo",
         product_name: "RMK Keyboard Peripheral",
+        ..DeviceConfig::default()
     };
 
     let mut dfu_led = DfuLedProcessor::new(Output::new(p.PIN_25, Level::Low), false);
@@ -75,6 +76,7 @@ async fn main(_spawner: Spawner) {
         start_addr: 0,
         clear_storage: false,
         clear_layout: false,
+        no_action_layer_start: None,
     };
     let mut storage = new_storage_without_keymap(storage_partition, storage_config).await;
 

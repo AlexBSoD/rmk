@@ -91,6 +91,7 @@ async fn main(_spawner: Spawner) {
         pid: 0x4643,
         manufacturer: "Haobo",
         product_name: "RMK Keyboard RP2040 DFU ext",
+        ..DeviceConfig::default()
     };
 
     let vial_config = VialConfig::new(VIAL_KEYBOARD_ID, VIAL_KEYBOARD_DEF, &[(0, 0), (1, 1)]);
@@ -107,6 +108,7 @@ async fn main(_spawner: Spawner) {
         start_addr: 0,
         clear_storage: false,
         clear_layout: false,
+        no_action_layer_start: None,
     };
     let mut behavior_config = BehaviorConfig::default();
     let per_key_config = PositionalConfig::default();

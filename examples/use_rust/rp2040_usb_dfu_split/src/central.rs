@@ -62,6 +62,7 @@ async fn main(_spawner: Spawner) {
         pid: 0x4643,
         manufacturer: "Haobo",
         product_name: "RMK Keyboard",
+        ..DeviceConfig::default()
     };
 
     let vial_config = VialConfig::new(VIAL_KEYBOARD_ID, VIAL_KEYBOARD_DEF, &[(0, 0), (1, 1)]);
@@ -85,6 +86,7 @@ async fn main(_spawner: Spawner) {
         start_addr: 0,
         clear_storage: false,
         clear_layout: false,
+        no_action_layer_start: None,
     };
     let per_key_config = PositionalConfig::default();
     let (keymap, mut storage) = initialize_keymap_and_storage(
