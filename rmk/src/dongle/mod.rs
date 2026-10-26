@@ -22,7 +22,7 @@ use core::ops::ControlFlow;
 use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeSetPhy, LeSetScanParams};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::{AddrKind, BdAddr, LeAdvEventKind, Status};
-use embassy_futures::join::join;
+use embassy_futures::join::join3;
 use embassy_futures::select::{Either, select, select3};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
@@ -170,15 +170,23 @@ where
             .build();
         let stack = &stack;
         let scan = ScanHandler::new();
+        let mut profile_manager = ProfileManager::new(stack);
+        profile_manager.load_bonded_devices().await;
+        profile_manager.update_stack_bonds();
         let mut central = DongleCentral {
             stack,
             scan: &scan,
             router: self.router,
-            profiles: ProfileManager::new(stack),
+            profiles: &profile_manager,
             state: Cell::new(DongleState::default()),
         };
 
-        join(crate::ble::ble_task(stack.runner(), &scan), central.run()).await;
+        join3(
+            crate::ble::ble_task(stack.runner(), &scan),
+            central.run(),
+            profile_manager.run(),
+        )
+        .await;
         unreachable!("Dongle sub-tasks must run forever")
     }
 }
@@ -189,7 +197,7 @@ struct DongleCentral<'b, 's: 'b, C: Controller + ControllerCmdAsync<LeSetPhy>> {
     stack: &'b Stack<'s, C, DefaultPacketPool>,
     scan: &'b ScanHandler,
     router: &'b DongleRouter,
-    profiles: ProfileManager<'b, 's, C, DefaultPacketPool, 1>,
+    profiles: &'b ProfileManager<'b, 's, C, DefaultPacketPool, 1>,
     /// The last state published, so a path that ends where it began says nothing.
     state: Cell<DongleState>,
 }
@@ -210,10 +218,8 @@ where
 
     async fn run(&mut self) -> ! {
         wait_for_stack_started().await;
-        self.profiles.load_bonded_devices().await;
-        self.profiles.update_stack_bonds();
 
-        let bonded = self.profiles.active_bond_info().map(|b| b.info.identity.addr);
+        let bonded = self.profiles.bond_info(BOND_SLOT).map(|b| b.info.identity.addr);
         self.scan.bonded_addr.lock(|a| a.set(bonded.map(|addr| addr.addr)));
         // The only chance to pair while a bond exists: one window at boot, so a
         // keyboard the user already set seeking can replace the bonded one.
@@ -225,7 +231,7 @@ where
         }
 
         loop {
-            let bonded = self.profiles.active_bond_info().map(|b| b.info.identity.addr);
+            let bonded = self.profiles.bond_info(BOND_SLOT).map(|b| b.info.identity.addr);
             self.scan.bonded_addr.lock(|a| a.set(bonded.map(|addr| addr.addr)));
 
             if let Some(addr) = bonded {
@@ -385,21 +391,19 @@ where
                 // Save the new bond — also when the bonded keyboard cleared its side
                 // and re-paired, otherwise we keep an old key nothing accepts anymore.
                 Ok(ConnectionEvent::PairingComplete { bond: Some(bond), .. }) => {
-                    self.profiles
-                        .add_profile_info(ProfileInfo {
-                            slot_num: BOND_SLOT,
-                            removed: false,
-                            info: bond,
-                            cccd_table: heapless::Vec::new(),
-                        })
-                        .await;
+                    self.profiles.set_bond(ProfileInfo {
+                        slot_num: BOND_SLOT,
+                        removed: false,
+                        info: bond,
+                        cccd_table: heapless::Vec::new(),
+                    });
                     return true;
                 }
                 Ok(ConnectionEvent::Encrypted { .. } | ConnectionEvent::PairingComplete { .. }) => return true,
                 Ok(ConnectionEvent::PairingFailed(e)) => {
                     warn!("[dongle] pairing failed: {:?}", e);
                     if peer == Peer::Bonded {
-                        self.profiles.clear_bond(BOND_SLOT).await;
+                        self.profiles.clear_bond(BOND_SLOT);
                     }
                     return false;
                 }
@@ -409,7 +413,7 @@ where
                 Ok(ConnectionEvent::Disconnected { reason }) => {
                     if peer == Peer::Bonded && reason == Status::AUTHENTICATION_FAILURE {
                         warn!("[dongle] bonded keyboard refused our key, dropping the bond");
-                        self.profiles.clear_bond(BOND_SLOT).await;
+                        self.profiles.clear_bond(BOND_SLOT);
                     }
                     return false;
                 }
