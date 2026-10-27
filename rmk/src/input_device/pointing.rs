@@ -2918,9 +2918,9 @@ mod tests {
                 let mut processor = QubePointingModeProcessor::new(&keymap);
                 crate::state::set_usb_state(UsbState::Configured);
                 USB_REPORT_CHANNEL.clear();
-                let sender = KeyboardEvent::publisher_async();
-                let settings_sender = PeripheralSettingsEvent::publisher_async();
-                let motion_sender = PointingEvent::publisher_async();
+                let sender = KeyboardEvent::publisher_async().unwrap();
+                let settings_sender = PeripheralSettingsEvent::publisher_async().unwrap();
+                let motion_sender = PointingEvent::publisher_async().unwrap();
                 let mut actions = ActionEvent::subscriber();
                 let mut main = packet(0xc0, auto_flags, 0);
                 main.0[1] = 4 << 4; // configured Normal, actual pointing layer 4
