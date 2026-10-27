@@ -31,10 +31,11 @@ class WorkflowGraphTests(unittest.TestCase):
                 self.assertEqual(jobs['complete']['if'], '${{ always() }}')
 
     def test_original_job_payloads_are_preserved(self):
-        # Immutable pre-policy owner payloads from 89a6f853. Intentional future
-        # coverage edits must review/update these baselines, not drop this test.
+        # Pre-policy owner payloads from 89a6f853; build.yml since gained the Phenom
+        # rows. Intentional future coverage edits must review/update these baselines,
+        # not drop this test.
         expected = {
-            'build.yml': '96d2fbb6b05979c1565de5c994811aab10adf0cb0db8bb7179cedda29fc38d81',
+            'build.yml': 'd263721e3d82a2fd4580d7927cccb20a60d5eb9b7105cd33192dcd23f7cc7149',
             'ci.yml': '83c24ae6b491911f5d43ae6efdaea285c1aeba13ade9b32895a3f55b7c57f193',
         }
         for name, (_, owners) in OWNERS.items():

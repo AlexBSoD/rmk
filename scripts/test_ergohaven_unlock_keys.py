@@ -49,8 +49,8 @@ def factory_df_positions(config):
 class FactoryUnlockTests(unittest.TestCase):
     def test_all_production_profiles_unlock_on_factory_d_and_f(self):
         profiles = release_profiles()
-        self.assertEqual(len(profiles), 14)
-        self.assertEqual(len({profile["output_name"] for profile in profiles}), 14)
+        self.assertEqual(len(profiles), 17)
+        self.assertEqual(len({profile["output_name"] for profile in profiles}), 17)
         for profile in profiles:
             path = ROOT / "keyboards" / profile["keyboard"] / profile["keyboard_toml"]
             with self.subTest(profile=profile["output_name"], path=str(path.relative_to(ROOT))):
