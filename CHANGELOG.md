@@ -2,8 +2,18 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Merged upstream RMK through `f78d138cc` and moved every keyboard from Vial to Rynk with Ergohaven's commands. The storage format and the RMK feature set changed, so the first boot erases the keymap, macros, combos, forks, Morse entries, module settings, host bonds, and the halves' pairing on every part. Export the layout in Entropy before flashing and import it afterwards
+- K:04, K:04 Mini, K:04 Micro, K:03, OP36, Imperial44, Velvet, the classic Qube, and the Phenom Series need an Entropy build with Rynk support and Ergohaven wire revision 2. Vial clients, vial-gui included, no longer configure them
+- Flash both halves and the Qube dongle together, because the split wire format changed, then pair the hosts and the halves again
+- The USB and BLE serial number starts with `rynk:` instead of `vial:f64c2b3c:`; the device ID after it is unchanged
+- K:04 Micro (Qube) is now named `K:04 Micro(Qube)`, because upstream limits BLE names to 16 bytes
+
 ### Features
 
+- Doubled the macro pool to 4096 bytes, with a 4128-byte Rynk frame that holds the whole pool
+- Made the Qube screen show up to 64 bytes per media field (32 Cyrillic characters), scrolling long titles in the header
 - Added RMK firmware for the Phenom Series (Phenom, Phenom Mini, and Phenom Micro): a wired RP2040 split on Rynk that runs the K:04 module stack on each half, with Universal Symbols and Layout Sync and the shared limits of 32 combos, 32 forks, 32 Morse entries, and 4096 bytes of macro storage; layers 5–15 compile as `No`
 - Added the Phenom Series layer LED: the WS2812 on each half shows the active layer in its Entropy color, with the K:04 LED brightness and timeout settings in a new `LEDs settings` tab
 
