@@ -137,7 +137,7 @@ jobs:
   qemu-rynk:
     needs: [plan]
     if: needs.plan.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -149,7 +149,7 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-riscv libdbus-1-dev pkg-config
+          sudo apt-get install -y qemu-system-misc libdbus-1-dev pkg-config
           qemu-system-riscv32 --version
       - name: Run QEMU Rynk behavior verifier
         working-directory: examples/use_rust/qemu-riscv-rynk
@@ -174,9 +174,6 @@ jobs:
     needs: [plan, discover]
     if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
-    env:
-      CLANG_PATH: /usr/bin/clang-21
-      LIBCLANG_PATH: /usr/lib/llvm-21/lib
     strategy:
       fail-fast: false
       # Leave runner slots for format/check/test/build-esp.
@@ -198,9 +195,14 @@ jobs:
           cargo install flip-link 2>/dev/null || true
       # RMK builds trouble's P-256 assembly on nRF, and cc-rs compiles it with
       # the ARM cross compiler — it has no clang fallback for -none-eabi.
-      - name: Install ARM GCC
+      - name: Install ARM build dependencies
         if: contains(matrix.dir, 'nrf')
-        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi clang libclang-dev llvm-dev
+          libclang_dir="$(/usr/bin/llvm-config --libdir)"
+          test -e "$libclang_dir/libclang.so"
+          printf 'CLANG_PATH=/usr/bin/clang\nLIBCLANG_PATH=%s\n' "$libclang_dir" >> "$GITHUB_ENV"
       - name: Build
         working-directory: ${{ matrix.dir }}
         run: |

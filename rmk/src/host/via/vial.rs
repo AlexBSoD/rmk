@@ -112,7 +112,9 @@ pub(crate) async fn process_vial<'a>(
             let after = u16::from_le_bytes([report.output_data[2], report.output_data[3]]);
             for (slot, key) in report
                 .input_data
-                .chunks_exact_mut(2)
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
                 .zip(settings::keys_after(after, vial_config.device_settings))
             {
                 slot.copy_from_slice(&key.to_le_bytes());

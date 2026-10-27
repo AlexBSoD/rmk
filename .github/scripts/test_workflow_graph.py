@@ -32,11 +32,11 @@ class WorkflowGraphTests(unittest.TestCase):
 
     def test_original_job_payloads_are_preserved(self):
         # Pre-policy owner payloads from 89a6f853; build.yml since gained the Phenom
-        # rows. Intentional future coverage edits must review/update these baselines,
-        # not drop this test.
+        # rows, and ci.yml fixes QEMU/LLVM runner dependencies. Intentional future
+        # coverage edits must review/update these baselines, not drop this test.
         expected = {
             'build.yml': 'd263721e3d82a2fd4580d7927cccb20a60d5eb9b7105cd33192dcd23f7cc7149',
-            'ci.yml': '83c24ae6b491911f5d43ae6efdaea285c1aeba13ade9b32895a3f55b7c57f193',
+            'ci.yml': 'ad95fff3035d3f5a6bfbd3f1943ec081755e636ac7fb549cf13f1e4e1329592e',
         }
         for name, (_, owners) in OWNERS.items():
             jobs = load(name)['jobs']
