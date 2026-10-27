@@ -74,7 +74,14 @@ RMK_TEST_FEATURESETS=(
     "dongle,vial,_ble,storage,custom_message"
     # Ergohaven's BLE split boards
     "split,vial,storage,_ble"
+    # The rmk features of the K:04 standalone firmware (`standalone` + `production_v30g`),
+    # except `k04_standalone_timeout_14`: its tests need the K:04 keyboard.toml (test.sh)
+    "split,vial,host_lock,storage,universal_symbols,async_matrix,display,_ble,fixed_mouse_pacing_15ms,host_first_split_wake"
 )
+
+# All rmk features of the K:04 standalone firmware, for the pointing tests that
+# run against the K:04 keyboard.toml.
+RMK_K04_STANDALONE_FEATURES="split,vial,host_lock,storage,universal_symbols,async_matrix,display,_ble,fixed_mouse_pacing_15ms,host_first_split_wake,k04_standalone_timeout_14"
 
 # Examples auto-discovery skiplist. Reasons:
 #   - nrf54lm20_ble: Cargo.toml references local path deps that only exist on

@@ -27,6 +27,11 @@ for feats in "${RMK_TEST_FEATURESETS[@]}"; do
         cargo +stable "${nx[@]}" --manifest-path rmk/Cargo.toml --no-default-features --features "$feats"
     fi
 done
+# The pointing executor tests size their event buses from a real K:04 profile;
+# the other modules' tests assume the default sizes, so only pointing runs here.
+KEYBOARD_TOML_PATH="$repo_root/keyboards/k04/keyboard.toml" CARGO_TARGET_DIR="$target_root/test-k04" \
+    cargo +stable "${nx[@]}" --manifest-path rmk/Cargo.toml --no-default-features \
+    --features "$RMK_K04_STANDALONE_FEATURES" -E 'test(/^input_device::pointing::/)'
 # The K:04 firmware bins set `test = false`, so build its dependency-free
 # modules as standalone test harnesses.
 k04_tests="$target_root/k04-tests"
