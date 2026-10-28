@@ -793,6 +793,12 @@ pub struct BleConfig {
     pub use_2m_phy: Option<bool>,
     pub passkey_entry: Option<bool>,
     pub passkey_entry_timeout: Option<u32>,
+    /// nRF only: time the SoftDevice Controller reserves per connection event
+    /// of the central, in microseconds. Unset keeps the controller's 7500.
+    pub central_event_length_us: Option<u32>,
+    /// nRF only: how far apart the central places connections that share an
+    /// interval, in microseconds. Unset keeps the controller's 7500.
+    pub central_acl_event_spacing_us: Option<u32>,
 }
 
 /// Default passkey entry timeout in seconds.

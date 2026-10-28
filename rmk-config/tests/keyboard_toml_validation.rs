@@ -627,3 +627,65 @@ fn incomplete_or_ambiguous_battery_tables_are_rejected() {
         std::fs::remove_file(path).ok();
     }
 }
+
+fn ble_hardware(name: &str, chip: &str, ble: &str) -> Result<rmk_config::resolved::Hardware, String> {
+    let path = write_temp_keyboard_toml(
+        name,
+        &format!(
+            "{}\n[ble]\nenabled = true\n{ble}\n",
+            MINIMAL_KEYBOARD_TOML.replace("rp2040", chip)
+        ),
+    );
+    let result = KeyboardTomlConfig::new_from_toml_path(&path).hardware();
+    std::fs::remove_file(path).ok();
+    result
+}
+
+#[test]
+fn central_scheduling_reaches_the_nrf_ble_config() {
+    let hardware = ble_hardware(
+        "central-scheduling",
+        "nrf52840",
+        "central_event_length_us = 3000\ncentral_acl_event_spacing_us = 3750",
+    )
+    .unwrap();
+    let ble = hardware.communication.get_ble_config().unwrap();
+    assert_eq!(ble.central_event_length_us, Some(3000));
+    assert_eq!(ble.central_acl_event_spacing_us, Some(3750));
+}
+
+#[test]
+fn central_scheduling_is_rejected_off_nrf() {
+    let Err(msg) = ble_hardware("central-scheduling-rp2040", "rp2040", "central_event_length_us = 3000") else {
+        panic!("SDC scheduling on a non-nRF chip must fail hardware resolution");
+    };
+    assert!(msg.contains("not an nRF52"), "unexpected error: {msg}");
+}
+
+#[test]
+fn central_acl_event_spacing_must_cover_the_event_length() {
+    for (ble, event_length) in [
+        (
+            "central_event_length_us = 3000\ncentral_acl_event_spacing_us = 2500",
+            3000,
+        ),
+        // Without an event length the controller's 7500 us applies.
+        ("central_acl_event_spacing_us = 3750", 7500),
+    ] {
+        let Err(msg) = ble_hardware("central-spacing-overlap", "nrf52840", ble) else {
+            panic!("spacing below the event length must fail: {ble}");
+        };
+        assert!(
+            msg.contains("central_acl_event_spacing_us") && msg.contains(&format!("({event_length})")),
+            "unexpected error: {msg}"
+        );
+    }
+}
+
+#[test]
+fn central_event_length_must_be_positive() {
+    let Err(msg) = ble_hardware("central-zero-event", "nrf52840", "central_event_length_us = 0") else {
+        panic!("a zero event length must fail hardware resolution");
+    };
+    assert!(msg.contains("greater than zero"), "unexpected error: {msg}");
+}

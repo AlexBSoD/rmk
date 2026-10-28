@@ -60,6 +60,8 @@ pub struct BuildConstants {
     pub ble_reconnect_timeout_seconds: u32,
     pub ble_pairing_timeout_seconds: u32,
     pub ble_use_2m_phy: bool,
+    pub ble_central_event_length_us: Option<u32>,
+    pub ble_central_acl_event_spacing_us: Option<u32>,
     pub split_central_sleep_timeout_seconds: u32,
     pub auto_mouse_layer_max_num: usize,
     /// Rynk RX/TX buffer size (bytes).
@@ -323,6 +325,8 @@ impl crate::KeyboardTomlConfig {
             ble_reconnect_timeout_seconds: rmk.ble_reconnect_timeout_seconds,
             ble_pairing_timeout_seconds: rmk.ble_pairing_timeout_seconds,
             ble_use_2m_phy: self.ble.as_ref().and_then(|ble| ble.use_2m_phy).unwrap_or(true),
+            ble_central_event_length_us: self.ble.as_ref().and_then(|ble| ble.central_event_length_us),
+            ble_central_acl_event_spacing_us: self.ble.as_ref().and_then(|ble| ble.central_acl_event_spacing_us),
             split_central_sleep_timeout_seconds: rmk.split_central_sleep_timeout_seconds,
             auto_mouse_layer_max_num,
             rynk_buffer_size: rmk.rynk_buffer_size,
@@ -408,6 +412,22 @@ mod tests {
 
         // Three indicator processors, the display, two split peripherals, and USB/BLE Rynk sessions.
         assert_eq!(led_indicator.subs, 8);
+    }
+
+    #[test]
+    fn central_scheduling_reaches_the_build_constants() {
+        let unset: KeyboardTomlConfig = toml::from_str("").unwrap();
+        let constants = unset.build_constants(&[]).unwrap();
+        assert_eq!(constants.ble_central_event_length_us, None);
+        assert_eq!(constants.ble_central_acl_event_spacing_us, None);
+
+        let set: KeyboardTomlConfig = toml::from_str(
+            "[ble]\nenabled = true\ncentral_event_length_us = 3000\ncentral_acl_event_spacing_us = 3750\n",
+        )
+        .unwrap();
+        let constants = set.build_constants(&[]).unwrap();
+        assert_eq!(constants.ble_central_event_length_us, Some(3000));
+        assert_eq!(constants.ble_central_acl_event_spacing_us, Some(3750));
     }
 
     #[test]

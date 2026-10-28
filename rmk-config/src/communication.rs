@@ -2,6 +2,9 @@ use crate::chip::{ChipModel, ChipSeries};
 use crate::usb_interrupt_map::get_usb_info;
 use crate::{BleConfig, KeyboardTomlConfig};
 
+/// The SoftDevice Controller's connection event length when the board sets none.
+const SDC_DEFAULT_EVENT_LENGTH_US: u32 = 7500;
+
 /// Information about USB interface
 #[derive(Clone, Debug, Default)]
 pub struct UsbInfo {
@@ -90,6 +93,28 @@ impl KeyboardTomlConfig {
             None
         };
         let ble_config = self.ble.as_ref().filter(|config| config.enabled).cloned();
+        if let Some(ble) = &ble_config
+            && (ble.central_event_length_us.is_some() || ble.central_acl_event_spacing_us.is_some())
+        {
+            if chip.series != ChipSeries::Nrf52 {
+                return Err(format!(
+                    "keyboard.toml: [ble] central_event_length_us and central_acl_event_spacing_us configure the nRF SoftDevice Controller, but chip \"{}\" is not an nRF52",
+                    chip.chip
+                ));
+            }
+            let event_length = ble.central_event_length_us.unwrap_or(SDC_DEFAULT_EVENT_LENGTH_US);
+            if event_length == 0 {
+                return Err("keyboard.toml: [ble] central_event_length_us must be greater than zero".to_string());
+            }
+            // Spaced closer than one event, the central's own links overlap.
+            if let Some(spacing) = ble.central_acl_event_spacing_us
+                && spacing < event_length
+            {
+                return Err(format!(
+                    "keyboard.toml: [ble] central_acl_event_spacing_us ({spacing}) must be at least the central event length ({event_length})"
+                ));
+            }
+        }
 
         match (usb_info, ble_config) {
             (Some(usb_info), None) => Ok(CommunicationConfig::Usb(usb_info)),
