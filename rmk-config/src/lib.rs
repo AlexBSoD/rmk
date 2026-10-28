@@ -799,6 +799,9 @@ pub struct BleConfig {
     /// nRF only: how far apart the central places connections that share an
     /// interval, in microseconds. Unset keeps the controller's 7500.
     pub central_acl_event_spacing_us: Option<u32>,
+    /// Advertise to a BLE host (default true). A split central that reaches
+    /// its host over USB only can leave the radio to its split links.
+    pub host_advertising: Option<bool>,
 }
 
 /// Default passkey entry timeout in seconds.

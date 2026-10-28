@@ -116,6 +116,17 @@ impl KeyboardTomlConfig {
             }
         }
 
+        if ble_config
+            .as_ref()
+            .is_some_and(|ble| ble.host_advertising == Some(false))
+            && usb_info.is_none()
+        {
+            return Err(
+                "keyboard.toml: [ble] host_advertising = false leaves the board without a host link — set `usb_enable = true` in [keyboard]"
+                    .to_string(),
+            );
+        }
+
         match (usb_info, ble_config) {
             (Some(usb_info), None) => Ok(CommunicationConfig::Usb(usb_info)),
             (Some(usb_info), Some(ble_config)) => Ok(CommunicationConfig::Both(usb_info, ble_config)),

@@ -558,6 +558,12 @@ async fn run_ble_keyboard<
             let wake_during_advertising = WakeAdvertisingInput::new(resuming_from_sleep);
 
             let advertising = async {
+                // A USB-only board leaves the radio to its split links; profile
+                // switches are still served below.
+                if !crate::BLE_HOST_ADVERTISING {
+                    info!("[adv] host advertising disabled");
+                    return core::future::pending().await;
+                }
                 #[cfg(feature = "dongle")]
                 if dongle_link {
                     let adv = match active_peer {

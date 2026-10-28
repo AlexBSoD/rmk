@@ -689,3 +689,25 @@ fn central_event_length_must_be_positive() {
     };
     assert!(msg.contains("greater than zero"), "unexpected error: {msg}");
 }
+
+#[test]
+fn host_advertising_off_needs_a_usb_host_link() {
+    // The nRF52840 default enables USB.
+    let with_usb = MINIMAL_KEYBOARD_TOML.replace("rp2040", "nrf52840");
+    let without_usb = with_usb.replacen("[keyboard]\n", "[keyboard]\nusb_enable = false\n", 1);
+    for (toml, accepted) in [(with_usb, true), (without_usb, false)] {
+        let path = write_temp_keyboard_toml(
+            "host-advertising-off",
+            &format!("{toml}\n[ble]\nenabled = true\nhost_advertising = false\n"),
+        );
+        let result = KeyboardTomlConfig::new_from_toml_path(&path).hardware();
+        std::fs::remove_file(path).ok();
+        match result {
+            Ok(_) => assert!(accepted, "host_advertising = false without USB must fail"),
+            Err(msg) => {
+                assert!(!accepted, "unexpected error: {msg}");
+                assert!(msg.contains("host_advertising"), "unexpected error: {msg}");
+            }
+        }
+    }
+}

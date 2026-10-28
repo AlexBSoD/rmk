@@ -129,6 +129,10 @@ fn generate_constants(bc: &BuildConstants, config: &KeyboardTomlConfig) -> Strin
         bc.ble_central_acl_event_spacing_us
     ));
     lines.push(format!(
+        "pub const BLE_HOST_ADVERTISING: bool = {};",
+        bc.ble_host_advertising
+    ));
+    lines.push(format!(
         "pub const SPLIT_PAIRING_TIMEOUT_SECONDS: u32 = {};",
         bc.split_pairing_timeout_seconds
     ));

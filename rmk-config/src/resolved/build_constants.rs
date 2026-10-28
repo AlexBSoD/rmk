@@ -62,6 +62,7 @@ pub struct BuildConstants {
     pub ble_use_2m_phy: bool,
     pub ble_central_event_length_us: Option<u32>,
     pub ble_central_acl_event_spacing_us: Option<u32>,
+    pub ble_host_advertising: bool,
     pub split_central_sleep_timeout_seconds: u32,
     pub auto_mouse_layer_max_num: usize,
     /// Rynk RX/TX buffer size (bytes).
@@ -327,6 +328,7 @@ impl crate::KeyboardTomlConfig {
             ble_use_2m_phy: self.ble.as_ref().and_then(|ble| ble.use_2m_phy).unwrap_or(true),
             ble_central_event_length_us: self.ble.as_ref().and_then(|ble| ble.central_event_length_us),
             ble_central_acl_event_spacing_us: self.ble.as_ref().and_then(|ble| ble.central_acl_event_spacing_us),
+            ble_host_advertising: self.ble.as_ref().and_then(|ble| ble.host_advertising).unwrap_or(true),
             split_central_sleep_timeout_seconds: rmk.split_central_sleep_timeout_seconds,
             auto_mouse_layer_max_num,
             rynk_buffer_size: rmk.rynk_buffer_size,
@@ -428,6 +430,15 @@ mod tests {
         let constants = set.build_constants(&[]).unwrap();
         assert_eq!(constants.ble_central_event_length_us, Some(3000));
         assert_eq!(constants.ble_central_acl_event_spacing_us, Some(3750));
+    }
+
+    #[test]
+    fn host_advertising_defaults_on() {
+        let unset: KeyboardTomlConfig = toml::from_str("").unwrap();
+        assert!(unset.build_constants(&[]).unwrap().ble_host_advertising);
+
+        let off: KeyboardTomlConfig = toml::from_str("[ble]\nenabled = true\nhost_advertising = false\n").unwrap();
+        assert!(!off.build_constants(&[]).unwrap().ble_host_advertising);
     }
 
     #[test]
