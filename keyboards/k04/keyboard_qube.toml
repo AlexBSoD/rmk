@@ -34,6 +34,9 @@ enabled = true
 # spaced 3.75 ms apart fit with 0.75 ms to spare on each side.
 central_event_length_us = 3000
 central_acl_event_spacing_us = 3750
+# The Qube reaches the PC over USB only; host advertising would take radio
+# time from the half links.
+host_advertising = false
 
 [storage]
 # Keep the 128 KiB RMK settings area outside the linked application image.

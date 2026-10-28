@@ -448,6 +448,7 @@ done
 for file in keyboards/k04/keyboard_qube.toml keyboards/k04/keyboard_qube_micro.toml keyboards/k04/keyboard_qube_mini.toml; do
     expect_toml "$file" central_event_length_us 3000
     expect_toml "$file" central_acl_event_spacing_us 3750
+    expect_toml "$file" host_advertising false
 done
 
 for file in "${profiles[@]}"; do
