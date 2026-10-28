@@ -106,9 +106,9 @@ pub(crate) fn reset() -> impl Future<Output = ()> {
     FLASH_CHANNEL.send((FlashOperationMessage::Reset, None))
 }
 
-/// Quiet period before draining staged keymap writes to flash. Host replies are
-/// sent as soon as the live keymap is updated, so a bulk keymap upload never
-/// waits on flash and cannot back-pressure the host service.
+/// Quiet period before draining staged keymap and board settings writes to flash.
+/// Host replies are sent as soon as the live state is updated, so a bulk keymap
+/// upload never waits on flash and cannot back-pressure the host service.
 #[cfg(feature = "host")]
 const KEYMAP_FLASH_SETTLE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -203,6 +203,7 @@ pub(crate) async fn flush_staged_writes() {
     let drained = async {
         while !KEYMAP_FLASH_PENDING.lock(|pending| pending.borrow().is_empty())
             || !MACRO_FLASH_PENDING.lock(|pending| pending.borrow().is_empty())
+            || DEVICE_SETTINGS_FLASH_PENDING.lock(|pending| pending.borrow().is_some())
         {
             Timer::after_millis(10).await;
         }
@@ -230,6 +231,22 @@ pub(crate) fn queue_keymap_flash_write(layer: u8, row: u8, col: u8, action: KeyA
         KEYMAP_FLASH_SIGNAL.signal(());
     }
     queued
+}
+
+/// The board settings block a host wrote last, not in flash yet.
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+static DEVICE_SETTINGS_FLASH_PENDING: embassy_sync::blocking_mutex::Mutex<
+    crate::RawMutex,
+    RefCell<Option<config::VialDeviceSettingsData>>,
+> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(None));
+
+/// Stage the board settings block without waiting for flash. Every setting a host
+/// changes rewrites the whole block, and an editor slider sends one every few tens
+/// of milliseconds, so only the latest block is written, after the keymap's quiet period.
+#[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+pub(crate) fn queue_device_settings_flash_write(data: config::VialDeviceSettingsData) {
+    DEVICE_SETTINGS_FLASH_PENDING.lock(|pending| *pending.borrow_mut() = Some(data));
+    KEYMAP_FLASH_SIGNAL.signal(());
 }
 
 #[cfg(feature = "host")]
@@ -796,26 +813,38 @@ impl<F: AsyncNorFlash> crate::core_traits::Runnable for Storage<F> {
                     continue;
                 }
                 Either6::Third(()) => {
-                    let next = KEYMAP_FLASH_PENDING.lock(|pending| {
-                        let mut pending = pending.borrow_mut();
-                        let next = pending.take_next();
-                        (next, !pending.is_empty())
-                    });
-                    let (Some((index, action)), more) = next else {
-                        keymap_deadline = None;
-                        continue;
-                    };
-                    keymap_deadline = more.then(Instant::now);
-                    let layer_size = crate::KEYMAP_ROWS * crate::KEYMAP_COLS;
-                    // KEYMAP_COLS is 1 in a build without keyboard.toml.
-                    #[allow(clippy::modulo_one)]
-                    let item = StorageItem::Keymap {
-                        layer: (index / layer_size) as u8,
-                        row: (index % layer_size / crate::KEYMAP_COLS) as u8,
-                        col: (index % crate::KEYMAP_COLS) as u8,
-                        action,
-                    };
-                    (FlashOperationMessage::Store(item), None, true)
+                    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+                    let settings = DEVICE_SETTINGS_FLASH_PENDING
+                        .lock(|pending| pending.borrow_mut().take())
+                        .map(StorageItem::DeviceSettings);
+                    #[cfg(not(any(feature = "vial", feature = "ergohaven_rynk")))]
+                    let settings = None;
+                    if let Some(item) = settings {
+                        // Come straight back for keys staged alongside.
+                        keymap_deadline = Some(Instant::now());
+                        (FlashOperationMessage::Store(item), None, true)
+                    } else {
+                        let next = KEYMAP_FLASH_PENDING.lock(|pending| {
+                            let mut pending = pending.borrow_mut();
+                            let next = pending.take_next();
+                            (next, !pending.is_empty())
+                        });
+                        let (Some((index, action)), more) = next else {
+                            keymap_deadline = None;
+                            continue;
+                        };
+                        keymap_deadline = more.then(Instant::now);
+                        let layer_size = crate::KEYMAP_ROWS * crate::KEYMAP_COLS;
+                        // KEYMAP_COLS is 1 in a build without keyboard.toml.
+                        #[allow(clippy::modulo_one)]
+                        let item = StorageItem::Keymap {
+                            layer: (index / layer_size) as u8,
+                            row: (index % layer_size / crate::KEYMAP_COLS) as u8,
+                            col: (index % crate::KEYMAP_COLS) as u8,
+                            action,
+                        };
+                        (FlashOperationMessage::Store(item), None, true)
+                    }
                 }
                 Either6::Fourth(()) => {
                     macro_deadline = Some(Instant::now() + MACRO_FLASH_SETTLE_TIMEOUT);
@@ -1290,6 +1319,39 @@ mod tests {
             reset().await;
             Timer::after(MACRO_FLASH_SETTLE_TIMEOUT * 2).await;
             assert_eq!(part.writes(), before);
+        });
+    }
+
+    /// An editor slider sends a full settings block per step. The steps must cost one
+    /// write once the host goes quiet, not one write each while it is still sending.
+    #[cfg(any(feature = "vial", feature = "ergohaven_rynk"))]
+    #[test]
+    fn staged_device_settings_collapse_to_the_latest_block() {
+        let block = |value: u8| {
+            let mut settings = config::VialDeviceSettingsData::empty();
+            settings.len = 1;
+            settings.data[0] = value;
+            settings
+        };
+        let part = Part::new();
+        with_storage_task(part.clone(), async {
+            let before = part.writes();
+            queue_device_settings_flash_write(block(0));
+            flush_staged_writes().await;
+            let one_block = part.writes() - before;
+
+            let before = part.writes();
+            for value in 1..=7 {
+                queue_device_settings_flash_write(block(value));
+                Timer::after_millis(50).await;
+            }
+            assert_eq!(part.writes(), before, "nothing is written while the host keeps sending");
+            Timer::after(KEYMAP_FLASH_SETTLE_TIMEOUT * 2).await;
+            assert_eq!(part.writes() - before, one_block);
+            assert!(matches!(
+                read(StorageKey::DeviceSettings).await,
+                Ok(Some(StorageValue::DeviceSettings(stored))) if stored.data[0] == 7
+            ));
         });
     }
 
