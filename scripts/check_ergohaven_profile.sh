@@ -444,6 +444,12 @@ for file in "${qube_profiles[@]}"; do
     expect_toml "$file" split_central_sleep_timeout_seconds "$expected"
 done
 
+# K:04 Qube keeps the 7.5 ms trackball link clear of the 15 ms key link.
+for file in keyboards/k04/keyboard_qube.toml keyboards/k04/keyboard_qube_micro.toml keyboards/k04/keyboard_qube_mini.toml; do
+    expect_toml "$file" central_event_length_us 3000
+    expect_toml "$file" central_acl_event_spacing_us 3750
+done
+
 for file in "${profiles[@]}"; do
     expect_toml "$file" start_addr 0xCC000
     expect_toml "$file" num_sectors 32

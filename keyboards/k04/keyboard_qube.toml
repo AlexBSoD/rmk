@@ -29,6 +29,11 @@ ble_profiles_num = 5
 
 [ble]
 enabled = true
+# The controller's 7.5 ms default puts every other event of the 7.5 ms
+# trackball link on the 15 ms link of the other half. Two 3 ms events
+# spaced 3.75 ms apart fit with 0.75 ms to spare on each side.
+central_event_length_us = 3000
+central_acl_event_spacing_us = 3750
 
 [storage]
 # Keep the 128 KiB RMK settings area outside the linked application image.
