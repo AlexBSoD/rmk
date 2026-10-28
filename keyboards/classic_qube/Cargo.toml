@@ -124,3 +124,7 @@ lto = "fat"
 # Prevent cargo from looking for a workspace above this directory
 [workspace]
 members = ["."]
+
+# nrf-mpsl 0.4.0 with the flash timeslot lock fix sent upstream. Drop once a release has it.
+[patch.crates-io]
+nrf-mpsl = { path = "../../vendor/nrf-mpsl" }

@@ -108,3 +108,7 @@ name = "hardreset"
 path = "src/bin/hardreset.rs"
 test = false
 bench = false
+
+# nrf-mpsl 0.4.0 with the flash timeslot lock fix sent upstream. Drop once a release has it.
+[patch.crates-io]
+nrf-mpsl = { path = "../../vendor/nrf-mpsl" }
