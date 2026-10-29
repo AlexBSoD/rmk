@@ -121,6 +121,18 @@ fn generate_constants(bc: &BuildConstants, config: &KeyboardTomlConfig) -> Strin
     lines.push(format!("pub const NUM_BLE_PROFILE: usize = {};", bc.ble_profiles_num));
     lines.push(format!("pub const BLE_USE_2M_PHY: bool = {};", bc.ble_use_2m_phy));
     lines.push(format!(
+        "pub const BLE_CENTRAL_EVENT_LENGTH_US: Option<u32> = {:?};",
+        bc.ble_central_event_length_us
+    ));
+    lines.push(format!(
+        "pub const BLE_CENTRAL_ACL_EVENT_SPACING_US: Option<u32> = {:?};",
+        bc.ble_central_acl_event_spacing_us
+    ));
+    lines.push(format!(
+        "pub const BLE_HOST_ADVERTISING: bool = {};",
+        bc.ble_host_advertising
+    ));
+    lines.push(format!(
         "pub const SPLIT_PAIRING_TIMEOUT_SECONDS: u32 = {};",
         bc.split_pairing_timeout_seconds
     ));

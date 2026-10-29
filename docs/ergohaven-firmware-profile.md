@@ -42,6 +42,10 @@ layers 5–15 a separate tail namespace (`KeymapTailV3`, `EncoderTailV3`).
 
 Split pairing uses a 30-second window. Standalone split centrals sleep after
 120 seconds; powered Qube centrals use 900 seconds, K:04 Qube centrals 300.
+K:04 Qube centrals reserve 3 ms per connection event and space the two half
+links 3.75 ms apart, so the 7.5 ms trackball link keeps every event next to
+the 15 ms link of the other half. They do not advertise to a BLE host: the PC
+connects over USB.
 Entropy capability metadata advertises separate half batteries on all split
 devices and time/media live features only where Qube supplies them.
 

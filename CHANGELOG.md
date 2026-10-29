@@ -19,6 +19,8 @@
 
 ### Fixes
 
+- Gave the K:04 Qube trackball link every connection event. The Qube placed the two half links 7.5 ms apart, so every other event of the 7.5 ms trackball link fell on the other half's link and the trackball arrived in pairs every 15 ms. K:04, K:04 Mini, and K:04 Micro through Qube now reserve 3 ms per event and space the links 3.75 ms apart
+- Stopped the K:04 Qube from advertising to a BLE host. It reaches the PC over USB, and the advertising took radio time from the half links every minute
 - Switched all six standalone K:04 Series images to the `production_v30g` profile derived from the field-validated K:04 build: host-first split wake ordering, accepted-anchor low-duty BLE parameters, fixed 15 ms vector-preserving HID pacing, and configured 1M PHY preservation; K:04 Qube and other keyboards retain their existing production profiles
 - Prevented K:04 split LED reconciliation from starting a status phase after the render timestamp, avoiding an `Instant` underflow panic during reconnect
 - Resent the central's state, module settings, and active layer to a wired split peripheral that rebooted on its own, so the Phenom right-half module no longer stays off after flashing only that half
