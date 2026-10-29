@@ -4,6 +4,8 @@ use crate::{BleConfig, KeyboardTomlConfig};
 
 /// The SoftDevice Controller's connection event length when the board sets none.
 const SDC_DEFAULT_EVENT_LENGTH_US: u32 = 7500;
+/// The SoftDevice Controller's central ACL event spacing when the board sets none.
+const SDC_DEFAULT_ACL_EVENT_SPACING_US: u32 = 7500;
 
 /// Information about USB interface
 #[derive(Clone, Debug, Default)]
@@ -107,9 +109,10 @@ impl KeyboardTomlConfig {
                 return Err("keyboard.toml: [ble] central_event_length_us must be greater than zero".to_string());
             }
             // Spaced closer than one event, the central's own links overlap.
-            if let Some(spacing) = ble.central_acl_event_spacing_us
-                && spacing < event_length
-            {
+            let spacing = ble
+                .central_acl_event_spacing_us
+                .unwrap_or(SDC_DEFAULT_ACL_EVENT_SPACING_US);
+            if spacing < event_length {
                 return Err(format!(
                     "keyboard.toml: [ble] central_acl_event_spacing_us ({spacing}) must be at least the central event length ({event_length})"
                 ));

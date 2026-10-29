@@ -683,6 +683,36 @@ fn central_acl_event_spacing_must_cover_the_event_length() {
 }
 
 #[test]
+fn central_event_length_must_fit_default_spacing() {
+    for event_length in [7501, 9000] {
+        let ble = format!("central_event_length_us = {event_length}");
+        let Err(msg) = ble_hardware("central-default-spacing-overlap", "nrf52840", &ble) else {
+            panic!("event length above the default spacing must fail: {ble}");
+        };
+        assert!(
+            msg.contains("central_acl_event_spacing_us (7500)"),
+            "unexpected error: {msg}"
+        );
+        assert!(msg.contains(&format!("({event_length})")), "unexpected error: {msg}");
+    }
+}
+
+#[test]
+fn central_scheduling_accepts_default_spacing_boundaries() {
+    for ble in [
+        "",
+        "central_event_length_us = 3000",
+        "central_event_length_us = 7500",
+        "central_event_length_us = 9000\ncentral_acl_event_spacing_us = 9000",
+    ] {
+        assert!(
+            ble_hardware("central-default-spacing-boundary", "nrf52840", ble).is_ok(),
+            "{ble}"
+        );
+    }
+}
+
+#[test]
 fn central_event_length_must_be_positive() {
     let Err(msg) = ble_hardware("central-zero-event", "nrf52840", "central_event_length_us = 0") else {
         panic!("a zero event length must fail hardware resolution");
