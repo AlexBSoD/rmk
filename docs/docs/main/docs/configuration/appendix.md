@@ -357,6 +357,12 @@ use_2m_phy = true
 passkey_entry = false
 # Timeout in seconds for passkey entry, defaults to 120, minimum 30
 passkey_entry_timeout = 120
+# Advertise to a BLE host, defaults to true; false requires USB
+host_advertising = true
+# nRF only: central connection event length in microseconds, unset keeps 7500
+# central_event_length_us = 3000
+# nRF only: central connection spacing in microseconds, at least the event length, unset keeps 7500
+# central_acl_event_spacing_us = 3750
 
 # Battery configuration for unibody keyboards; omit this table for split keyboards.
 [battery]

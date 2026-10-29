@@ -19,7 +19,38 @@ use_2m_phy = true
 passkey_entry = false
 # Timeout in seconds for passkey entry, defaults to 120
 passkey_entry_timeout = 120
+# Advertise to a BLE host, defaults to true. Setting it to false requires USB.
+host_advertising = true
+# nRF only: connection event length of the central, in microseconds. Unset keeps 7500.
+# central_event_length_us = 3000
+# nRF only: spacing of the central's connections, in microseconds. Unset keeps 7500.
+# central_acl_event_spacing_us = 3750
 ```
+
+### Host advertising
+
+`[ble].host_advertising = false` stops the keyboard from advertising to a BLE host. Use it for a split central that reaches its host over USB only, such as a dongle: the radio time goes to the split links. Profile switching still works, but no host can connect over BLE.
+
+The build fails if `host_advertising = false` and USB is not enabled, because the keyboard would have no host link.
+
+### Central link scheduling (nRF)
+
+On nRF chips, the SoftDevice Controller reserves a 7.5 ms connection event for every connection of the central and spaces connections that share an interval 7.5 ms apart. A split central with two peripherals can then lose every other event of a fast link. For example, a 7.5 ms pointing link next to a 15 ms key link lands every other event on the key link.
+
+Two keys change this before the BLE stack starts:
+
+- `central_event_length_us`: time reserved per connection event.
+- `central_acl_event_spacing_us`: time between the connections of the central. It must be at least the event length, so the central's links do not overlap.
+
+```toml
+[ble]
+enabled = true
+# Two 3 ms events fit in a 7.5 ms interval with 0.75 ms to spare on each side.
+central_event_length_us = 3000
+central_acl_event_spacing_us = 3750
+```
+
+A shorter event carries fewer packets per connection event, so keep it long enough for the traffic of the link. The settings apply to the central of a split keyboard or to a unibody keyboard, and split peripherals ignore them. Setting them on a non-nRF chip fails the build.
 
 ### Host connection PHY
 

@@ -128,6 +128,41 @@ pub(crate) fn chip_init_default(hardware: &Hardware, peripheral_id: Option<usize
                     SDC_MEM_UNIBODY
                 }
             };
+            // The controller applies both to connections created after this point,
+            // so they run before the stack starts.
+            let ble_config = communication
+                .get_ble_config()
+                .filter(|_| peripheral_id.is_none());
+            let central_scheduling: Vec<TokenStream2> = [
+                (
+                    ble_config
+                        .as_ref()
+                        .and_then(|ble| ble.central_event_length_us),
+                    quote! { NordicEventLengthSet },
+                ),
+                (
+                    ble_config
+                        .as_ref()
+                        .and_then(|ble| ble.central_acl_event_spacing_us),
+                    quote! { NordicCentralAclEventSpacingSet },
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(us, command)| {
+                let us = us?;
+                Some(quote! {
+                    if ::bt_hci::controller::ControllerCmdSync::exec(
+                        &ble_controller,
+                        &::nrf_sdc::vendor::#command::new(#us),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        ::defmt::panic!("SDC rejected {} = {} us", stringify!(#command), #us);
+                    }
+                })
+            })
+            .collect();
             let ble_init = match &communication {
                 CommunicationConfig::Ble(_) | CommunicationConfig::Both(_, _) => quote! {
                     // Initialize nrf-sdc and ble stack
@@ -157,6 +192,7 @@ pub(crate) fn chip_init_default(hardware: &Hardware, peripheral_id: Option<usize
                     let mut rng = ::embassy_nrf::rng::Rng::new(p.RNG, Irqs);
                     let mut sdc_mem = ::nrf_sdc::Mem::<#sdc_mem_size>::new();
                     let ble_controller = ::defmt::unwrap!(build_sdc(sdc_p, &mut rng, &*mpsl, &mut sdc_mem));
+                    #(#central_scheduling)*
                     let ble_addr = #ble_addr;
                 },
                 _ => quote! {},
@@ -335,6 +371,11 @@ mod tests {
 
     /// The chip init generated for an nRF52833 keyboard whose `[chip.nrf52833]` holds `chip_section`.
     fn nrf52833_chip_init(name: &str, chip_section: &str) -> String {
+        nrf52833_chip_init_with(name, &format!("[chip.nrf52833]\n{chip_section}"), None)
+    }
+
+    /// The chip init generated for `peripheral_id` of an nRF52833 keyboard with extra TOML `sections`.
+    fn nrf52833_chip_init_with(name: &str, sections: &str, peripheral_id: Option<usize>) -> String {
         let path =
             std::env::temp_dir().join(format!("rmk-macro-{name}-{}.toml", std::process::id()));
         let toml = format!(
@@ -353,14 +394,13 @@ col_pins = ["P0_03"]
 rows = 1
 cols = 1
 
-[chip.nrf52833]
-{chip_section}
+{sections}
 "#
         );
         std::fs::write(&path, toml).unwrap();
         let hardware = KeyboardTomlConfig::new_from_toml_path(&path).hardware();
         std::fs::remove_file(&path).ok();
-        chip_init_default(&hardware.unwrap_or_else(|e| panic!("{e}")), None).to_string()
+        chip_init_default(&hardware.unwrap_or_else(|e| panic!("{e}")), peripheral_id).to_string()
     }
 
     #[test]
@@ -380,5 +420,32 @@ cols = 1
     fn nrf52833_leaves_reg0_alone_unless_configured() {
         let tokens = nrf52833_chip_init("reg0-unset", "dcdc_reg1 = true");
         assert!(!tokens.contains("reg0_voltage"), "{tokens}");
+    }
+
+    const CENTRAL_SCHEDULING: &str = "[ble]\nenabled = true\ncentral_event_length_us = 3000\ncentral_acl_event_spacing_us = 3750";
+
+    #[test]
+    fn central_applies_the_configured_sdc_scheduling() {
+        let tokens = nrf52833_chip_init_with("sdc-central", CENTRAL_SCHEDULING, None);
+        for expected in [
+            quote! { ::nrf_sdc::vendor::NordicEventLengthSet::new(3000u32) },
+            quote! { ::nrf_sdc::vendor::NordicCentralAclEventSpacingSet::new(3750u32) },
+        ] {
+            assert!(tokens.contains(&expected.to_string()), "{tokens}");
+        }
+    }
+
+    #[test]
+    fn sdc_scheduling_stays_off_peripherals_and_unset_boards() {
+        let peripheral = nrf52833_chip_init_with("sdc-peripheral", CENTRAL_SCHEDULING, Some(0));
+        let unset = nrf52833_chip_init_with("sdc-unset", "[ble]\nenabled = true", None);
+        for tokens in [peripheral, unset] {
+            assert!(tokens.contains("build_sdc"), "{tokens}");
+            assert!(!tokens.contains("NordicEventLengthSet"), "{tokens}");
+            assert!(
+                !tokens.contains("NordicCentralAclEventSpacingSet"),
+                "{tokens}"
+            );
+        }
     }
 }

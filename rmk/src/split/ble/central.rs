@@ -419,6 +419,14 @@ pub(crate) async fn scan_and_connect_peripherals<'a, C: Controller + ControllerC
     let mut central = stack.central();
     let mut reconnect = SleepReconnect::default();
     wait_for_stack_started().await;
+    // The board set these before the stack started, usually before a USB
+    // log is attached, so they are reported here.
+    if let Some(us) = crate::BLE_CENTRAL_EVENT_LENGTH_US {
+        info!("[sdc] central event length {} us", us);
+    }
+    if let Some(us) = crate::BLE_CENTRAL_ACL_EVENT_SPACING_US {
+        info!("[sdc] central ACL event spacing {} us", us);
+    }
     loop {
         // Mark ended sessions `Disconnected`, or forget the peer when its
         // session gave up on it.
