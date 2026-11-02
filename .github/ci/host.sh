@@ -10,6 +10,9 @@ export CARGO_TERM_COLOR=always
 # The repository-wide .cargo/config.toml targets nRF52840 firmware.
 export CARGO_BUILD_TARGET="${CARGO_BUILD_TARGET:-x86_64-unknown-linux-gnu}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$target_root/host}"
+# wasm-pack does not pass --target itself, so the host target above would make
+# it build x86_64 (ELF) and the runner fail on a bad wasm magic number.
+readonly WASM_BUILD_TARGET=wasm32-unknown-unknown
 
 log_section "Tests"
 cargo +stable test --workspace --lib --tests
@@ -30,12 +33,12 @@ cargo +stable check -p rynk-wasm --target wasm32-unknown-unknown
 log_section "Wasm tests"
 # The JS byte link's cancel-safety needs a real JS event loop; node has one and
 # needs no browser driver.
-(cd rynk-wasm && wasm-pack test --node)
+(cd rynk-wasm && CARGO_BUILD_TARGET="$WASM_BUILD_TARGET" wasm-pack test --node)
 
 log_section "Wasm package build"
 # wasm-pack emits the JS package + generated .d.ts under rynk-wasm/pkg/ (ignored, not checked in).
 # --dev keeps wasm-bindgen's type descriptors un-optimized, so a malformed one surfaces as invalid TS below.
-(cd rynk-wasm && wasm-pack build --dev --target web >/dev/null)
+(cd rynk-wasm && CARGO_BUILD_TARGET="$WASM_BUILD_TARGET" wasm-pack build --dev --target web >/dev/null)
 # Typecheck the whole generated .d.ts: a broken descriptor for any exported type fails CI.
 npx --yes --package typescript@5.9.3 tsc \
     --noEmit --strict --target ES2022 --lib ES2022,DOM,ESNext.Disposable \
