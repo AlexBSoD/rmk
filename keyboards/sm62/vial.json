@@ -1,0 +1,784 @@
+{
+    "keymap": [
+        ["KC_GRV", "KC_1", "KC_2", "KC_3", "KC_4", "KC_5", "", "KC_6", "KC_7", "KC_8", "KC_9", "KC_0", "KC_MINS"],
+        ["KC_PSCR", "KC_ESC", "KC_Q", "KC_W", "KC_E", "KC_R", "KC_T", "KC_Y", "KC_U", "KC_I", "KC_O", "KC_P", "KC_LBRC", "KC_EQL"],
+        ["KC_CAPS", "KC_TAB", "KC_A", "KC_S", "KC_D", "KC_F", "KC_G", "KC_H", "KC_J", "KC_K", "KC_L", "KC_SCLN", "KC_QUOT", "KC_RBRC"],
+        ["KC_DEL", "KC_LSFT", "KC_Z", "KC_X", "KC_C", "KC_V", "KC_B", "KC_N", "KC_M", "KC_COMM", "KC_DOT", "KC_SLSH", "KC_RSFT", "KC_BSLS"],
+        ["", "", "", "KC_LALT", "KC_LCTL", "KC_SPC", "MO(NAV)", "KC_BSPC", "KC_ENT", "KC_LGUI", "KC_RALT"]
+    ],
+    "encoderMap": {
+        "count": 0
+    },
+    "layers": [
+        [
+            "KC_GRV", "KC_1", "KC_2", "KC_3", "KC_4", "KC_5", "", "KC_6", "KC_7", "KC_8", "KC_9", "KC_0", "KC_MINS",
+            "KC_PSCR", "KC_ESC", "KC_Q", "KC_W", "KC_E", "KC_R", "KC_T", "KC_Y", "KC_U", "KC_I", "KC_O", "KC_P", "KC_LBRC", "KC_EQL",
+            "KC_CAPS", "KC_TAB", "KC_A", "KC_S", "KC_D", "KC_F", "KC_G", "KC_H", "KC_J", "KC_K", "KC_L", "KC_SCLN", "KC_QUOT", "KC_RBRC",
+            "KC_DEL", "KC_LSFT", "KC_Z", "KC_X", "KC_C", "KC_V", "KC_B", "KC_N", "KC_M", "KC_COMM", "KC_DOT", "KC_SLSH", "KC_RSFT", "KC_BSLS",
+            "", "", "", "KC_LALT", "KC_LCTL", "KC_SPC", "MO(1)", "KC_BSPC", "KC_ENT", "KC_LGUI", "KC_RALT"
+        ],
+        [
+            "KC_F1", "KC_F2", "KC_F3", "KC_F4", "KC_F5", "KC_F6", "", "KC_F7", "KC_F8", "KC_F9", "KC_F10", "KC_F11", "KC_F12",
+            "KC_VOLU", "KC_MPRV", "KC_TRNS", "KC_UP", "KC_TRNS", "KC_TRNS", "KC_BSPC", "KC_CAPS", "KC_INS", "KC_HOME", "KC_PGUP", "KC_TRNS", "KC_TRNS", "KC_TRNS",
+            "KC_VOLD", "KC_MNXT", "KC_LEFT", "KC_DOWN", "KC_RGHT", "KC_TRNS", "KC_ENT", "CW_TOGG", "KC_DEL", "KC_END", "KC_PGDN", "KC_TRNS", "KC_TRNS", "KC_TRNS",
+            "KC_MUTE", "KC_MPLY", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS", "KC_TRNS",
+            "", "", "", "KC_TRNS", "KC_TRNS", "KC_TRNS", "TG(1)", "TG(1)", "KC_TRNS", "KC_TRNS", "KC_TRNS"
+        ]
+    ],
+    "layerSettings": {
+        "main": 0,
+        "default": 0,
+        "tap_dance": {
+            "0": "disabled"
+        }
+    },
+    "layerNames": [
+        "Main",
+        "Nav",
+        "LAYER2",
+        "LAYER3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15"
+    ],
+    "keymapSettings": {
+        "keymapType": "ergohaven",
+        "defaultLayerNames": ["Main", "Nav"],
+        "defaultLayerNameMaxLen": 12
+    },
+    "settings": [
+        {
+            "name": "Idle delay",
+            "type": "uint",
+            "category": "misc",
+            "description": "Time to wait after the keyboard becomes idle before the next activity",
+            "unit": "ms",
+            "max": 600000,
+            "default": 300000
+        },
+        {
+            "name": "Key repeat delay",
+            "type": "uint",
+            "category": "misc",
+            "description": "Time to wait after the key press before key repeat begins",
+            "unit": "ms",
+            "max": 1000,
+            "default": 250
+        },
+        {
+            "name": "Key repeat period",
+            "type": "uint",
+            "category": "misc",
+            "description": "Time between key repeats when a key is held",
+            "unit": "ms",
+            "max": 1000,
+            "default": 50
+        },
+        {
+            "name": "Screen wake",
+            "type": "bool",
+            "category": "display",
+            "description": "Wakes the display on any key press",
+            "default": true
+        },
+        {
+            "name": "Screen sleep timeout",
+            "type": "uint",
+            "category": "display",
+            "description": "Time to wait before the screen turns off after inactivity (0 = never sleep)",
+            "unit": "ms",
+            "max": 1200000,
+            "default": 60000
+        },
+        {
+            "name": "Screen brightness",
+            "type": "uint",
+            "category": "display",
+            "description": "Display brightness (0-255)",
+            "max": 255,
+            "default": 255
+        },
+        {
+            "name": "Screen orientation",
+            "type": "uint",
+            "category": "display",
+            "description": "Screen orientation (0-315, in degrees)",
+            "max": 315,
+            "default": 90
+        },
+        {
+            "name": "Clock display",
+            "type": "uint",
+            "category": "display",
+            "description": "Clock display settings (0-3: 12-hour, 12-hour with seconds, 24-hour, 24-hour with seconds)",
+            "max": 3,
+            "default": 2
+        },
+        {
+            "name": "Clock AM/PM text",
+            "type": "string",
+            "category": "display",
+            "description": "Clock AM/PM text",
+            "max": 2,
+            "default": "AM/PM"
+        },
+        {
+            "name": "Player",
+            "type": "uint",
+            "category": "display",
+            "description": "Media player settings (0-3: Off, Music, Podcast, Radio)",
+            "max": 3,
+            "default": 0
+        },
+        {
+            "name": "Player artist name",
+            "type": "string",
+            "category": "display",
+            "description": "Media player artist name",
+            "max": 20,
+            "default": ""
+        },
+        {
+            "name": "Player album name",
+            "type": "string",
+            "category": "display",
+            "description": "Media player album name",
+            "max": 30,
+            "default": ""
+        },
+        {
+            "name": "Player track title",
+            "type": "string",
+            "category": "display",
+            "description": "Media player track title",
+            "max": 40,
+            "default": ""
+        },
+        {
+            "name": "Player track position",
+            "type": "uint",
+            "category": "display",
+            "description": "Media player track position (0-100)",
+            "max": 100,
+            "default": 0
+        },
+        {
+            "name": "Player play/pause",
+            "type": "uint",
+            "category": "display",
+            "description": "Media player play/pause (0 = play, 1 = pause)",
+            "max": 1,
+            "default": 0
+        },
+        {
+            "name": "Player speed",
+            "type": "uint",
+            "category": "display",
+            "description": "Media player speed (0-100)",
+            "max": 100,
+            "default": 100
+        },
+        {
+            "name": "Player play count",
+            "type": "uint",
+            "category": "display",
+            "description": "Media player play count (0-5)",
+            "max": 5,
+            "default": 0
+        },
+        {
+            "name": "Player shuffle",
+            "type": "bool",
+            "category": "display",
+            "description": "Media player shuffle",
+            "default": false
+        }
+    ],
+    "liveFeatures": ["time", "media"],
+    "keymapLayout": {
+        "label": "Default",
+        "keyCount": 62,
+        "matrixColumns": 7,
+        "matrixRows": 10,
+        "keys": [
+            {
+                "label": "",
+                "name": "KC_GRV",
+                "matrix": [0, 5],
+                "geometry": [1.25, 0.44, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_1",
+                "matrix": [0, 4],
+                "geometry": [2.42, 0.16, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_2",
+                "matrix": [0, 3],
+                "geometry": [3.47, 0.02, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_3",
+                "matrix": [0, 2],
+                "geometry": [4.75, 0.02, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_4",
+                "matrix": [0, 1],
+                "geometry": [5.8, 0.16, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_5",
+                "matrix": [0, 0],
+                "geometry": [6.86, 0.3, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_6",
+                "matrix": [5, 0],
+                "geometry": [14.19, 0.14, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_7",
+                "matrix": [5, 1],
+                "geometry": [15.23, 0.02, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_8",
+                "matrix": [5, 2],
+                "geometry": [16.28, 0.02, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_9",
+                "matrix": [5, 3],
+                "geometry": [17.47, 0.14, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_0",
+                "matrix": [5, 4],
+                "geometry": [18.52, 0.28, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_MINS",
+                "matrix": [5, 5],
+                "geometry": [19.73, 0.31, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_PSCR",
+                "matrix": [0, 6],
+                "geometry": [0.04, 1.47, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_ESC",
+                "matrix": [1, 5],
+                "geometry": [1.42, 1.51, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_Q",
+                "matrix": [1, 4],
+                "geometry": [2.46, 1.37, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_W",
+                "matrix": [1, 3],
+                "geometry": [3.52, 1.25, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_E",
+                "matrix": [1, 2],
+                "geometry": [4.72, 1.25, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_R",
+                "matrix": [1, 1],
+                "geometry": [5.78, 1.37, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_T",
+                "matrix": [1, 0],
+                "geometry": [6.98, 1.41, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_Y",
+                "matrix": [6, 0],
+                "geometry": [13.77, 1.29, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_U",
+                "matrix": [6, 1],
+                "geometry": [14.98, 1.29, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_I",
+                "matrix": [6, 2],
+                "geometry": [16.18, 1.25, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_O",
+                "matrix": [6, 3],
+                "geometry": [17.24, 1.25, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_P",
+                "matrix": [6, 4],
+                "geometry": [18.44, 1.37, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_LBRC",
+                "matrix": [6, 5],
+                "geometry": [19.48, 1.51, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_EQL",
+                "matrix": [5, 6],
+                "geometry": [20.97, 1.47, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_CAPS",
+                "matrix": [1, 6],
+                "geometry": [0.04, 2.52, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_TAB",
+                "matrix": [2, 5],
+                "geometry": [1.42, 2.56, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_A",
+                "matrix": [2, 4],
+                "geometry": [2.46, 2.42, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_S",
+                "matrix": [2, 3],
+                "geometry": [3.52, 2.3, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_D",
+                "matrix": [2, 2],
+                "geometry": [4.72, 2.3, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_F",
+                "matrix": [2, 1],
+                "geometry": [5.78, 2.42, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_G",
+                "matrix": [2, 0],
+                "geometry": [6.98, 2.46, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_H",
+                "matrix": [7, 0],
+                "geometry": [13.77, 2.34, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_J",
+                "matrix": [7, 1],
+                "geometry": [14.98, 2.34, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_K",
+                "matrix": [7, 2],
+                "geometry": [16.18, 2.3, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_L",
+                "matrix": [7, 3],
+                "geometry": [17.24, 2.3, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_SCLN",
+                "matrix": [7, 4],
+                "geometry": [18.44, 2.42, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_QUOT",
+                "matrix": [7, 5],
+                "geometry": [19.48, 2.56, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_RBRC",
+                "matrix": [6, 6],
+                "geometry": [20.97, 2.52, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_DEL",
+                "matrix": [2, 6],
+                "geometry": [0.04, 3.57, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_LSFT",
+                "matrix": [3, 5],
+                "geometry": [1.42, 3.61, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_Z",
+                "matrix": [3, 4],
+                "geometry": [2.46, 3.47, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_X",
+                "matrix": [3, 3],
+                "geometry": [3.52, 3.35, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_C",
+                "matrix": [3, 2],
+                "geometry": [4.72, 3.35, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_V",
+                "matrix": [3, 1],
+                "geometry": [5.78, 3.47, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_B",
+                "matrix": [3, 0],
+                "geometry": [6.98, 3.51, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_N",
+                "matrix": [8, 0],
+                "geometry": [13.77, 3.39, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_M",
+                "matrix": [8, 1],
+                "geometry": [14.98, 3.39, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_COMM",
+                "matrix": [8, 2],
+                "geometry": [16.18, 3.35, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_DOT",
+                "matrix": [8, 3],
+                "geometry": [17.24, 3.35, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_SLSH",
+                "matrix": [8, 4],
+                "geometry": [18.44, 3.47, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_RSFT",
+                "matrix": [8, 5],
+                "geometry": [19.48, 3.61, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_BSLS",
+                "matrix": [7, 6],
+                "geometry": [20.97, 3.57, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_LALT",
+                "matrix": [4, 3],
+                "geometry": [3.52, 4.6, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_LCTL",
+                "matrix": [4, 2],
+                "geometry": [4.72, 4.6, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_SPC",
+                "matrix": [4, 1],
+                "geometry": [5.93, 4.64, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "MO(1)",
+                "matrix": [4, 0],
+                "geometry": [7.13, 4.68, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_BSPC",
+                "matrix": [9, 0],
+                "geometry": [13.77, 4.68, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_ENT",
+                "matrix": [9, 1],
+                "geometry": [14.98, 4.68, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_LGUI",
+                "matrix": [9, 2],
+                "geometry": [16.18, 4.64, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            },
+            {
+                "label": "",
+                "name": "KC_RALT",
+                "matrix": [9, 3],
+                "geometry": [17.24, 4.6, 1.16, 1.16, 0.2],
+                "orientation": "landscape",
+                "keyType": "standard",
+                "type": "keycap"
+            }
+        ]
+    },
+    "features": {
+        "capsWord": true,
+        "keyRepeat": true,
+        "karabiner": true,
+        "karabinerElement": true,
+        "karabinerKpd": true
+    },
+    "manufacturer": "Ergohaven",
+    "productName": "SM62",
+    "productId": "0x00B2",
+    "vendorId": "0xE126"
+}

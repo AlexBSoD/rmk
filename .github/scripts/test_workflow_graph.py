@@ -43,7 +43,7 @@ class WorkflowGraphTests(unittest.TestCase):
         # build.yml retains macOS geometry profiles, display storage and sticky key regressions.
         # The standalone K:04 Vial artifact is intentionally excluded; other rows are retained.
         expected = {
-            'build.yml': '54705410ee6442ac0c6ed8d7cd2ff5e3a1e2e451055ecc833d2a666c85afdf67',
+            'build.yml': '3a092128902c2ccaf4311cebd4fd3623ed9eb9cad0a20c78068e3c96d54af322',
             'ci.yml': '911607762e45264261657e42913c164ee41c4a5ae1f6cd4c157c9e4641070bab',
         }
         for name, (_, owners) in OWNERS.items():

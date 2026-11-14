@@ -133,6 +133,13 @@ jobs:
             target: thumbv6m-none-eabi
             uf2_base: "0x10000000"
             uf2_family: "0xE48BFF56"
+          - keyboard: sm62
+            output_name: sm62
+            keyboard_toml: keyboard.toml
+            vial_json: vial.json
+            target: thumbv6m-none-eabi
+            uf2_base: "0x10000000"
+            uf2_family: "0xE48BFF56"
           - keyboard: k03
             output_name: k03_vial
             keyboard_toml: keyboard_vial.toml

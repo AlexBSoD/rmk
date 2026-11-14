@@ -1,0 +1,128 @@
+# Space Mission 62 — wired split, one RP2040 per half, USB-only.
+[keyboard]
+name = "Ergohaven Space Mission 62"
+product_name = "SM62"
+vendor_id = 0xE126
+product_id = 0x00B2
+manufacturer = "Ergohaven"
+chip = "rp2040"
+
+[host]
+# Rynk with Ergohaven's commands; Vial is off.
+vial_enabled = false
+rynk_enabled = true
+# Writes need no unlock, as over Vial.
+write_requires_unlock = false
+# Unlock positions: the two thumb keys (MO(1) on both halves), like the
+# QMK factory map's layer-toggle keys.
+unlock_keys = [[4, 1], [9, 1]]
+
+[layout]
+rows = 10
+cols = 7
+# map: maps physical (row,col) positions to logical matrix positions.
+# Left half rows 0-4, right half rows 5-9. Each half is 5 rows x 7 cols,
+# COL2ROW. The halves are mirror images: the left half's matrix col 6 is its
+# leftmost key, the right half's col 0 is its leftmost (center-side) key.
+map = """
+         (0,5,L) (0,4,L) (0,3,L) (0,2,L) (0,1,L) (0,0,L)    (5,0,R) (5,1,R) (5,2,R) (5,3,R) (5,4,R) (5,5,R)
+(0,6,L)  (1,5,L) (1,4,L) (1,3,L) (1,2,L) (1,1,L) (1,0,L)    (6,0,R) (6,1,R) (6,2,R) (6,3,R) (6,4,R) (6,5,R) (5,6,R)
+(1,6,L)  (2,5,L) (2,4,L) (2,3,L) (2,2,L) (2,1,L) (2,0,L)    (7,0,R) (7,1,R) (7,2,R) (7,3,R) (7,4,R) (7,5,R) (6,6,R)
+(2,6,L)  (3,5,L) (3,4,L) (3,3,L) (3,2,L) (3,1,L) (3,0,L)    (8,0,R) (8,1,R) (8,2,R) (8,3,R) (8,4,R) (8,5,R) (7,6,R)
+                                        (4,3,L) (4,2,L) (4,1,L) (4,0,L)    (9,0,R) (9,1,R) (9,2,R) (9,3,R)
+"""
+
+[keymap]
+layers = 16
+no_action_layer_start = 5
+
+[[keymap.layer]]
+name = "Base"
+keys = """
+         Grave   Kc1     Kc2     Kc3     Kc4     Kc5         Kc6     Kc7     Kc8     Kc9     Kc0     Minus
+PrintScreen Escape Q  W  E  R  T       Y  U  I  O  P  LeftBracket  Equal
+CapsLock Tab A S D F G  H  J  K  L  Semicolon Quote RightBracket
+Delete LShift Z X C V B  N  M  Comma Dot Slash RShift Backslash
+                     LAlt LCtrl Space MO(1) Backspace Enter LGui RAlt
+"""
+
+[[keymap.layer]]
+name = "Navigation"
+keys = """
+         F1 F2 F3 F4 F5 F6    F7 F8 F9 F10 F11 F12
+AudioVolUp MediaPrevTrack _ Up _ _ Backspace CapsLock Insert Home PageUp _ _ _
+AudioVolDown MediaNextTrack Left Down Right _ Enter CapsWordToggle Delete End PageDown _ _ _
+AudioMute MediaPlayPause _ _ _ _ _ _ _ _ _ _ _ _
+                     _ _ _ TG(1) TG(1) _ _ _
+"""
+
+[[keymap.layer]]
+keys = """
+         _  _  _  _  _  _    _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+            _  _  _  _    _  _  _  _
+"""
+
+[[keymap.layer]]
+keys = """
+         _  _  _  _  _  _    _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+            _  _  _  _    _  _  _  _
+"""
+
+[[keymap.layer]]
+keys = """
+         _  _  _  _  _  _    _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+_  _  _  _  _  _  _    _  _  _  _  _  _  _
+            _  _  _  _    _  _  _  _
+"""
+
+[rmk]
+combo_max_num = 32
+fork_max_num = 32
+morse_max_num = 32
+# Rynk's encoding takes up to twice Vial's bytes, and a frame holds the whole pool.
+macro_space_size = 4096
+rynk_buffer_size = 4128
+
+[storage]
+# 4 MiB flash. Settings sit at the end (0x3E0000-0x400000, 128 KiB), leaving
+# the middle (0x200000-0x2CA000) free for the future resident100 app layouts.
+start_addr = 0x3E0000
+num_sectors = 32
+
+[split]
+connection = "serial"
+
+[split.central]
+rows = 5
+cols = 7
+row_offset = 0
+col_offset = 0
+# Full-duplex USART, the cable crosses TX and RX.
+serial = [{ instance = "UART0", tx_pin = "PIN_0", rx_pin = "PIN_1" }]
+
+[split.central.matrix]
+matrix_type = "normal"
+row_pins = ["PIN_28", "PIN_19", "PIN_18", "PIN_17", "PIN_16"]
+col_pins = ["PIN_21", "PIN_22", "PIN_23", "PIN_24", "PIN_25", "PIN_26", "PIN_27"]
+bootmagic = [1, 5]
+
+[[split.peripheral]]
+rows = 5
+cols = 7
+row_offset = 5
+col_offset = 0
+serial = [{ instance = "UART0", tx_pin = "PIN_0", rx_pin = "PIN_1" }]
+
+[split.peripheral.matrix]
+matrix_type = "normal"
+row_pins = ["PIN_28", "PIN_19", "PIN_18", "PIN_17", "PIN_16"]
+col_pins = ["PIN_21", "PIN_22", "PIN_23", "PIN_24", "PIN_25", "PIN_26", "PIN_27"]
+bootmagic = [1, 5]
