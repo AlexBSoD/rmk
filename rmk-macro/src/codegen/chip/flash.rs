@@ -123,8 +123,12 @@ pub(crate) fn expand_flash_init(hardware: &Hardware, dfu: Option<&DfuConfig>) ->
             #[cfg(not(feature = "dfu_rp"))]
             {
                 hardware.storage.as_ref().map(|_| {
+                    // Internal RP2040 QSPI flash defaults to 2 MiB; boards with a
+                    // larger part (e.g. Space Mission 62, 4 MiB) set `[chip.rp2040] flash_size`.
+                    let flash_size: usize =
+                        hardware.chip_config.flash_size.map(|v| v as usize).unwrap_or(2 * 1024 * 1024);
                     quote! {
-                        const FLASH_SIZE: usize = 2 * 1024 * 1024;
+                        const FLASH_SIZE: usize = #flash_size;
                         let storage_partition = ::embassy_rp::flash::Flash::<_, ::embassy_rp::flash::Async, FLASH_SIZE>::new(
                             p.FLASH, p.DMA_CH1, Irqs,
                         );

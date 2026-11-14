@@ -7,6 +7,10 @@ product_id = 0x00B2
 manufacturer = "Ergohaven"
 chip = "rp2040"
 
+[chip.rp2040]
+# QMK sets PICO_FLASH_SIZE_BYTES=4194304; RMK defaults the RP2040 part to 2 MiB.
+flash_size = 4194304
+
 [host]
 # Rynk with Ergohaven's commands; Vial is off.
 vial_enabled = false

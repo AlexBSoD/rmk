@@ -829,6 +829,9 @@ pub struct ChipConfig {
     pub dcdc_reg1: Option<bool>,
     /// DCDC regulator 0 voltage (for nrf52840)
     pub dcdc_reg0_voltage: Option<DcdcReg0Voltage>,
+    /// Internal flash size in bytes (for rp2040). Defaults to 2 MiB; set 4194304
+    /// for a 4 MiB QSPI part (e.g. Ergohaven Space Mission 62).
+    pub flash_size: Option<u32>,
 }
 
 /// Config for lights
