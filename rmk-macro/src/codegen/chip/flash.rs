@@ -17,6 +17,12 @@ pub(crate) fn expand_flash_init(hardware: &Hardware, dfu: Option<&DfuConfig>) ->
     // those away on other chips.
     let _ = dfu;
 
+    // `[chip] flash_size` only sizes the RP2040 internal QSPI flash; refuse it on other
+    // series instead of silently ignoring it (ChipConfig is shared and deny_unknown_fields).
+    if hardware.chip_config.flash_size.is_some() && hardware.chip.series != ChipSeries::Rp2040 {
+        panic!("[chip.{}] flash_size is only supported on rp2040", hardware.chip.chip);
+    }
+
     let storage_config = hardware.storage.as_ref().map(|storage| {
         let num_sectors = storage.num_sectors;
         let _start_addr = storage.start_addr;
@@ -122,11 +128,29 @@ pub(crate) fn expand_flash_init(hardware: &Hardware, dfu: Option<&DfuConfig>) ->
             }
             #[cfg(not(feature = "dfu_rp"))]
             {
-                hardware.storage.as_ref().map(|_| {
+                hardware.storage.as_ref().map(|storage| {
                     // Internal RP2040 QSPI flash defaults to 2 MiB; boards with a
                     // larger part (e.g. Space Mission 62, 4 MiB) set `[chip.rp2040] flash_size`.
                     let flash_size: usize =
                         hardware.chip_config.flash_size.map(|v| v as usize).unwrap_or(2 * 1024 * 1024);
+                    // Catch the "storage outside the flash" bug at build time. Out of bounds
+                    // does not panic at runtime — storage errors are swallowed and the board
+                    // falls into a reset loop, so USB never enumerates. A zero start_addr means
+                    // "the last N sectors" and is always in range.
+                    if storage.start_addr != 0 {
+                        let end = storage.start_addr as usize + storage.num_sectors as usize * 4096;
+                        if end > flash_size {
+                            panic!(
+                                "RP2040 storage at 0x{:X} + {} sectors (ends 0x{:X}) exceeds flash_size {} (0x{:X}); \
+                                 set [chip.rp2040] flash_size",
+                                storage.start_addr,
+                                storage.num_sectors,
+                                end,
+                                flash_size,
+                                flash_size
+                            );
+                        }
+                    }
                     quote! {
                         const FLASH_SIZE: usize = #flash_size;
                         let storage_partition = ::embassy_rp::flash::Flash::<_, ::embassy_rp::flash::Async, FLASH_SIZE>::new(
